@@ -1,0 +1,81 @@
+version: '3.8'
+
+services:
+  # FastAPI Backend
+  api:
+    build:
+      context: ./convis-api
+      dockerfile: Dockerfile
+    container_name: convis-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - MONGODB_URI=${MONGODB_URI}
+      - JWT_SECRET=${JWT_SECRET}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - API_BASE_URL=${API_BASE_URL}
+      - PORT=8000
+      - HOST=0.0.0.0
+    volumes:
+      - api-uploads:/app/uploads
+      - api-chroma:/app/chroma_db
+    networks:
+      - convis-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Next.js Frontend
+  web:
+    build:
+      context: ./convis-web
+      dockerfile: Dockerfile
+    container_name: convis-web
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
+      - NODE_ENV=production
+    depends_on:
+      api:
+        condition: service_healthy
+    networks:
+      - convis-network
+
+  # Nginx Reverse Proxy
+  nginx:
+    image: nginx:alpine
+    container_name: convis-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - nginx-logs:/var/log/nginx
+    depends_on:
+      - api
+      - web
+    networks:
+      - convis-network
+
+# Persistent volumes for data
+volumes:
+  api-uploads:
+    driver: local
+  api-chroma:
+    driver: local
+  nginx-logs:
+    driver: local
+
+# Network for inter-container communication
+networks:
+  convis-network:
+    driver: bridge

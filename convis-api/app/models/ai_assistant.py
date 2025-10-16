@@ -1,0 +1,55 @@
+from pydantic import BaseModel, Field
+from typing import Optional, List
+from datetime import datetime
+
+class AIAssistantCreate(BaseModel):
+    user_id: str
+    name: str
+    system_message: str
+    voice: str = "alloy"
+    temperature: float = Field(default=0.6, ge=0.0, le=2.0)
+    api_key_id: Optional[str] = None  # Reference to stored API key
+    openai_api_key: Optional[str] = None  # Legacy direct key support
+
+class AIAssistantUpdate(BaseModel):
+    name: Optional[str] = None
+    system_message: Optional[str] = None
+    voice: Optional[str] = None
+    temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
+    api_key_id: Optional[str] = None  # Update to a stored API key
+    openai_api_key: Optional[str] = None  # Legacy direct key update
+
+class KnowledgeBaseFile(BaseModel):
+    filename: str
+    file_type: str
+    file_size: int
+    uploaded_at: str
+    file_path: str
+
+class AIAssistantResponse(BaseModel):
+    id: str
+    user_id: str
+    name: str
+    system_message: str
+    voice: str
+    temperature: float
+    has_api_key: bool  # Indicates if OpenAI API key is configured
+    api_key_id: Optional[str] = None
+    api_key_label: Optional[str] = None
+    api_key_provider: Optional[str] = None
+    knowledge_base_files: List[KnowledgeBaseFile] = []
+    has_knowledge_base: bool = False
+    created_at: str
+    updated_at: str
+
+class AIAssistantListResponse(BaseModel):
+    assistants: list[AIAssistantResponse]
+    total: int
+
+class DeleteResponse(BaseModel):
+    message: str
+
+class FileUploadResponse(BaseModel):
+    message: str
+    file: KnowledgeBaseFile
+    total_files: int
