@@ -221,6 +221,8 @@ export default function DashboardPage() {
       router.push('/phone-numbers');
     } else if (navItem === 'Call logs') {
       router.push('/phone-numbers?tab=calls');
+    } else if (navItem === 'Campaigns') {
+      router.push('/campaigns');
     } else if (navItem === 'Settings') {
       router.push('/settings');
     }

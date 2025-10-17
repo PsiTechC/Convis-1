@@ -363,3 +363,186 @@ async def sms_status_callback(
 
 # Import datetime at the top
 from datetime import datetime
+
+
+# ==================== Campaign Webhooks ====================
+
+@router.api_route("/outbound-call", methods=["GET", "POST"])
+async def outbound_call_webhook(
+    request: Request,
+    leadId: Optional[str] = Form(None),
+    campaignId: Optional[str] = Form(None),
+    assistantId: Optional[str] = Form(None)
+):
+    """
+    TwiML endpoint for outbound campaign calls.
+    Connects the call to the assigned AI assistant.
+    """
+    try:
+        # Try query params if form is empty
+        if not leadId:
+            leadId = request.query_params.get('leadId')
+            campaignId = request.query_params.get('campaignId')
+            assistantId = request.query_params.get('assistantId')
+
+        logger.info(f"Outbound call - Lead: {leadId}, Campaign: {campaignId}, Assistant: {assistantId}")
+
+        response = VoiceResponse()
+
+        if not assistantId:
+            response.say("Sorry, no assistant configured for this campaign.")
+            return HTMLResponse(content=str(response), media_type="application/xml")
+
+        # Connect to AI assistant via WebSocket
+        host = request.url.hostname
+        if request.url.port and request.url.port not in [80, 443]:
+            host = f"{host}:{request.url.port}"
+
+        logger.info(f"Connecting campaign call to assistant {assistantId}")
+
+        connect = Connect()
+        connect.stream(url=f'wss://{host}/api/inbound-calls/media-stream/{assistantId}')
+        response.append(connect)
+
+        return HTMLResponse(content=str(response), media_type="application/xml")
+
+    except Exception as error:
+        logger.error(f"Error in outbound call webhook: {error}")
+        response = VoiceResponse()
+        response.say("Sorry, an error occurred.")
+        return HTMLResponse(content=str(response), media_type="application/xml")
+
+
+@router.api_route("/call-status", methods=["GET", "POST"])
+async def campaign_call_status(
+    request: Request,
+    CallSid: Optional[str] = Form(None),
+    CallStatus: Optional[str] = Form(None),
+    CallDuration: Optional[str] = Form(None),
+    leadId: Optional[str] = Form(None),
+    campaignId: Optional[str] = Form(None)
+):
+    """
+    Campaign call status callback.
+    Updates lead status and triggers next call on completion.
+    """
+    try:
+        # Try query params
+        if not CallSid:
+            CallSid = request.query_params.get('CallSid')
+            CallStatus = request.query_params.get('CallStatus')
+            CallDuration = request.query_params.get('CallDuration')
+            leadId = request.query_params.get('leadId')
+            campaignId = request.query_params.get('campaignId')
+
+        logger.info(f"Campaign call status - CallSid: {CallSid}, Status: {CallStatus}, Lead: {leadId}")
+
+        if not CallSid or not CallStatus:
+            return {"error": "Missing required parameters"}
+
+        db = Database.get_db()
+        call_attempts_collection = db["call_attempts"]
+
+        # Update call attempt
+        update_data = {
+            "status": CallStatus,
+            "updated_at": datetime.utcnow()
+        }
+
+        if CallDuration:
+            update_data["duration"] = int(CallDuration)
+
+        # Mark end time for terminal statuses
+        if CallStatus in ["completed", "busy", "no-answer", "failed", "canceled"]:
+            update_data["ended_at"] = datetime.utcnow()
+
+        call_attempts_collection.update_one(
+            {"call_sid": CallSid},
+            {"$set": update_data}
+        )
+
+        # If call is completed, handle lead status and dial next
+        if CallStatus in ["completed", "busy", "no-answer", "failed", "canceled"] and leadId and campaignId:
+            from app.services.campaign_dialer import CampaignDialer
+            dialer = CampaignDialer()
+            dialer.handle_call_completed(campaignId, leadId, CallStatus)
+
+        return {"message": "Status updated"}
+
+    except Exception as error:
+        logger.error(f"Error in campaign call status: {error}")
+        return {"error": str(error)}
+
+
+@router.api_route("/recording", methods=["GET", "POST"])
+async def campaign_recording_callback(
+    request: Request,
+    RecordingSid: Optional[str] = Form(None),
+    RecordingUrl: Optional[str] = Form(None),
+    CallSid: Optional[str] = Form(None),
+    RecordingStatus: Optional[str] = Form(None),
+    RecordingDuration: Optional[str] = Form(None),
+    leadId: Optional[str] = Form(None),
+    campaignId: Optional[str] = Form(None)
+):
+    """
+    Campaign recording callback.
+    Stores recording URL and triggers post-call AI processing.
+    """
+    try:
+        # Try query params
+        if not RecordingSid:
+            RecordingSid = request.query_params.get('RecordingSid')
+            RecordingUrl = request.query_params.get('RecordingUrl')
+            CallSid = request.query_params.get('CallSid')
+            RecordingStatus = request.query_params.get('RecordingStatus')
+            RecordingDuration = request.query_params.get('RecordingDuration')
+            leadId = request.query_params.get('leadId')
+            campaignId = request.query_params.get('campaignId')
+
+        logger.info(f"Recording callback - RecordingSid: {RecordingSid}, CallSid: {CallSid}, Status: {RecordingStatus}")
+
+        if not RecordingSid or not CallSid:
+            return {"error": "Missing required parameters"}
+
+        # Add .mp3 extension to recording URL for direct download
+        recording_mp3_url = f"{RecordingUrl}.mp3" if RecordingUrl else None
+
+        db = Database.get_db()
+        call_attempts_collection = db["call_attempts"]
+
+        # Update call attempt with recording info
+        update_result = call_attempts_collection.update_one(
+            {"call_sid": CallSid},
+            {
+                "$set": {
+                    "recording_url": recording_mp3_url,
+                    "recording_sid": RecordingSid,
+                    "recording_status": RecordingStatus,
+                    "recording_duration": int(RecordingDuration) if RecordingDuration else None,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
+        if update_result.matched_count > 0:
+            logger.info(f"Recording URL saved for CallSid: {CallSid}")
+
+            # Trigger post-call AI processing (async job)
+            if RecordingStatus == "completed" and leadId and campaignId:
+                # TODO: Queue background job for transcription and analysis
+                # For now, we'll create a simple function call
+                try:
+                    from app.services.post_call_processor import PostCallProcessor
+                    processor = PostCallProcessor()
+                    # Process in background (you can use Celery, or async task)
+                    import asyncio
+                    asyncio.create_task(processor.process_call(CallSid, leadId, campaignId))
+                except ImportError:
+                    logger.warning("PostCallProcessor not yet implemented")
+
+        return {"message": "Recording saved"}
+
+    except Exception as error:
+        logger.error(f"Error in recording callback: {error}")
+        return {"error": str(error)}

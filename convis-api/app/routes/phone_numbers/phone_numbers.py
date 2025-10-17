@@ -239,11 +239,56 @@ async def connect_provider(credentials: ProviderCredentials):
                     detail=f"Error connecting to Twilio: {str(e)}"
                 )
 
+        # Handle Frejun/Teler provider
+        elif credentials.provider.lower() == "frejun":
+            try:
+                # Note: Frejun/Teler requires a self-hosted bridge server
+                # We'll store credentials and allow manual phone number management
+                logger.info(f"Connecting Frejun for user: {credentials.user_id}")
+
+                # Store or update provider connection
+                now = datetime.utcnow()
+                encrypted_account_id = encryption_service.encrypt(credentials.account_sid)
+                encrypted_api_key = encryption_service.encrypt(credentials.auth_token)
+
+                provider_connection = {
+                    "user_id": user_obj_id,
+                    "provider": "frejun",
+                    "account_sid": encrypted_account_id,
+                    "auth_token": encrypted_api_key,
+                    "account_sid_last4": credentials.account_sid[-4:] if len(credentials.account_sid) >= 4 else "****",
+                    "status": "active",
+                    "created_at": now,
+                    "updated_at": now
+                }
+
+                # Upsert provider connection
+                provider_connections_collection.update_one(
+                    {"user_id": user_obj_id, "provider": "frejun"},
+                    {"$set": provider_connection},
+                    upsert=True
+                )
+
+                logger.info(f"Successfully connected Frejun provider for user {credentials.user_id}")
+
+                # Return success message - phone numbers will be added manually
+                return ConnectProviderResponse(
+                    message="Successfully connected Frejun. You can now add phone numbers manually or configure your Frejun bridge server.",
+                    phone_numbers=[],
+                    provider="frejun"
+                )
+            except Exception as e:
+                logger.error(f"Error connecting to Frejun: {str(e)}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Error connecting to Frejun: {str(e)}"
+                )
+
         else:
             # Placeholder for other providers
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Provider '{credentials.provider}' is not yet supported. Currently only Twilio is supported."
+                detail=f"Provider '{credentials.provider}' is not yet supported. Currently supported: Twilio, Frejun."
             )
 
     except HTTPException:

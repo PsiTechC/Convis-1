@@ -2,8 +2,13 @@ from pydantic_settings import BaseSettings
 from typing import Optional
 import os
 import logging
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Get the project root directory (two levels up from this file)
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
+ENV_FILE = BASE_DIR / ".env"
 
 class Settings(BaseSettings):
     # MongoDB Configuration
@@ -34,15 +39,38 @@ class Settings(BaseSettings):
     api_host: str = "0.0.0.0"
     api_port: int = 8000
     api_base_url: Optional[str] = None  # For webhook URLs in production
+    base_url: Optional[str] = None  # Alias for api_base_url
 
     # Twilio Configuration (optional defaults)
     twilio_account_sid: Optional[str] = None
     twilio_auth_token: Optional[str] = None
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = False
-        extra = "ignore"  # Ignore extra fields in .env file
+    # Redis Configuration
+    redis_url: str = "redis://localhost:6379"
+
+    # Campaign defaults
+    default_timezone: str = "America/New_York"
+    default_max_attempts: int = 3
+
+    # Feature flags
+    enable_calendar_booking: bool = True
+    enable_post_call_ai: bool = True
+    enable_auto_retry: bool = True
+
+    # Google Calendar
+    google_client_id: Optional[str] = None
+    google_client_secret: Optional[str] = None
+
+    # Microsoft Calendar
+    microsoft_client_id: Optional[str] = None
+    microsoft_client_secret: Optional[str] = None
+
+    model_config = {
+        "env_file": str(ENV_FILE),
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore"
+    }
 
     def validate_production_settings(self):
         """Validate critical settings for production environment"""
