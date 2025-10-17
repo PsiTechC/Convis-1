@@ -123,49 +123,13 @@ export default function PhoneNumbersPage() {
       features: ['Voice', 'SMS', 'WhatsApp', 'Video']
     },
     {
-      id: 'vonage',
-      name: 'Vonage',
-      logo: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMjQgNEMxMi45NTQgNCA0IDEyLjk1NCA0IDI0czguOTU0IDIwIDIwIDIwIDIwLTguOTU0IDIwLTIwUzM1LjA0NiA0IDI0IDR6bTAgMzZjLTguODM3IDAtMTYtNy4xNjMtMTYtMTZTMTUuMTYzIDggMjQgOHMxNiA3LjE2MyAxNiAxNi03LjE2MyAxNi0xNiAxNnoiIGZpbGw9IndoaXRlIi8+PHBhdGggZD0iTTI0IDE2YzQuNDE4IDAgOCAzLjU4MiA4IDhzLTMuNTgyIDgtOCA4LTgtMy41ODItOC04IDMuNTgyLTggOC04eiIgZmlsbD0id2hpdGUiLz48L3N2Zz4=',
-      description: 'Global cloud communications platform',
+      id: 'frejun',
+      name: 'Frejun',
+      logo: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSI4IiB5PSI4IiB3aWR0aD0iMzIiIGhlaWdodD0iMzIiIHJ4PSI2IiBmaWxsPSJ3aGl0ZSIvPjxwYXRoIGQ9Ik0xNiAxNmgxNnY0SDE2ek0xNiAyNGgxMnY0SDE2ek0xNiAzMmg4djRoLTh6IiBmaWxsPSIjMDA3QUZGIi8+PC9zdmc+',
+      description: 'Real-time AI voice communications with OpenAI integration',
       authUrl: '',
-      color: 'from-blue-500 to-blue-600',
-      features: ['Voice API', 'SMS API', 'Number Insight']
-    },
-    {
-      id: 'plivo',
-      name: 'Plivo',
-      logo: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cmVjdCB4PSIxMCIgeT0iOCIgd2lkdGg9IjI4IiBoZWlnaHQ9IjMyIiByeD0iNCIgZmlsbD0id2hpdGUiLz48Y2lyY2xlIGN4PSIyNCIgY3k9IjM1IiByPSIyIiBmaWxsPSIjMjJDNTVFIi8+PC9zdmc+',
-      description: 'Cloud communication platform for developers',
-      authUrl: '',
-      color: 'from-green-500 to-green-600',
-      features: ['Voice', 'SMS', 'MMS', 'SIP']
-    },
-    {
-      id: 'bandwidth',
-      name: 'Bandwidth',
-      logo: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48Y2lyY2xlIGN4PSIyNCIgY3k9IjI0IiByPSIxOCIgc3Ryb2tlPSJ3aGl0ZSIgc3Ryb2tlLXdpZHRoPSIyIi8+PGNpcmNsZSBjeD0iMjQiIGN5PSIyNCIgcj0iMTIiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIvPjxjaXJjbGUgY3g9IjI0IiBjeT0iMjQiIHI9IjYiIGZpbGw9IndoaXRlIi8+PC9zdmc+',
-      description: 'Enterprise-grade voice and messaging APIs',
-      authUrl: '',
-      color: 'from-purple-500 to-purple-600',
-      features: ['Voice', 'Messaging', '911 Access', 'Number Management']
-    },
-    {
-      id: 'telnyx',
-      name: 'Telnyx',
-      logo: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMjQgOEwxMiAxNnYxNmwxMiA4IDEyLThWMTZMMjQgOHoiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIgZmlsbD0ibm9uZSIvPjxwYXRoIGQ9Ik0yNCAxNnY4bTAtOGw4IDR2OG0tOC0xMmwtOCA0djgiIHN0cm9rZT0id2hpdGUiIHN0cm9rZS13aWR0aD0iMiIvPjwvc3ZnPg==',
-      description: 'Private communications network for real-time apps',
-      authUrl: '',
-      color: 'from-indigo-500 to-indigo-600',
-      features: ['Voice', 'SMS', 'Wireless', 'IoT']
-    },
-    {
-      id: 'messagebird',
-      name: 'MessageBird',
-      logo: 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDgiIGhlaWdodD0iNDgiIHZpZXdCb3g9IjAgMCA0OCA0OCIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMzIgMTZjMCA0LjQxOC0zLjU4MiA4LTggOHMtOC0zLjU4Mi04LTggMy41ODItOCA4LTggOCAzLjU4MiA4IDh6TTI0IDI0Yy02LjYyNyAwLTEyIDUuMzczLTEyIDEyaDI0YzAtNi42MjctNS4zNzMtMTItMTItMTJ6IiBmaWxsPSJ3aGl0ZSIvPjwvc3ZnPg==',
-      description: 'Omnichannel communication platform',
-      authUrl: '',
-      color: 'from-yellow-500 to-yellow-600',
-      features: ['SMS', 'Voice', 'WhatsApp', 'Email']
+      color: 'from-cyan-500 to-blue-600',
+      features: ['Voice', 'AI Integration', 'Real-time Streaming', 'WebSocket']
     }
   ];
 
@@ -1620,26 +1584,26 @@ export default function PhoneNumbersPage() {
             <div className="p-6 space-y-4">
               <div>
                 <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
-                  Account SID
+                  {selectedProvider.id === 'frejun' ? 'Teler Account ID' : 'Account SID'}
                 </label>
                 <input
                   type="text"
                   value={credentials.accountSid}
                   onChange={(e) => setCredentials({ ...credentials, accountSid: e.target.value })}
-                  placeholder="Enter your Account SID"
+                  placeholder={selectedProvider.id === 'frejun' ? 'Enter your Teler Account ID' : 'Enter your Account SID'}
                   className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-neutral-light border-neutral-mid/20 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-mono text-sm`}
                 />
               </div>
 
               <div>
                 <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
-                  Auth Token
+                  {selectedProvider.id === 'frejun' ? 'Teler API Key' : 'Auth Token'}
                 </label>
                 <input
                   type="password"
                   value={credentials.authToken}
                   onChange={(e) => setCredentials({ ...credentials, authToken: e.target.value })}
-                  placeholder="Enter your Auth Token"
+                  placeholder={selectedProvider.id === 'frejun' ? 'Enter your Teler API Key' : 'Enter your Auth Token'}
                   className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-neutral-light border-neutral-mid/20 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-mono text-sm`}
                 />
               </div>
