@@ -14,6 +14,18 @@ interface KnowledgeBaseFile {
   file_path: string;
 }
 
+interface DatabaseConfig {
+  enabled: boolean;
+  type: string;
+  host: string;
+  port: string;
+  database: string;
+  username: string;
+  password: string;
+  table_name: string;
+  search_columns: string[];
+}
+
 interface AIAssistant {
   id: string;
   user_id: string;
@@ -27,6 +39,7 @@ interface AIAssistant {
   api_key_provider?: SupportedProvider | null;
   knowledge_base_files: KnowledgeBaseFile[];
   has_knowledge_base: boolean;
+  database_config?: DatabaseConfig | null;
   created_at: string;
   updated_at: string;
 }
@@ -60,6 +73,30 @@ const PROVIDER_LABELS: Record<SupportedProvider, string> = {
   google: 'Google Vertex',
   custom: 'Custom Provider',
 };
+
+interface VoiceOption {
+  value: string;
+  label: string;
+  gender: 'Male' | 'Female' | 'Neutral';
+  accent: string;
+  description: string;
+}
+
+const VOICE_OPTIONS: VoiceOption[] = [
+  { value: 'alloy', label: 'Alloy', gender: 'Neutral', accent: 'American', description: 'Balanced and versatile' },
+  { value: 'ash', label: 'Ash', gender: 'Male', accent: 'British', description: 'Clear and articulate' },
+  { value: 'ballad', label: 'Ballad', gender: 'Male', accent: 'American', description: 'Smooth and calm' },
+  { value: 'cedar', label: 'Cedar', gender: 'Male', accent: 'American', description: 'Warm and steady' },
+  { value: 'coral', label: 'Coral', gender: 'Female', accent: 'American', description: 'Bright and friendly' },
+  { value: 'echo', label: 'Echo', gender: 'Male', accent: 'American', description: 'Professional and clear' },
+  { value: 'fable', label: 'Fable', gender: 'Female', accent: 'British', description: 'Expressive and engaging' },
+  { value: 'marin', label: 'Marin', gender: 'Female', accent: 'Australian', description: 'Energetic and upbeat' },
+  { value: 'nova', label: 'Nova', gender: 'Female', accent: 'American', description: 'Youthful and energetic' },
+  { value: 'onyx', label: 'Onyx', gender: 'Male', accent: 'American', description: 'Deep and authoritative' },
+  { value: 'sage', label: 'Sage', gender: 'Female', accent: 'American', description: 'Soft and reassuring' },
+  { value: 'shimmer', label: 'Shimmer', gender: 'Female', accent: 'American', description: 'Cheerful and warm' },
+  { value: 'verse', label: 'Verse', gender: 'Male', accent: 'American', description: 'Conversational and natural' },
+];
 
 const ASSISTANT_TEMPLATES: AssistantTemplate[] = [
   {
@@ -155,6 +192,8 @@ export default function AIAgentPage() {
   const [apiKeys, setApiKeys] = useState<StoredApiKey[]>([]);
   const [isLoadingKeys, setIsLoadingKeys] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
+  const [playingVoice, setPlayingVoice] = useState<string | null>(null);
+  const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const [formData, setFormData] = useState({
     name: '',
     system_message: '',
@@ -162,6 +201,19 @@ export default function AIAgentPage() {
     temperature: 0.5,
     api_key_id: '',
   });
+  const [databaseConfig, setDatabaseConfig] = useState({
+    enabled: false,
+    type: 'postgresql',
+    host: '',
+    port: '5432',
+    database: '',
+    username: '',
+    password: '',
+    table_name: '',
+    search_columns: [] as string[],
+  });
+  const [testingConnection, setTestingConnection] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
   useEffect(() => {
@@ -301,6 +353,24 @@ export default function AIAgentPage() {
           const errorData = await response.json();
           throw new Error(errorData.detail || 'Failed to update assistant');
         }
+
+        // Save database configuration if enabled
+        if (databaseConfig.enabled) {
+          const dbResponse = await fetch(
+            `${API_URL}/api/ai-assistants/database/${editingAssistantId}/save-config`,
+            {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(databaseConfig),
+            }
+          );
+
+          if (!dbResponse.ok) {
+            console.error('Failed to save database configuration');
+          }
+        }
       } else {
         // Create new assistant
         const response = await fetch(`${API_URL}/api/ai-assistants`, {
@@ -354,23 +424,110 @@ export default function AIAgentPage() {
     }));
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  const handleVoiceDemo = async (voiceId: string) => {
+    // Stop currently playing audio if any
+    if (audioElement) {
+      audioElement.pause();
+      audioElement.currentTime = 0;
+      URL.revokeObjectURL(audioElement.src);
+    }
 
-    // Validate file type
-    const allowedTypes = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.txt'];
-    const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
-    if (!allowedTypes.includes(fileExtension)) {
-      setUploadError('Invalid file type. Allowed: PDF, DOCX, XLSX, TXT');
+    // If clicking the same voice that's playing, stop it
+    if (playingVoice === voiceId) {
+      setPlayingVoice(null);
+      setAudioElement(null);
       return;
     }
 
-    // Validate file size (50MB max)
+    try {
+      const resolvedUserId = user?.clientId || user?._id || user?.id;
+      if (!resolvedUserId) {
+        alert('We could not resolve your user information. Please refresh the page and try again.');
+        return;
+      }
+
+      if (!isLoadingKeys) {
+        const hasOpenAIKey = apiKeys.some((key) => key.provider === 'openai');
+        if (!hasOpenAIKey) {
+          alert('Please add an OpenAI API key in Settings to preview voices.');
+          return;
+        }
+      }
+
+      const token = localStorage.getItem('token');
+      setPlayingVoice(voiceId);
+
+      // Sample text for demo
+      const demoText = "Hello! This is a sample of my voice. I'm here to assist you with your conversations.";
+
+      // Call backend API to generate audio
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/ai-assistants/voice-demo`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+        },
+        credentials: 'include',
+        body: JSON.stringify({
+          voice: voiceId,
+          text: demoText,
+          user_id: resolvedUserId,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to generate voice sample');
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+
+      audio.onended = () => {
+        setPlayingVoice(null);
+        setAudioElement(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      audio.onerror = (e) => {
+        console.error('Audio playback error:', e);
+        setPlayingVoice(null);
+        setAudioElement(null);
+        URL.revokeObjectURL(audioUrl);
+      };
+
+      setAudioElement(audio);
+      await audio.play();
+    } catch (error) {
+      console.error('Error playing voice demo:', error);
+      setPlayingVoice(null);
+      setAudioElement(null);
+      alert('Failed to play voice demo. Please check your API configuration.');
+    }
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+
+    // Validate file types and sizes
+    const allowedTypes = ['.pdf', '.docx', '.doc', '.xlsx', '.xls', '.txt'];
     const maxSize = 50 * 1024 * 1024; // 50MB
-    if (file.size > maxSize) {
-      setUploadError('File too large. Maximum size is 50MB');
-      return;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      const fileExtension = '.' + file.name.split('.').pop()?.toLowerCase();
+
+      if (!allowedTypes.includes(fileExtension)) {
+        setUploadError(`Invalid file type for ${file.name}. Allowed: PDF, DOCX, XLSX, TXT`);
+        return;
+      }
+
+      if (file.size > maxSize) {
+        setUploadError(`File ${file.name} is too large. Maximum size is 50MB`);
+        return;
+      }
     }
 
     if (!isEditMode || !editingAssistantId) {
@@ -382,26 +539,33 @@ export default function AIAgentPage() {
     setUploadError(null);
 
     try {
-      const formData = new FormData();
-      formData.append('file', file);
+      // Upload files sequentially to avoid overwhelming the server
+      const uploadedFiles = [];
 
-      const response = await fetch(
-        `${API_URL}/api/ai-assistants/knowledge-base/${editingAssistantId}/upload`,
-        {
-          method: 'POST',
-          body: formData,
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const formData = new FormData();
+        formData.append('file', file);
+
+        const response = await fetch(
+          `${API_URL}/api/ai-assistants/knowledge-base/${editingAssistantId}/upload`,
+          {
+            method: 'POST',
+            body: formData,
+          }
+        );
+
+        if (!response.ok) {
+          const errorData = await response.json();
+          throw new Error(`Failed to upload ${file.name}: ${errorData.detail || 'Unknown error'}`);
         }
-      );
 
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to upload file');
+        const data = await response.json();
+        uploadedFiles.push(data.file);
       }
 
-      const data = await response.json();
-
-      // Add the new file to the list
-      setKnowledgeBaseFiles(prev => [...prev, data.file]);
+      // Add all new files to the list
+      setKnowledgeBaseFiles(prev => [...prev, ...uploadedFiles]);
 
       // Reset file input
       e.target.value = '';
@@ -415,9 +579,41 @@ export default function AIAgentPage() {
         }
       }
     } catch (err: any) {
-      setUploadError(err.message || 'Failed to upload file');
+      setUploadError(err.message || 'Failed to upload files');
     } finally {
       setUploadingFile(false);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!editingAssistantId) return;
+
+    setTestingConnection(true);
+    setConnectionStatus(null);
+
+    try {
+      const response = await fetch(
+        `${API_URL}/api/ai-assistants/database/${editingAssistantId}/test-connection`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(databaseConfig),
+        }
+      );
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to test connection');
+      }
+
+      setConnectionStatus('Success! Database connection established.');
+    } catch (err: any) {
+      setConnectionStatus(`Connection failed: ${err.message}`);
+    } finally {
+      setTestingConnection(false);
     }
   };
 
@@ -526,7 +722,7 @@ export default function AIAgentPage() {
     });
   };
 
-  const openEditModal = (assistant: AIAssistant) => {
+  const openEditModal = async (assistant: AIAssistant) => {
     setFormData({
       name: assistant.name,
       system_message: assistant.system_message,
@@ -535,12 +731,32 @@ export default function AIAgentPage() {
       api_key_id: assistant.api_key_id || '',
     });
     setKnowledgeBaseFiles(assistant.knowledge_base_files || []);
+
+    // Load database configuration if available
+    if (assistant.database_config) {
+      setDatabaseConfig(assistant.database_config);
+    } else {
+      // Reset to default if no config exists
+      setDatabaseConfig({
+        enabled: false,
+        type: 'postgresql',
+        host: '',
+        port: '5432',
+        database: '',
+        username: '',
+        password: '',
+        table_name: '',
+        search_columns: [],
+      });
+    }
+
     setIsEditMode(true);
     setEditingAssistantId(assistant.id);
     setModalStep('form');
     setIsCreateModalOpen(true);
     setCreateError(null);
     setUploadError(null);
+    setConnectionStatus(null);
     const token = localStorage.getItem('token');
     const resolvedUserId = user?.clientId || user?._id || user?.id;
     if (token && resolvedUserId) {
@@ -1252,29 +1468,93 @@ export default function AIAgentPage() {
 
               {/* Voice Selection */}
               <div>
-                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
-                  Voice
+                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-3`}>
+                  Voice Selection
                 </label>
-                <select
-                  name="voice"
-                  value={formData.voice}
-                  onChange={handleFormChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-neutral-mid/20 text-neutral-dark'} focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all cursor-pointer`}
-                >
-                  <option value="alloy">Alloy</option>
-                  <option value="ash">Ash</option>
-                  <option value="ballad">Ballad</option>
-                  <option value="cedar">Cedar</option>
-                  <option value="coral">Coral</option>
-                  <option value="echo">Echo</option>
-                  <option value="fable">Fable</option>
-                  <option value="marin">Marin</option>
-                  <option value="nova">Nova</option>
-                  <option value="onyx">Onyx</option>
-                  <option value="sage">Sage</option>
-                  <option value="shimmer">Shimmer</option>
-                  <option value="verse">Verse</option>
-                </select>
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-4`}>
+                  Click on a voice to select it, and use the play button to hear a demo
+                </p>
+                <div className={`rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/30' : 'border-neutral-mid/20 bg-white'} max-h-[400px] overflow-y-auto`}>
+                  {VOICE_OPTIONS.map((voice, index) => (
+                    <div
+                      key={voice.value}
+                      className={`flex items-center justify-between p-4 cursor-pointer transition-all ${
+                        index !== VOICE_OPTIONS.length - 1 ? (isDarkMode ? 'border-b border-gray-600' : 'border-b border-neutral-mid/10') : ''
+                      } ${
+                        formData.voice === voice.value
+                          ? isDarkMode
+                            ? 'bg-primary/20 hover:bg-primary/25'
+                            : 'bg-primary/10 hover:bg-primary/15'
+                          : isDarkMode
+                            ? 'hover:bg-gray-700/50'
+                            : 'hover:bg-neutral-mid/5'
+                      }`}
+                      onClick={() => setFormData(prev => ({ ...prev, voice: voice.value }))}
+                    >
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
+                          formData.voice === voice.value
+                            ? 'bg-primary text-white'
+                            : isDarkMode
+                              ? 'bg-gray-600 text-gray-200'
+                              : 'bg-neutral-mid/10 text-neutral-dark'
+                        }`}>
+                          {voice.gender === 'Male' ? '👨' : voice.gender === 'Female' ? '👩' : '🧑'}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <h4 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                              {voice.label}
+                            </h4>
+                            {formData.voice === voice.value && (
+                              <svg className="w-4 h-4 text-primary flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                              </svg>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                              {voice.gender}
+                            </span>
+                            <span className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid/60'}`}>•</span>
+                            <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                              {voice.accent} Accent
+                            </span>
+                          </div>
+                          <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid/80'}`}>
+                            {voice.description}
+                          </p>
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleVoiceDemo(voice.value);
+                        }}
+                        disabled={playingVoice !== null && playingVoice !== voice.value}
+                        className={`flex-shrink-0 p-2.5 rounded-full transition-all ${
+                          playingVoice === voice.value
+                            ? 'bg-primary text-white shadow-lg scale-110'
+                            : isDarkMode
+                              ? 'bg-gray-600 text-gray-200 hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed'
+                              : 'bg-neutral-mid/10 text-neutral-dark hover:bg-neutral-mid/20 disabled:opacity-30 disabled:cursor-not-allowed'
+                        }`}
+                        title={playingVoice === voice.value ? 'Stop' : 'Play demo'}
+                      >
+                        {playingVoice === voice.value ? (
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                        ) : (
+                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                          </svg>
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </div>
               </div>
 
               {/* Temperature */}
@@ -1356,7 +1636,7 @@ export default function AIAgentPage() {
                               Click to upload or drag and drop
                             </p>
                             <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                              PDF, DOCX, XLSX, TXT (max 50MB)
+                              PDF, DOCX, XLSX, TXT (max 50MB) - Multiple files supported
                             </p>
                           </>
                         )}
@@ -1367,6 +1647,7 @@ export default function AIAgentPage() {
                         accept=".pdf,.docx,.doc,.xlsx,.xls,.txt"
                         onChange={handleFileUpload}
                         disabled={uploadingFile}
+                        multiple
                       />
                     </label>
                   </div>
@@ -1437,6 +1718,179 @@ export default function AIAgentPage() {
                       Knowledge Base files can be uploaded after creating the assistant
                     </p>
                   </div>
+                </div>
+              )}
+
+              {/* Database Integration */}
+              {isEditMode && (
+                <div className={`rounded-xl border ${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gradient-to-br from-green-50 to-emerald-50 border-green-200'} p-6`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <div className="flex items-center gap-2">
+                      <svg className="w-6 h-6 text-green-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4m0 5c0 2.21-3.582 4-8 4s-8-1.79-8-4" />
+                      </svg>
+                      <div>
+                        <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                          Database Integration
+                        </h3>
+                        <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                          Connect to your database to query user information in real-time
+                        </p>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        className="sr-only peer"
+                        checked={databaseConfig.enabled}
+                        onChange={(e) => setDatabaseConfig({...databaseConfig, enabled: e.target.checked})}
+                      />
+                      <div className="w-11 h-6 bg-gray-200 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-green-300 dark:peer-focus:ring-green-800 rounded-full peer dark:bg-gray-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-gray-600 peer-checked:bg-green-600"></div>
+                    </label>
+                  </div>
+
+                  {databaseConfig.enabled && (
+                    <div className="space-y-4">
+                      {connectionStatus && (
+                        <div className={`${connectionStatus.includes('Success') ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'} border rounded-xl p-3`}>
+                          <p className={`text-sm ${connectionStatus.includes('Success') ? 'text-green-700' : 'text-red-700'}`}>
+                            {connectionStatus}
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-2 gap-4">
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Database Type
+                          </label>
+                          <select
+                            value={databaseConfig.type}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, type: e.target.value, port: e.target.value === 'postgresql' ? '5432' : e.target.value === 'mysql' ? '3306' : '27017'})}
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          >
+                            <option value="postgresql">PostgreSQL</option>
+                            <option value="mysql">MySQL</option>
+                            <option value="mongodb">MongoDB</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Host
+                          </label>
+                          <input
+                            type="text"
+                            value={databaseConfig.host}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, host: e.target.value})}
+                            placeholder="localhost or IP address"
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Port
+                          </label>
+                          <input
+                            type="text"
+                            value={databaseConfig.port}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, port: e.target.value})}
+                            placeholder="5432"
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Database Name
+                          </label>
+                          <input
+                            type="text"
+                            value={databaseConfig.database}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, database: e.target.value})}
+                            placeholder="database_name"
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Username
+                          </label>
+                          <input
+                            type="text"
+                            value={databaseConfig.username}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, username: e.target.value})}
+                            placeholder="db_username"
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Password
+                          </label>
+                          <input
+                            type="password"
+                            value={databaseConfig.password}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, password: e.target.value})}
+                            placeholder="••••••••"
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Table Name
+                          </label>
+                          <input
+                            type="text"
+                            value={databaseConfig.table_name}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, table_name: e.target.value})}
+                            placeholder="users, customers, etc."
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+
+                        <div>
+                          <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            Search Columns (comma-separated)
+                          </label>
+                          <input
+                            type="text"
+                            value={databaseConfig.search_columns.join(', ')}
+                            onChange={(e) => setDatabaseConfig({...databaseConfig, search_columns: e.target.value.split(',').map(col => col.trim()).filter(col => col)})}
+                            placeholder="name, email, phone, policy_number"
+                            className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-800 border-gray-700 text-white' : 'bg-white border-neutral-mid/30 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary transition-all`}
+                          />
+                        </div>
+                      </div>
+
+                      <button
+                        onClick={handleTestConnection}
+                        disabled={testingConnection}
+                        className={`w-full px-4 py-3 rounded-xl font-semibold ${isDarkMode ? 'bg-green-600 hover:bg-green-700' : 'bg-green-600 hover:bg-green-700'} text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2`}
+                      >
+                        {testingConnection ? (
+                          <>
+                            <svg className="animate-spin h-5 w-5" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                            </svg>
+                            Testing Connection...
+                          </>
+                        ) : (
+                          <>
+                            <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                            </svg>
+                            Test Database Connection
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 

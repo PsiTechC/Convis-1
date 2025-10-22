@@ -348,15 +348,16 @@ def process_document_for_conversation(
         }
 
 
-def search_conversation_context(
+async def search_conversation_context(
     assistant_id: str,
     query: str,
     api_key: str,
     top_k: int = 3,
-    relevance_threshold: float = 0.7
+    relevance_threshold: float = 0.7,
+    database_config: Optional[Dict[str, Any]] = None
 ) -> Optional[str]:
     """
-    Search knowledge base and return conversational context.
+    Search knowledge base and database (if configured) and return conversational context.
     Optimized for voice conversations - returns concise, relevant info.
 
     Args:
@@ -365,62 +366,93 @@ def search_conversation_context(
         api_key: OpenAI API key
         top_k: Number of results to retrieve
         relevance_threshold: Minimum similarity score (0-1)
+        database_config: Optional database configuration for querying user data
 
     Returns:
         Formatted context string or None if no relevant info found
     """
+    context_parts = []
+
+    # Search knowledge base (documents)
     try:
         collection_name = f"assistant_{assistant_id}"
 
         # Check if collection exists
         try:
             collection = chroma_client.get_collection(name=collection_name)
-        except:
-            logger.info(f"No knowledge base found for assistant {assistant_id}")
-            return None
 
-        # Create query embedding
-        client = OpenAI(api_key=api_key)
-        query_response = client.embeddings.create(
-            model="text-embedding-3-small",
-            input=[query]
-        )
-        query_embedding = query_response.data[0].embedding
+            # Create query embedding
+            client = OpenAI(api_key=api_key)
+            query_response = client.embeddings.create(
+                model="text-embedding-3-small",
+                input=[query]
+            )
+            query_embedding = query_response.data[0].embedding
 
-        # Search ChromaDB
-        results = collection.query(
-            query_embeddings=[query_embedding],
-            n_results=top_k
-        )
+            # Search ChromaDB
+            results = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=top_k
+            )
 
-        if not results['documents'] or not results['documents'][0]:
-            return None
+            if results['documents'] and results['documents'][0]:
+                # Build context from documents
+                for i, (doc, metadata, distance) in enumerate(zip(
+                    results['documents'][0],
+                    results['metadatas'][0],
+                    results['distances'][0]
+                )):
+                    # Convert distance to similarity (ChromaDB returns L2 distance)
+                    similarity = 1 / (1 + distance)
 
-        # Build conversational context
-        context_parts = []
-        for i, (doc, metadata, distance) in enumerate(zip(
-            results['documents'][0],
-            results['metadatas'][0],
-            results['distances'][0]
-        )):
-            # Convert distance to similarity (ChromaDB returns L2 distance)
-            similarity = 1 / (1 + distance)
+                    # Only include if above threshold
+                    if similarity >= relevance_threshold:
+                        source = metadata.get('filename', 'document')
+                        context_parts.append(f"[From {source}]: {doc}")
 
-            # Only include if above threshold
-            if similarity >= relevance_threshold:
-                source = metadata.get('filename', 'document')
-                context_parts.append(f"[From {source}]: {doc}")
-
-        if not context_parts:
-            return None
-
-        # Format for conversation
-        context = "Relevant information from knowledge base:\n" + "\n\n".join(context_parts)
-        return context
+        except Exception as e:
+            logger.info(f"No knowledge base found for assistant {assistant_id}: {e}")
 
     except Exception as e:
-        logger.error(f"Error searching conversation context: {e}")
+        logger.error(f"Error searching knowledge base: {e}")
+
+    # Search database if configured
+    if database_config and database_config.get('enabled'):
+        try:
+            from app.routes.ai_assistant.database import query_database
+            from app.models.ai_assistant import DatabaseConfig
+
+            # Convert dict to DatabaseConfig model
+            db_config = DatabaseConfig(**database_config)
+            db_results = await query_database(db_config, query)
+
+            if db_results and db_results.get('records'):
+                # Format database results for conversation
+                db_context = "\n\n[From Database]:\n"
+                for record in db_results['records'][:3]:  # Limit to top 3 records
+                    # Format record fields
+                    record_str = ", ".join([f"{k}: {v}" for k, v in record.items() if v is not None])
+                    db_context += f"- {record_str}\n"
+
+                context_parts.append(db_context.strip())
+            elif db_results and db_results.get('documents'):
+                # MongoDB results
+                db_context = "\n\n[From Database]:\n"
+                for doc in db_results['documents'][:3]:  # Limit to top 3 documents
+                    doc_str = ", ".join([f"{k}: {v}" for k, v in doc.items() if k != '_id' and v is not None])
+                    db_context += f"- {doc_str}\n"
+
+                context_parts.append(db_context.strip())
+
+        except Exception as e:
+            logger.error(f"Error searching database: {e}")
+
+    if not context_parts:
         return None
+
+    # Format for conversation
+    context = "Relevant information:\n" + "\n\n".join(context_parts)
+    return context
 
 
 def delete_document_from_kb(assistant_id: str, filename: str) -> bool:
