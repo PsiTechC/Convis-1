@@ -1,4 +1,5 @@
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import Response
 from app.models.ai_assistant import (
     AIAssistantCreate,
     AIAssistantUpdate,
@@ -11,12 +12,70 @@ from app.config.database import Database
 from app.utils.encryption import encryption_service
 from bson import ObjectId
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Literal
+from pydantic import BaseModel, validator
 import logging
+import os
+import httpx
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Voices currently supported by OpenAI's text-to-speech API (tts-1 model)
+SUPPORTED_TTS_VOICES = {
+    "alloy",
+    "ash",
+    "ballad",
+    "coral",
+    "echo",
+    "fable",
+    "marin",
+    "nova",
+    "onyx",
+    "sage",
+    "shimmer",
+    "verse",
+}
+
+# Backward compatibility voices that were available in earlier releases
+LEGACY_TTS_VOICES = {
+    "cedar",  # keep for existing assistants even if OpenAI rejects it later
+}
+
+
+class VoiceDemoRequest(BaseModel):
+    voice: Literal[
+        "alloy",
+        "ash",
+        "ballad",
+        "coral",
+        "echo",
+        "fable",
+        "marin",
+        "nova",
+        "onyx",
+        "sage",
+        "shimmer",
+        "verse",
+        "cedar",
+    ]
+    user_id: str
+    text: str = "Hello! This is a sample of my voice. I'm here to assist you with your conversations."
+
+    @validator("voice", pre=True)
+    def normalize_voice(cls, value: str) -> str:
+        if not isinstance(value, str):
+            raise ValueError("Voice must be a string identifier.")
+
+        lower_value = value.lower()
+        if lower_value in SUPPORTED_TTS_VOICES or lower_value in LEGACY_TTS_VOICES:
+            return lower_value
+
+        raise ValueError(
+            f"Unsupported voice '{value}'. Supported voices are: "
+            f"{', '.join(sorted(SUPPORTED_TTS_VOICES | LEGACY_TTS_VOICES))}"
+        )
 
 def resolve_api_key_metadata(api_keys_collection, key_identifier) -> Optional[Dict[str, Any]]:
     """
@@ -547,4 +606,115 @@ async def delete_assistant(assistant_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to delete AI assistant: {str(error)}"
+        )
+
+@router.post("/voice-demo", status_code=status.HTTP_200_OK)
+async def generate_voice_demo(request: VoiceDemoRequest):
+    """
+    Generate a voice demo using OpenAI's TTS API with user's saved API key
+
+    Args:
+        request: Voice demo request with voice ID, user ID, and text
+
+    Returns:
+        Audio file (mp3) as streaming response
+
+    Raises:
+        HTTPException: If API key not found or error occurs
+    """
+    try:
+        logger.info(f"Generating voice demo for voice: {request.voice}, user: {request.user_id}")
+
+        db = Database.get_db()
+        api_keys_collection = db['api_keys']
+
+        # Validate user_id
+        try:
+            user_obj_id = ObjectId(request.user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        # Find user's OpenAI API key
+        api_key_doc = api_keys_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "openai"
+        })
+
+        if not api_key_doc:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No OpenAI API key found. Please add an OpenAI API key in Settings."
+            )
+
+        # Decrypt the API key
+        try:
+            openai_api_key = encryption_service.decrypt(api_key_doc['key'])
+        except Exception as e:
+            logger.error(f"Failed to decrypt API key: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to decrypt API key"
+            )
+
+        voice_to_use = request.voice
+        if voice_to_use in LEGACY_TTS_VOICES:
+            logger.warning(
+                "Voice '%s' is retained for backwards compatibility but is not currently supported by OpenAI. "
+                "Falling back to 'alloy'.",
+                voice_to_use,
+            )
+            voice_to_use = "alloy"
+
+        # Call OpenAI TTS API
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                "https://api.openai.com/v1/audio/speech",
+                headers={
+                    "Authorization": f"Bearer {openai_api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "tts-1",
+                    "input": request.text,
+                    "voice": voice_to_use,
+                    "response_format": "mp3"
+                },
+                timeout=30.0
+            )
+
+            if response.status_code != 200:
+                logger.error(f"OpenAI API error: {response.text}")
+                error_detail = "Failed to generate voice sample"
+                try:
+                    error_json = response.json()
+                    if 'error' in error_json:
+                        error_detail = error_json['error'].get('message', error_detail)
+                except:
+                    pass
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=error_detail
+                )
+
+            # Return audio as response
+            return Response(
+                content=response.content,
+                media_type="audio/mpeg",
+                headers={
+                    "Content-Disposition": f"inline; filename=voice-demo-{request.voice}.mp3"
+                }
+            )
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        import traceback
+        logger.error(f"Error generating voice demo: {str(error)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to generate voice demo: {str(error)}"
         )

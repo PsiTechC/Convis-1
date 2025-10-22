@@ -26,6 +26,17 @@ class KnowledgeBaseFile(BaseModel):
     uploaded_at: str
     file_path: str
 
+class DatabaseConfig(BaseModel):
+    enabled: bool = False
+    type: str = "postgresql"  # postgresql, mysql, mongodb
+    host: str = ""
+    port: str = "5432"
+    database: str = ""
+    username: str = ""
+    password: str = ""
+    table_name: str = ""
+    search_columns: List[str] = []
+
 class AIAssistantResponse(BaseModel):
     id: str
     user_id: str
@@ -39,6 +50,7 @@ class AIAssistantResponse(BaseModel):
     api_key_provider: Optional[str] = None
     knowledge_base_files: List[KnowledgeBaseFile] = []
     has_knowledge_base: bool = False
+    database_config: Optional[DatabaseConfig] = None
     created_at: str
     updated_at: str
 
@@ -53,3 +65,19 @@ class FileUploadResponse(BaseModel):
     message: str
     file: KnowledgeBaseFile
     total_files: int
+
+class DatabaseConnectionTestRequest(BaseModel):
+    enabled: bool
+    type: str
+    host: str
+    port: str
+    database: str
+    username: str
+    password: str
+    table_name: str
+    search_columns: List[str]
+
+class DatabaseConnectionTestResponse(BaseModel):
+    success: bool
+    message: str
+    record_count: Optional[int] = None

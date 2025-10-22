@@ -7,6 +7,7 @@ from app.routes.user import update_profile_router
 from app.routes.api_keys import router as api_keys_router
 from app.routes.ai_assistant import assistants_router
 from app.routes.ai_assistant import knowledge_base as knowledge_base_router
+from app.routes.ai_assistant import database as database_router
 from app.routes.inbound_calls import inbound_calls_router
 from app.routes.outbound_calls import outbound_calls_router
 from app.routes.phone_numbers import phone_numbers_router, twilio_management_router, subaccounts_router, messaging_services_router
@@ -61,6 +62,7 @@ app.include_router(dashboard_router, prefix="/api/dashboard", tags=["Dashboard"]
 # AI Assistant routers
 app.include_router(assistants_router, prefix="/api/ai-assistants", tags=["AI Assistants"])
 app.include_router(knowledge_base_router.router, prefix="/api/ai-assistants/knowledge-base", tags=["Knowledge Base"])
+app.include_router(database_router.router, prefix="/api/ai-assistants/database", tags=["Database Integration"])
 
 # Inbound Calls routers
 app.include_router(inbound_calls_router, prefix="/api/inbound-calls", tags=["Inbound Calls"])
