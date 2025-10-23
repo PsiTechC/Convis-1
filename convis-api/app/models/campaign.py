@@ -42,6 +42,18 @@ class Pacing(BaseModel):
     max_concurrent: int = Field(1, ge=1, le=10)
 
 
+class CampaignDatabaseConfig(BaseModel):
+    enabled: bool = False
+    type: str = "postgresql"
+    host: str = ""
+    port: str = "5432"
+    database: str = ""
+    username: str = ""
+    password: str = ""
+    table_name: str = ""
+    search_columns: List[str] = Field(default_factory=list)
+
+
 class CampaignBase(BaseModel):
     name: str
     country: str = Field(..., description="ISO country code, e.g. US")
@@ -52,10 +64,28 @@ class CampaignBase(BaseModel):
     pacing: Pacing = Field(default_factory=Pacing)
     start_at: Optional[datetime] = None
     stop_at: Optional[datetime] = None
+    calendar_enabled: bool = False
+    system_prompt_override: Optional[str] = None
+    database_config: Optional[CampaignDatabaseConfig] = None
 
 
 class CampaignCreate(CampaignBase):
     user_id: str = Field(..., description="User ID / tenant ID")
+
+
+class CampaignUpdate(BaseModel):
+    name: Optional[str] = None
+    country: Optional[str] = None
+    caller_id: Optional[str] = None
+    assistant_id: Optional[str] = None
+    working_window: Optional[WorkingWindow] = None
+    retry_policy: Optional[RetryPolicy] = None
+    pacing: Optional[Pacing] = None
+    start_at: Optional[datetime] = None
+    stop_at: Optional[datetime] = None
+    calendar_enabled: Optional[bool] = None
+    system_prompt_override: Optional[str] = None
+    database_config: Optional[CampaignDatabaseConfig] = None
 
 
 class CampaignResponse(CampaignBase):
@@ -66,6 +96,9 @@ class CampaignResponse(CampaignBase):
     updated_at: datetime
     next_index: int = 0
     stats: Optional[Dict[str, Any]] = None
+    calendar_enabled: bool = False
+    system_prompt_override: Optional[str] = None
+    database_config: Optional[CampaignDatabaseConfig] = None
 
     class Config:
         populate_by_name = True
@@ -93,6 +126,9 @@ class CampaignResponse(CampaignBase):
                 },
                 "start_at": None,
                 "stop_at": None,
+                "calendar_enabled": False,
+                "system_prompt_override": None,
+                "database_config": None,
                 "status": "draft",
                 "created_at": "2025-01-01T13:00:00Z",
                 "updated_at": "2025-01-01T13:00:00Z",
@@ -109,8 +145,11 @@ class CampaignListResponse(BaseModel):
 # ===== LEAD MODELS =====
 class LeadBase(BaseModel):
     raw_number: str = Field(..., description="Original phone number from CSV")
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     name: Optional[str] = None
     email: Optional[str] = None
+    batch_name: Optional[str] = Field(default=None, description="Optional batch label supplied during CSV upload")
     custom_fields: Optional[Dict[str, Any]] = Field(default_factory=dict)
 
 

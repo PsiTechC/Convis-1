@@ -9,6 +9,7 @@ from app.models.ai_assistant import (
     KnowledgeBaseFile
 )
 from app.config.database import Database
+from app.constants import DEFAULT_CALL_GREETING
 from app.utils.encryption import encryption_service
 from bson import ObjectId
 from datetime import datetime
@@ -174,6 +175,11 @@ async def create_assistant(assistant_data: AIAssistantCreate):
                 detail="An API key selection is required"
             )
 
+        # Resolve greeting text (default if empty)
+        call_greeting = (assistant_data.call_greeting or DEFAULT_CALL_GREETING).strip()
+        if not call_greeting:
+            call_greeting = DEFAULT_CALL_GREETING
+
         # Create assistant document
         now = datetime.utcnow()
         assistant_doc = {
@@ -182,6 +188,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             "system_message": assistant_data.system_message,
             "voice": assistant_data.voice,
             "temperature": assistant_data.temperature,
+            "call_greeting": call_greeting,
             "created_at": now,
             "updated_at": now
         }
@@ -210,6 +217,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             system_message=assistant_data.system_message,
             voice=assistant_data.voice,
             temperature=assistant_data.temperature,
+            call_greeting=call_greeting,
             has_api_key=True,  # Just created with API key
             api_key_id=api_key_metadata["id"] if api_key_metadata else None,
             api_key_label=api_key_metadata["label"] if api_key_metadata else None,
@@ -295,6 +303,12 @@ async def get_user_assistants(user_id: str):
                     "provider": "openai"
                 }
 
+            call_greeting = assistant.get('call_greeting') or DEFAULT_CALL_GREETING
+            if isinstance(call_greeting, str):
+                call_greeting = call_greeting.strip()
+            if not call_greeting:
+                call_greeting = DEFAULT_CALL_GREETING
+
             assistants.append(AIAssistantResponse(
                 id=str(assistant['_id']),
                 user_id=str(assistant['user_id']),
@@ -302,6 +316,7 @@ async def get_user_assistants(user_id: str):
                 system_message=assistant['system_message'],
                 voice=assistant['voice'],
                 temperature=assistant['temperature'],
+                call_greeting=call_greeting,
                 has_api_key=assistant_has_api_key(assistant),
                 api_key_id=api_key_metadata.get("id") if api_key_metadata else None,
                 api_key_label=api_key_metadata.get("label") if api_key_metadata else None,
@@ -388,6 +403,12 @@ async def get_assistant(assistant_id: str):
                 "provider": "openai"
             }
 
+        call_greeting = assistant.get('call_greeting') or DEFAULT_CALL_GREETING
+        if isinstance(call_greeting, str):
+            call_greeting = call_greeting.strip()
+        if not call_greeting:
+            call_greeting = DEFAULT_CALL_GREETING
+
         return AIAssistantResponse(
             id=str(assistant['_id']),
             user_id=str(assistant['user_id']),
@@ -395,6 +416,7 @@ async def get_assistant(assistant_id: str):
             system_message=assistant['system_message'],
             voice=assistant['voice'],
             temperature=assistant['temperature'],
+            call_greeting=call_greeting,
             has_api_key=assistant_has_api_key(assistant),
             api_key_id=api_key_metadata.get("id") if api_key_metadata else None,
             api_key_label=api_key_metadata.get("label") if api_key_metadata else None,
@@ -466,6 +488,9 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             update_doc["voice"] = update_data.voice
         if update_data.temperature is not None:
             update_doc["temperature"] = update_data.temperature
+        if update_data.call_greeting is not None:
+            greeting_value = update_data.call_greeting.strip() if isinstance(update_data.call_greeting, str) else ""
+            update_doc["call_greeting"] = greeting_value or DEFAULT_CALL_GREETING
         if update_data.api_key_id is not None:
             if update_data.api_key_id == "":
                 update_doc["api_key_id"] = None
@@ -527,6 +552,12 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
                 "provider": "openai"
             }
 
+        call_greeting = updated_assistant.get('call_greeting') or DEFAULT_CALL_GREETING
+        if isinstance(call_greeting, str):
+            call_greeting = call_greeting.strip()
+        if not call_greeting:
+            call_greeting = DEFAULT_CALL_GREETING
+
         return AIAssistantResponse(
             id=str(updated_assistant['_id']),
             user_id=str(updated_assistant['user_id']),
@@ -534,6 +565,7 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             system_message=updated_assistant['system_message'],
             voice=updated_assistant['voice'],
             temperature=updated_assistant['temperature'],
+            call_greeting=call_greeting,
             has_api_key=assistant_has_api_key(updated_assistant),
             api_key_id=api_key_metadata.get("id") if api_key_metadata else None,
             api_key_label=api_key_metadata.get("label") if api_key_metadata else None,

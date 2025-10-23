@@ -401,7 +401,15 @@ async def outbound_call_webhook(
         logger.info(f"Connecting campaign call to assistant {assistantId}")
 
         connect = Connect()
-        connect.stream(url=f'wss://{host}/api/inbound-calls/media-stream/{assistantId}')
+        stream_url = f'wss://{host}/api/outbound-calls/media-stream/{assistantId}'
+        query_params = []
+        if campaignId:
+            query_params.append(f"campaignId={campaignId}")
+        if leadId:
+            query_params.append(f"leadId={leadId}")
+        if query_params:
+            stream_url = f"{stream_url}?{'&'.join(query_params)}"
+        connect.stream(url=stream_url)
         response.append(connect)
 
         return HTMLResponse(content=str(response), media_type="application/xml")
