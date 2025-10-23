@@ -4,7 +4,10 @@ Used by both inbound and outbound call handlers.
 """
 import json
 import logging
+import re
 from typing import Optional
+
+from app.constants import DEFAULT_CALL_GREETING
 
 logger = logging.getLogger(__name__)
 
@@ -83,11 +86,10 @@ async def send_initial_conversation_item(openai_ws, greeting_text: Optional[str]
         openai_ws: OpenAI WebSocket connection
         greeting_text: Optional custom greeting text
     """
-    if greeting_text is None:
-        greeting_text = (
-            "Greet the user with 'Hello there! I am an AI voice assistant that will help you "
-            "with any questions you may have. Please ask me anything you want to know.'"
-        )
+    if greeting_text is None or not greeting_text.strip():
+        greeting_text = DEFAULT_CALL_GREETING
+    else:
+        greeting_text = greeting_text.strip()
 
     initial_conversation_item = {
         "type": "conversation.item.create",
@@ -182,7 +184,7 @@ async def handle_interruption(
         })
 
         mark_queue.clear()
-        logger.info("Cleared audio buffers and mark queue")
+    logger.info("Cleared audio buffers and mark queue")
 
     return None, None  # Reset last_assistant_item and response_start_timestamp
 
@@ -209,3 +211,134 @@ async def inject_knowledge_base_context(openai_ws, context: str):
     }
     await openai_ws.send(json.dumps(context_message))
     logger.info("Injected knowledge base context")
+
+
+HANGUP_INTENT_PATTERNS = [
+    r"\bbye\b",
+    r"\bgood\s*bye\b",
+    r"\bsee\s+(you|ya|ya\s+later|you\s+later)\b",
+    r"\bend\s+(the\s+)?call\b",
+    r"\bhang\s*(up)?\b",
+    r"\bthat'?s\s+all\b",
+    r"\bstop\s+(the\s+)?call\b",
+]
+
+HANGUP_CONFIRMATION_PATTERNS = [
+    r"\byes\b",
+    r"\byeah\b",
+    r"\byep\b",
+    r"\bsure\b",
+    r"\bplease\s+end\b",
+    r"\bgo\s+ahead\b",
+    r"\bconfirm\b",
+    r"\bend\s+(it|the\s+call)\b",
+    r"\bhang\s*(up)?\b",
+]
+
+HANGUP_DECLINE_PATTERNS = [
+    r"\bno\b",
+    r"\bnot\s+yet\b",
+    r"\bwait\b",
+    r"\bkeep\s+going\b",
+    r"\bcontinue\b",
+    r"\bdon't\s+hang\b",
+    r"\bdo\s+not\s+end\b",
+]
+
+
+def _matches_any_pattern(text: str, patterns: list[str]) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    return any(re.search(pattern, lowered) for pattern in patterns)
+
+
+def transcript_has_hangup_intent(transcript: str) -> bool:
+    """Return True if transcript suggests the caller wants to end the call."""
+    return _matches_any_pattern(transcript, HANGUP_INTENT_PATTERNS)
+
+
+def transcript_confirms_hangup(transcript: str) -> bool:
+    """Return True if transcript confirms ending the call."""
+    return _matches_any_pattern(transcript, HANGUP_CONFIRMATION_PATTERNS)
+
+
+def transcript_denies_hangup(transcript: str) -> bool:
+    """Return True if transcript declines ending the call."""
+    return _matches_any_pattern(transcript, HANGUP_DECLINE_PATTERNS)
+
+
+async def request_call_end_confirmation(openai_ws):
+    """
+    Instruct the assistant to confirm whether the caller truly wants to end the call.
+    """
+    confirmation_prompt = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "system",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "The caller just indicated they may want to end the call. "
+                        "Politely ask them to confirm whether they would like you to hang up now. "
+                        "Do not end the call until they explicitly confirm."
+                    )
+                }
+            ]
+        }
+    }
+    await openai_ws.send(json.dumps(confirmation_prompt))
+    await openai_ws.send(json.dumps({"type": "response.create"}))
+    logger.info("Requested hangup confirmation from assistant")
+
+
+async def send_call_end_acknowledgement(openai_ws):
+    """
+    Instruct the assistant to acknowledge the confirmation and say goodbye.
+    """
+    acknowledgement_prompt = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "system",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "The caller confirmed they want to end the call. "
+                        "Please provide a brief, polite goodbye and let them know the call is ending now."
+                    )
+                }
+            ]
+        }
+    }
+    await openai_ws.send(json.dumps(acknowledgement_prompt))
+    await openai_ws.send(json.dumps({"type": "response.create"}))
+    logger.info("Sent acknowledgement prompt for confirmed hangup")
+
+
+async def send_call_continue_acknowledgement(openai_ws):
+    """
+    Instruct the assistant to acknowledge that the caller wants to keep talking.
+    """
+    continue_prompt = {
+        "type": "conversation.item.create",
+        "item": {
+            "type": "message",
+            "role": "system",
+            "content": [
+                {
+                    "type": "input_text",
+                    "text": (
+                        "The caller does not want to end the call anymore. "
+                        "Reassure them that the conversation will continue and ask how you can assist further."
+                    )
+                }
+            ]
+        }
+    }
+    await openai_ws.send(json.dumps(continue_prompt))
+    await openai_ws.send(json.dumps({"type": "response.create"}))
+    logger.info("Sent acknowledgement prompt to continue the call")

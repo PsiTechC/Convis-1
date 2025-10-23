@@ -1,9 +1,11 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Image from 'next/image';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
+import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
+import { TopBar } from '../components/TopBar';
 
 interface User {
   id?: string;
@@ -345,70 +347,30 @@ export default function SettingsPage() {
     localStorage.setItem('theme', newTheme ? 'dark' : 'light');
   };
 
-  const handleNavigation = (navItem: string) => {
-    if (navItem === 'Dashboard') {
-      router.push('/dashboard');
-    } else if (navItem === 'AI Agent') {
-      router.push('/ai-agent');
-    } else if (navItem === 'Phone Numbers') {
-      router.push('/phone-numbers');
-    } else if (navItem === 'Call logs') {
-      router.push('/phone-numbers?tab=calls');
-    } else if (navItem === 'Settings') {
-      router.push('/settings');
-    }
+  const handleNavigation = (navItem: NavigationItem) => {
+    router.push(navItem.href);
   };
 
-  const navigationItems = [
-    {
-      name: 'Dashboard',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-      )
-    },
-    {
-      name: 'AI Agent',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-      )
-    },
-    {
-      name: 'Phone Numbers',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z" />
-      )
-    },
-    {
-      name: 'Call logs',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-      )
-    },
-    {
-      name: 'Campaigns',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-      )
-    },
-    {
-      name: 'Whatsapp',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      )
-    },
-    {
-      name: 'Connect calendar',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-      )
-    },
-    {
-      name: 'Settings',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-      )
-    },
-  ];
+  const navigationItems = useMemo(() => NAV_ITEMS, []);
+  const userInitial = useMemo(() => getUserInitials(user?.companyName || user?.fullName || user?.name, user?.email), [user]);
+  const userGreeting = useMemo(() => {
+    const candidates = [
+      user?.firstName,
+      user?.fullName,
+      user?.name,
+      user?.username,
+      user?.email,
+      user?.companyName,
+    ].filter((value) => typeof value === 'string' && value.trim().length > 0) as string[];
+
+    if (candidates.length === 0) return undefined;
+    const preferred = candidates[0];
+    if (preferred.includes('@')) {
+      return preferred.split('@')[0];
+    }
+    return preferred.split(' ')[0];
+  }, [user]);
+
 
   const getUserInitials = (name?: string, email?: string) => {
     if (name?.trim()) {
@@ -625,7 +587,7 @@ export default function SettingsPage() {
             {navigationItems.map((item) => (
               <button
                 key={item.name}
-                onClick={() => handleNavigation(item.name)}
+                onClick={() => handleNavigation(item)}
                 className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} ${isSidebarCollapsed ? 'px-3' : 'px-4'} py-3 rounded-xl transition-all duration-200 group ${
                   item.name === 'Settings'
                     ? `${isDarkMode ? 'bg-gray-700 text-white' : 'bg-primary/10 text-primary'} font-medium`
@@ -659,63 +621,23 @@ export default function SettingsPage() {
 
       {/* Main Content */}
       <div className={`${isSidebarCollapsed ? 'lg:ml-20' : 'lg:ml-20'} transition-all duration-300`}>
-        {/* Header */}
-        <header className={`sticky top-0 z-30 ${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-neutral-mid/10'} border-b`}>
-          <div className="flex items-center justify-between px-6 py-4">
-            <div className="flex items-center gap-4">
-              {/* Mobile Menu Button */}
-              <button
-                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                className="lg:hidden p-2 rounded-xl hover:bg-neutral-light transition-colors"
-              >
-                <svg className="w-6 h-6 text-neutral-mid" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
-
-              <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>Settings</h1>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {/* Theme Toggle */}
-              <button
-                onClick={toggleTheme}
-                className={`p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors`}
-              >
-                {isDarkMode ? (
-                  <svg className="w-5 h-5 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M10 2a1 1 0 011 1v1a1 1 0 11-2 0V3a1 1 0 011-1zm4 8a4 4 0 11-8 0 4 4 0 018 0zm-.464 4.95l.707.707a1 1 0 001.414-1.414l-.707-.707a1 1 0 00-1.414 1.414zm2.12-10.607a1 1 0 010 1.414l-.706.707a1 1 0 11-1.414-1.414l.707-.707a1 1 0 011.414 0zM17 11a1 1 0 100-2h-1a1 1 0 100 2h1zm-7 4a1 1 0 011 1v1a1 1 0 11-2 0v-1a1 1 0 011-1zM5.05 6.464A1 1 0 106.465 5.05l-.708-.707a1 1 0 00-1.414 1.414l.707.707zm1.414 8.486l-.707.707a1 1 0 01-1.414-1.414l.707-.707a1 1 0 011.414 1.414zM4 11a1 1 0 100-2H3a1 1 0 000 2h1z" clipRule="evenodd" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5 text-neutral-mid" fill="currentColor" viewBox="0 0 20 20">
-                    <path d="M17.293 13.293A8 8 0 016.707 2.707a8.001 8.001 0 1010.586 10.586z" />
-                  </svg>
-                )}
-              </button>
-
-              {/* Notifications */}
-              <button className={`p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors relative`}>
-                <svg className={`w-5 h-5 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-                </svg>
-                <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-              </button>
-
-              {/* User Avatar */}
-              <button onClick={handleLogout} className={`flex items-center gap-2 p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors`}>
-                <div className="w-8 h-8 bg-gradient-to-br from-primary to-primary/80 rounded-full flex items-center justify-center">
-                  <span className="text-xs font-bold text-white">
-                    {user.email?.[0]?.toUpperCase() || 'U'}
-                  </span>
-                </div>
-              </button>
-            </div>
-          </div>
-        </header>
+        <TopBar
+          isDarkMode={isDarkMode}
+          toggleTheme={toggleTheme}
+          onLogout={handleLogout}
+          userInitial={userInitial}
+          userLabel={userGreeting}
+          onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+        />
 
         {/* Page Content */}
         <main className="px-4 py-6 sm:px-6 lg:px-8">
           <div className="mx-auto w-full max-w-6xl space-y-6">
+            <header>
+              <h1 className={`text-3xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>Settings</h1>
+              <p className={`${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-1`}>Update your workspace preferences, billing details, and integrations.</p>
+            </header>
+
             <section className={`overflow-hidden rounded-3xl border shadow-xl ${isDarkMode ? 'bg-gradient-to-r from-gray-900 via-gray-800 to-gray-900 border-gray-700/70' : 'bg-gradient-to-r from-primary/10 via-white to-primary/5 border-primary/10'}`}>
               <div className="grid items-center gap-8 p-6 sm:p-8 lg:p-10 lg:grid-cols-[1.1fr_0.9fr]">
                 <div className="space-y-4">

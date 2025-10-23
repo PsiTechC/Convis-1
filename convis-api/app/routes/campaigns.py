@@ -4,8 +4,9 @@ import csv
 import io
 
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, HTTPException, status, UploadFile, File, Form
 from fastapi.responses import StreamingResponse
+from pymongo import ReturnDocument
 
 from app.config.database import Database
 from app.models.campaign import (
@@ -16,6 +17,7 @@ from app.models.campaign import (
     CampaignStatusUpdate,
     CampaignStats,
     LeadResponse,
+    CampaignUpdate,
 )
 from app.services.phone_service import PhoneService
 from app.services.campaign_dialer import CampaignDialer
@@ -39,6 +41,18 @@ def serialize_campaign(doc: dict) -> CampaignResponse:
         doc["assistant_id"] = str(doc["assistant_id"])
     doc["created_at"] = doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at")
     doc["updated_at"] = doc["updated_at"].isoformat() if isinstance(doc.get("updated_at"), datetime) else doc.get("updated_at")
+    doc["calendar_enabled"] = bool(doc.get("calendar_enabled", False))
+    system_prompt = doc.get("system_prompt_override")
+    if system_prompt:
+        doc["system_prompt_override"] = system_prompt.strip()
+        if not doc["system_prompt_override"]:
+            doc["system_prompt_override"] = None
+    else:
+        doc["system_prompt_override"] = None
+    if doc.get("database_config") and isinstance(doc["database_config"], dict):
+        doc["database_config"] = {**doc["database_config"]}
+    else:
+        doc["database_config"] = None
     return CampaignResponse(**doc)
 
 
@@ -80,6 +94,10 @@ async def create_campaign(payload: CampaignCreate):
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid assistant_id format: {str(e)}")
 
         now = datetime.utcnow()
+        calendar_enabled = payload.calendar_enabled
+        system_prompt_override = (payload.system_prompt_override or "").strip() or None
+        database_config = payload.database_config.model_dump() if payload.database_config else None
+
         doc = {
             "user_id": user_obj_id,
             "name": payload.name,
@@ -91,6 +109,9 @@ async def create_campaign(payload: CampaignCreate):
             "pacing": payload.pacing.model_dump(),
             "start_at": payload.start_at,
             "stop_at": payload.stop_at,
+            "calendar_enabled": calendar_enabled,
+            "system_prompt_override": system_prompt_override,
+            "database_config": database_config,
             "status": "draft",
             "created_at": now,
             "updated_at": now,
@@ -145,6 +166,79 @@ async def list_campaigns(user_id: str):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch campaigns")
 
 
+@router.put("/{campaign_id}", response_model=CampaignResponse, status_code=status.HTTP_200_OK)
+async def update_campaign(campaign_id: str, payload: CampaignUpdate):
+    """Update an existing campaign's configuration."""
+    try:
+        db = Database.get_db()
+        campaigns_collection = db["campaigns"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        update_doc = payload.model_dump(exclude_unset=True)
+
+        if "assistant_id" in update_doc:
+            assistant_value = update_doc.get("assistant_id")
+            if assistant_value:
+                try:
+                    update_doc["assistant_id"] = ObjectId(assistant_value)
+                except Exception as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid assistant_id format: {exc}")
+            else:
+                update_doc.pop("assistant_id", None)
+
+        if "system_prompt_override" in update_doc:
+            prompt_value = update_doc.get("system_prompt_override")
+            if prompt_value is not None:
+                trimmed_prompt = prompt_value.strip()
+                update_doc["system_prompt_override"] = trimmed_prompt or None
+
+        if "database_config" in update_doc:
+            db_config_value = update_doc.get("database_config")
+            if db_config_value is None:
+                update_doc["database_config"] = None
+            else:
+                update_doc["database_config"] = {**db_config_value}
+
+        if "working_window" in update_doc and update_doc["working_window"]:
+            window = update_doc["working_window"]
+            if "days" in window and window["days"]:
+                window["days"] = sorted(window["days"])
+            update_doc["working_window"] = window
+
+        if "retry_policy" in update_doc and update_doc["retry_policy"]:
+            policy = update_doc["retry_policy"]
+            if "retry_after_minutes" in policy and policy["retry_after_minutes"]:
+                policy["retry_after_minutes"] = [int(value) for value in policy["retry_after_minutes"] if value is not None]
+            update_doc["retry_policy"] = policy
+
+        if "pacing" in update_doc and update_doc["pacing"]:
+            pacing = update_doc["pacing"]
+            update_doc["pacing"] = pacing
+
+        update_doc["updated_at"] = datetime.utcnow()
+
+        updated_doc = campaigns_collection.find_one_and_update(
+            {"_id": campaign_obj_id},
+            {"$set": update_doc},
+            return_document=ReturnDocument.AFTER,
+        )
+
+        if not updated_doc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+        return serialize_campaign(updated_doc)
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error updating campaign {campaign_id}: {error}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update campaign")
+
+
 @router.get("/{campaign_id}", response_model=CampaignResponse, status_code=status.HTTP_200_OK)
 async def get_campaign(campaign_id: str):
     try:
@@ -169,8 +263,72 @@ async def get_campaign(campaign_id: str):
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to load campaign")
 
 
+@router.post("/{campaign_id}/test-call", status_code=status.HTTP_200_OK)
+async def trigger_test_call(campaign_id: str):
+    """
+    Trigger an immediate call attempt for the next available lead in the campaign.
+    Useful for on-demand testing from the dashboard.
+    """
+    try:
+        db = Database.get_db()
+        campaigns_collection = db["campaigns"]
+        leads_collection = db["leads"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
+        if not campaign:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+        active_call = leads_collection.find_one({
+            "campaign_id": campaign_obj_id,
+            "status": "calling"
+        })
+        if active_call:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="A call is already in progress for this campaign. Please wait for it to finish before testing."
+            )
+
+        next_lead = dialer_service.get_next_lead(campaign_id, ignore_window=True)
+        if not next_lead:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No leads are ready to be called right now. Check that leads are queued, within the working window, and below the retry limit."
+            )
+
+        call_sid = dialer_service.place_call(campaign_id, str(next_lead["_id"]))
+        if not call_sid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unable to place test call. Verify Twilio credentials, caller ID, and lead phone number."
+            )
+
+        return {
+            "message": "Test call initiated successfully",
+            "lead_id": str(next_lead["_id"]),
+            "call_sid": call_sid
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error triggering test call for campaign {campaign_id}: {error}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal error while attempting test call"
+        )
+
+
 @router.post("/{campaign_id}/leads/upload", response_model=LeadUploadResponse, status_code=status.HTTP_200_OK)
-async def upload_leads(campaign_id: str, file: UploadFile = File(...)):
+async def upload_leads(
+    campaign_id: str,
+    file: UploadFile = File(...),
+    batch_name: str | None = Form(default=None),
+):
     """
     Upload leads from CSV file.
     Expected columns: phone, name (optional), email (optional)
@@ -207,12 +365,40 @@ async def upload_leads(campaign_id: str, file: UploadFile = File(...)):
         now = datetime.utcnow()
 
         leads_to_insert = []
+        batch_name_clean = batch_name.strip() if batch_name else None
 
         for row in csv_reader:
             total += 1
-            raw_number = row.get("phone", "").strip()
-            name = row.get("name", "").strip() or None
-            email = row.get("email", "").strip() or None
+            normalized_keys = {(key or "").strip(): (row[key] or "").strip() for key in row.keys()}
+            lowercase_lookup = {key.lower(): value for key, value in normalized_keys.items() if key}
+
+            def pick_value(possible_keys):
+                for possible_key in possible_keys:
+                    value = lowercase_lookup.get(possible_key.lower(), "")
+                    if value:
+                        return value
+                return ""
+
+            phone_keys = {"phone", "phone_number", "number", "mobile", "mobile_number", "contact_number", "contact"}
+            name_keys = {"name", "full_name", "contact_name"}
+            email_keys = {"email", "email_address"}
+            first_name_keys = {"firstname", "first_name", "first"}
+            last_name_keys = {"lastname", "last_name", "surname", "family_name"}
+            timezone_keys = {"timezone", "tz"}
+
+            raw_number = pick_value(phone_keys)
+            first_name = pick_value(first_name_keys) or None
+            last_name = pick_value(last_name_keys) or None
+            name = pick_value(name_keys) or None
+            email = pick_value(email_keys) or None
+
+            if not raw_number:
+                invalid += 1
+                continue
+
+            if not first_name and not name:
+                invalid += 1
+                continue
 
             # Validate and normalize phone number
             is_valid, e164, region, timezones = phone_service.normalize_and_validate(raw_number, campaign_country)
@@ -227,7 +413,12 @@ async def upload_leads(campaign_id: str, file: UploadFile = File(...)):
                 mismatches += 1
 
             # Detect timezone
-            lead_tz = timezones[0] if timezones else campaign_tz
+            timezone_override = pick_value(timezone_keys)
+            lead_tz = timezone_override or (timezones[0] if timezones else campaign_tz)
+
+            if not name and (first_name or last_name):
+                name_parts = [part for part in [first_name, last_name] if part]
+                name = " ".join(name_parts) if name_parts else None
 
             # Create lead document
             lead_doc = {
@@ -235,6 +426,9 @@ async def upload_leads(campaign_id: str, file: UploadFile = File(...)):
                 "raw_number": raw_number,
                 "e164": e164,
                 "timezone": lead_tz,
+                "first_name": first_name,
+                "last_name": last_name,
+                "batch_name": batch_name_clean,
                 "name": name,
                 "email": email,
                 "status": "queued",
@@ -246,7 +440,12 @@ async def upload_leads(campaign_id: str, file: UploadFile = File(...)):
                 "calendar_booked": False,
                 "created_at": now,
                 "updated_at": now,
-                "custom_fields": {k: v for k, v in row.items() if k not in ["phone", "name", "email"]}
+                "custom_fields": {
+                    key: value
+                    for key, value in normalized_keys.items()
+                    if key.lower() not in phone_keys | name_keys | email_keys | first_name_keys | last_name_keys | timezone_keys
+                    and value
+                }
             }
 
             leads_to_insert.append(lead_doc)
@@ -307,6 +506,36 @@ async def get_campaign_leads(campaign_id: str, skip: int = 0, limit: int = 100):
     except Exception as error:
         logger.error(f"Error fetching leads: {error}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch leads")
+
+
+@router.get("/{campaign_id}/leads/retry", response_model=List[LeadResponse], status_code=status.HTTP_200_OK)
+async def get_retry_leads(campaign_id: str):
+    """
+    Return leads scheduled for retry (e.g., no-answer/busy) for the next dial window.
+    """
+    try:
+        db = Database.get_db()
+        leads_collection = db["leads"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        docs = list(
+            leads_collection.find({
+                "campaign_id": campaign_obj_id,
+                "retry_on": {"$ne": None}
+            }).sort("_id", 1)
+        )
+
+        return [serialize_lead(doc) for doc in docs]
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error fetching retry leads: {error}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch retry leads")
 
 
 @router.patch("/{campaign_id}/status", response_model=CampaignResponse, status_code=status.HTTP_200_OK)

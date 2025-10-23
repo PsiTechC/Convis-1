@@ -19,7 +19,13 @@ from app.utils.openai_session import (
     send_mark,
     handle_interruption,
     inject_knowledge_base_context,
-    LOG_EVENT_TYPES
+    LOG_EVENT_TYPES,
+    transcript_has_hangup_intent,
+    transcript_confirms_hangup,
+    transcript_denies_hangup,
+    request_call_end_confirmation,
+    send_call_end_acknowledgement,
+    send_call_continue_acknowledgement,
 )
 from app.models.outbound_calls import (
     OutboundCallRequest,
@@ -64,6 +70,7 @@ async def get_outbound_call_config(assistant_id: str):
     try:
         db = Database.get_db()
         assistants_collection = db['assistants']
+        campaigns_collection = db['campaigns']
 
         logger.info(f"Fetching configuration for assistant: {assistant_id}")
 
@@ -595,9 +602,57 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             await websocket.close(code=1008, reason="Assistant not found")
             return
 
+        provider_connections_collection = db['provider_connections']
+        twilio_client = None
+        assistant_user_id = assistant.get('user_id')
+        try:
+            twilio_connection = None
+            if assistant_user_id:
+                twilio_connection = provider_connections_collection.find_one({
+                    "user_id": assistant_user_id,
+                    "provider": "twilio"
+                })
+            account_sid = None
+            auth_token = None
+            if twilio_connection:
+                account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
+            if not account_sid:
+                account_sid = settings.twilio_account_sid
+            if not auth_token:
+                auth_token = settings.twilio_auth_token
+            if account_sid and auth_token:
+                twilio_client = Client(account_sid, auth_token)
+            else:
+                logger.warning(
+                    "Twilio credentials not available for assistant %s; hangup control will be limited",
+                    assistant_id
+                )
+        except Exception as cred_error:
+            logger.error(f"Failed to initialize Twilio client for assistant {assistant_id}: {cred_error}")
+            twilio_client = None
+
         system_message = assistant['system_message']
         voice = assistant['voice']
         temperature = assistant['temperature']
+        call_greeting = assistant.get('call_greeting')
+
+        campaign = None
+        campaign_id_param = websocket.query_params.get("campaignId")
+        lead_id_param = websocket.query_params.get("leadId")
+
+        if campaign_id_param:
+            try:
+                campaign_obj_id = ObjectId(campaign_id_param)
+                campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
+                if campaign:
+                    logger.info(f"Loaded campaign {campaign_id_param} for outbound media stream")
+            except Exception as e:
+                logger.error(f"Failed to load campaign {campaign_id_param}: {e}")
+
+        if campaign and campaign.get("system_prompt_override"):
+            override = campaign["system_prompt_override"]
+            if override:
+                system_message = f"{system_message}\n\n---\nCampaign Instructions:\n{override.strip()}"
 
         # OpenAI Realtime API requires temperature >= 0.6
         if temperature < 0.6:
@@ -629,7 +684,14 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             # Initialize session with interruption handling enabled
             # NOTE: send_session_update now calls send_initial_conversation_item internally
             # This matches the original pattern from CallTack_IN_out/outbound_call.py
-            await send_session_update(openai_ws, system_message, voice, temperature, enable_interruptions=True)
+            await send_session_update(
+                openai_ws,
+                system_message,
+                voice,
+                temperature,
+                enable_interruptions=True,
+                greeting_text=call_greeting,
+            )
 
             # Connection specific state
             stream_sid = None
@@ -637,12 +699,19 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             last_assistant_item = None
             mark_queue = []
             response_start_timestamp_twilio = None
+            call_sid = None
+            awaiting_hangup_confirmation = False
+            pending_hangup_goodbye = False
+            hangup_completed = False
 
             async def receive_from_twilio():
                 """Receive audio data from Twilio and send it to the OpenAI Realtime API."""
-                nonlocal stream_sid, latest_media_timestamp
+                nonlocal stream_sid, latest_media_timestamp, call_sid, hangup_completed
                 try:
                     async for message in websocket.iter_text():
+                        if hangup_completed:
+                            logger.info("Hangup already completed; stopping outbound receive loop")
+                            break
                         data = json.loads(message)
                         if data['event'] == 'media' and openai_ws.state.name == 'OPEN':
                             latest_media_timestamp = int(data['media']['timestamp'])
@@ -652,7 +721,9 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                             }
                             await openai_ws.send(json.dumps(audio_append))
                         elif data['event'] == 'start':
-                            stream_sid = data['start']['streamSid']
+                            start_info = data['start']
+                            stream_sid = start_info.get('streamSid')
+                            call_sid = start_info.get('callSid') or start_info.get('call_sid') or call_sid
                             logger.info(f"Outbound stream has started {stream_sid}")
                             response_start_timestamp_twilio = None
                             latest_media_timestamp = 0
@@ -668,6 +739,36 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             async def send_to_twilio():
                 """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
                 nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio
+                nonlocal awaiting_hangup_confirmation, pending_hangup_goodbye, hangup_completed
+
+                async def finalize_call():
+                    nonlocal hangup_completed, pending_hangup_goodbye
+                    if hangup_completed:
+                        return
+                    hangup_completed = True
+                    pending_hangup_goodbye = False
+                    if twilio_client and call_sid:
+                        try:
+                            twilio_client.calls(call_sid).update(status="completed")
+                            logger.info(f"Requested Twilio to end outbound call {call_sid}")
+                        except TwilioRestException as twilio_error:
+                            logger.error(f"Twilio error ending outbound call {call_sid}: {twilio_error}")
+                        except Exception as generic_error:
+                            logger.error(f"Unexpected error ending outbound call {call_sid}: {generic_error}")
+                    else:
+                        logger.warning("Cannot end outbound call automatically - missing Twilio client or call SID")
+
+                    try:
+                        if openai_ws.state.name == 'OPEN':
+                            await openai_ws.close()
+                    except Exception as close_err:
+                        logger.debug(f"Error closing OpenAI websocket: {close_err}")
+
+                    try:
+                        await websocket.close(code=1000, reason="Call ended by assistant confirmation")
+                    except Exception as ws_err:
+                        logger.debug(f"Error closing Twilio websocket: {ws_err}")
+
                 try:
                     async for openai_message in openai_ws:
                         response = json.loads(openai_message)
@@ -682,6 +783,11 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                                 resp_data = response.get('response', {})
                                 logger.info(f"Response done - Status: {resp_data.get('status')}, "
                                           f"Output items: {len(resp_data.get('output', []))}")
+
+                                if pending_hangup_goodbye and resp_data.get('status') == 'completed':
+                                    logger.info("Final goodbye response delivered on outbound call; ending now")
+                                    await finalize_call()
+                                    return
 
                         # Log ALL events for debugging audio issues
                         if response['type'] not in LOG_EVENT_TYPES:
@@ -748,6 +854,29 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                                         transcript = content.get('transcript', '')
                                         if transcript:
                                             logger.info(f"User said: {transcript}")
+                                            hangup_handled = False
+                                            if not hangup_completed:
+                                                if awaiting_hangup_confirmation:
+                                                    if transcript_confirms_hangup(transcript) or transcript_has_hangup_intent(transcript):
+                                                        logger.info("Caller confirmed hangup on outbound call.")
+                                                        awaiting_hangup_confirmation = False
+                                                        pending_hangup_goodbye = True
+                                                        await send_call_end_acknowledgement(openai_ws)
+                                                        hangup_handled = True
+                                                    elif transcript_denies_hangup(transcript):
+                                                        logger.info("Caller declined hangup on outbound call; continuing.")
+                                                        awaiting_hangup_confirmation = False
+                                                        await send_call_continue_acknowledgement(openai_ws)
+                                                        hangup_handled = True
+                                                elif transcript_has_hangup_intent(transcript):
+                                                    logger.info("Detected caller intent to end outbound call; requesting confirmation.")
+                                                    awaiting_hangup_confirmation = True
+                                                    await request_call_end_confirmation(openai_ws)
+                                                    hangup_handled = True
+
+                                            if hangup_handled or pending_hangup_goodbye:
+                                                continue
+
                                             # Search knowledge base
                                             try:
                                                 kb_context = conversational_rag.search_conversation_context(

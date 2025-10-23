@@ -2,6 +2,8 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import datetime
 
+from app.constants import DEFAULT_CALL_GREETING
+
 class AIAssistantCreate(BaseModel):
     user_id: str
     name: str
@@ -10,6 +12,7 @@ class AIAssistantCreate(BaseModel):
     temperature: float = Field(default=0.6, ge=0.0, le=2.0)
     api_key_id: Optional[str] = None  # Reference to stored API key
     openai_api_key: Optional[str] = None  # Legacy direct key support
+    call_greeting: Optional[str] = Field(default=None)
 
 class AIAssistantUpdate(BaseModel):
     name: Optional[str] = None
@@ -18,6 +21,7 @@ class AIAssistantUpdate(BaseModel):
     temperature: Optional[float] = Field(default=None, ge=0.0, le=2.0)
     api_key_id: Optional[str] = None  # Update to a stored API key
     openai_api_key: Optional[str] = None  # Legacy direct key update
+    call_greeting: Optional[str] = Field(default=None)
 
 class KnowledgeBaseFile(BaseModel):
     filename: str
@@ -44,6 +48,7 @@ class AIAssistantResponse(BaseModel):
     system_message: str
     voice: str
     temperature: float
+    call_greeting: str = Field(default=DEFAULT_CALL_GREETING)
     has_api_key: bool  # Indicates if OpenAI API key is configured
     api_key_id: Optional[str] = None
     api_key_label: Optional[str] = None

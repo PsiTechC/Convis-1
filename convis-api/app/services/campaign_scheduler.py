@@ -99,6 +99,22 @@ class CampaignScheduler:
             for campaign in campaigns:
                 campaign_id = str(campaign["_id"])
 
+                start_at = campaign.get("start_at")
+                stop_at = campaign.get("stop_at")
+                utc_now = datetime.utcnow()
+
+                if start_at and isinstance(start_at, datetime) and utc_now < start_at:
+                    logger.info(f"Campaign {campaign_id} scheduled to start at {start_at}, skipping until then")
+                    continue
+
+                if stop_at and isinstance(stop_at, datetime) and utc_now > stop_at:
+                    logger.info(f"Campaign {campaign_id} stop time reached; marking as completed")
+                    campaigns_collection.update_one(
+                        {"_id": campaign["_id"]},
+                        {"$set": {"status": "completed", "updated_at": datetime.utcnow()}}
+                    )
+                    continue
+
                 # Check if there's an active call for this campaign
                 active_call = leads_collection.find_one({
                     "campaign_id": campaign["_id"],

@@ -31,9 +31,15 @@ class CampaignDialer:
 
         # Base URL for TwiML
         self.base_url = os.getenv("BASE_URL", "https://your-domain.com")
-        self.twiml_url = os.getenv("OUTBOUND_TWIML_URL", f"{self.base_url}/api/twilio-webhooks/outbound-call")
-        self.status_callback = os.getenv("TW_STATUS_CALLBACK", f"{self.base_url}/api/twilio-webhooks/call-status")
-        self.recording_callback = os.getenv("TW_RECORDING_CALLBACK", f"{self.base_url}/api/twilio-webhooks/recording")
+        self.twiml_url = os.getenv("OUTBOUND_TWIML_URL")
+        if not self.twiml_url:
+            self.twiml_url = f"{self.base_url}/api/twilio-webhooks/outbound-call"
+        self.status_callback = os.getenv("TW_STATUS_CALLBACK")
+        if not self.status_callback:
+            self.status_callback = f"{self.base_url}/api/twilio-webhooks/call-status"
+        self.recording_callback = os.getenv("TW_RECORDING_CALLBACK")
+        if not self.recording_callback:
+            self.recording_callback = f"{self.base_url}/api/twilio-webhooks/recording"
 
     def acquire_lock(self, campaign_id: str, ttl: int = 180) -> bool:
         """
@@ -97,7 +103,7 @@ class CampaignDialer:
             logger.error(f"Error checking working window: {e}")
             return False
 
-    def get_next_lead(self, campaign_id: str) -> Optional[Dict[str, Any]]:
+    def get_next_lead(self, campaign_id: str, ignore_window: bool = False) -> Optional[Dict[str, Any]]:
         """
         Get the next lead to call for a campaign.
 
@@ -128,9 +134,12 @@ class CampaignDialer:
             }).sort("_id", 1).limit(10)  # Check next 10 leads
 
             for lead in leads:
-                # Check if within working window
-                if self.is_within_working_window(lead, working_window):
-                    # Check if max attempts not exceeded
+                within_window = self.is_within_working_window(lead, working_window)
+                if ignore_window and not within_window:
+                    logger.info(f"Lead {lead['_id']} outside working window but selected for test call override")
+                    within_window = True
+
+                if within_window:
                     max_attempts = campaign.get("retry_policy", {}).get("max_attempts", 3)
                     if lead.get("attempts", 0) < max_attempts:
                         return lead
@@ -194,16 +203,26 @@ class CampaignDialer:
             # Get assistant ID for TwiML
             assistant_id = campaign.get("assistant_id", "")
 
-            # Place the call
+            base_url = self.twiml_url
+            status_cb = self.status_callback
+            recording_cb = self.recording_callback
+
+            if not base_url:
+                base_url = f"https://your-domain.com/api/twilio-webhooks/outbound-call"
+                logger.warning("OUTBOUND_TWIML_URL not configured; falling back to default placeholder. Update BASE_URL/OUTBOUND_TWIML_URL for production.")
+
+            if "http" not in base_url:
+                base_url = f"https://{base_url.lstrip('/')}"
+
             call = self.twilio_client.calls.create(
                 to=to_number,
                 from_=caller_id,
-                url=f"{self.twiml_url}?leadId={lead_id}&campaignId={campaign_id}&assistantId={assistant_id}",
-                status_callback=f"{self.status_callback}?leadId={lead_id}&campaignId={campaign_id}",
+                url=f"{base_url}?leadId={lead_id}&campaignId={campaign_id}&assistantId={assistant_id}",
+                status_callback=f"{status_cb}?leadId={lead_id}&campaignId={campaign_id}" if status_cb else None,
                 status_callback_event=["initiated", "ringing", "answered", "completed"],
                 status_callback_method="POST",
                 record="record-from-answer",
-                recording_status_callback=f"{self.recording_callback}?leadId={lead_id}&campaignId={campaign_id}",
+                recording_status_callback=f"{recording_cb}?leadId={lead_id}&campaignId={campaign_id}" if recording_cb else None,
                 recording_status_callback_method="POST",
                 timeout=30
             )

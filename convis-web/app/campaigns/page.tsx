@@ -1,18 +1,28 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import CreateCampaignModal from './create-campaign-modal';
+import { DotLottieReact } from '@lottiefiles/dotlottie-react';
+import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
+import { TopBar } from '../components/TopBar';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
 interface Campaign {
   id: string;
+  _id?: string;
   name: string;
   country: string;
   status: string;
   caller_id: string;
   created_at: string;
+  calendar_enabled?: boolean;
+  system_prompt_override?: string | null;
+  database_config?: {
+    enabled: boolean;
+    type: string;
+  } | null;
   stats?: {
     total_leads: number;
     completed: number;
@@ -21,9 +31,16 @@ interface Campaign {
   };
 }
 
+type StoredUser = {
+  id?: string;
+  _id?: string;
+  clientId?: string;
+  [key: string]: unknown;
+};
+
 export default function CampaignsPage() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<StoredUser | null>(null);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -31,6 +48,32 @@ export default function CampaignsPage() {
   const [activeNav, setActiveNav] = useState('Campaigns');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
+
+  const displayName = useMemo(() => {
+    if (!user) return '';
+    const possible = [
+      user.name,
+      user.fullName,
+      user.firstName && user.lastName ? `${user.firstName} ${user.lastName}` : undefined,
+      user.firstName,
+      user.username,
+      user.email,
+    ].find((value) => typeof value === 'string' && value.trim().length > 0);
+    return possible ? String(possible).trim() : '';
+  }, [user]);
+
+  const userInitial = useMemo(() => {
+    if (!displayName) return 'U';
+    return displayName.charAt(0).toUpperCase();
+  }, [displayName]);
+
+  const userGreeting = useMemo(() => {
+    if (!displayName) return undefined;
+    if (displayName.includes('@')) {
+      return displayName.split('@')[0];
+    }
+    return displayName.split(' ')[0];
+  }, [displayName]);
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -70,19 +113,9 @@ export default function CampaignsPage() {
     }
   };
 
-  const handleNavigation = (navItem: string) => {
-    setActiveNav(navItem);
-    if (navItem === 'Dashboard') {
-      router.push('/dashboard');
-    } else if (navItem === 'AI Agent') {
-      router.push('/ai-agent');
-    } else if (navItem === 'Phone Numbers') {
-      router.push('/phone-numbers');
-    } else if (navItem === 'Call logs') {
-      router.push('/phone-numbers?tab=calls');
-    } else if (navItem === 'Settings') {
-      router.push('/settings');
-    }
+  const handleNavigation = (navItem: NavigationItem) => {
+    setActiveNav(navItem.name);
+    router.push(navItem.href);
   };
 
   const handleLogout = () => {
@@ -173,56 +206,8 @@ export default function CampaignsPage() {
     }
   };
 
-  const navigationItems = [
-    {
-      name: 'Dashboard',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-      )
-    },
-    {
-      name: 'AI Agent',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
-      )
-    },
-    {
-      name: 'Phone Numbers',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-      )
-    },
-    {
-      name: 'Call logs',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
-      )
-    },
-    {
-      name: 'Campaigns',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
-      )
-    },
-    {
-      name: 'Whatsapp',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-      )
-    },
-    {
-      name: 'Connect calendar',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
-      )
-    },
-    {
-      name: 'Settings',
-      icon: (
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-      )
-    },
-  ];
+  const navigationItems = useMemo(() => NAV_ITEMS, []);
+
 
   if (!user) {
     return (
@@ -240,91 +225,62 @@ export default function CampaignsPage() {
         onMouseLeave={() => setIsSidebarCollapsed(true)}
         className={`fixed left-0 top-0 h-full ${isDarkMode ? 'bg-gray-800' : 'bg-white'} border-r ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} transition-all duration-300 z-40 ${isSidebarCollapsed ? 'w-20' : 'w-64'} ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
       >
-        {/* Logo */}
-        <div className="h-16 flex items-center justify-center border-b border-neutral-mid/10">
-          <div className={`flex items-center gap-2 transition-all duration-300 ${isSidebarCollapsed ? 'scale-90' : 'scale-100'}`}>
-            <div className="w-8 h-8 bg-gradient-to-br from-primary to-primary/80 rounded-lg"></div>
+        <div className="flex flex-col h-full">
+          {/* Logo */}
+          <div className={`flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start gap-3'} ${isSidebarCollapsed ? 'px-4' : 'px-6'} py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'}`}>
+            <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center flex-shrink-0">
+              <DotLottieReact
+                src="/microphone-animation.lottie"
+                loop
+                autoplay
+                style={{ width: '24px', height: '24px' }}
+              />
+            </div>
             {!isSidebarCollapsed && (
-              <span className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-dark'}`}>Convis AI</span>
+              <span className={`font-bold text-lg ${isDarkMode ? 'text-white' : 'text-neutral-dark'} whitespace-nowrap`}>Convis AI</span>
             )}
           </div>
-        </div>
 
-        {/* Navigation */}
-        <nav className="p-4 space-y-2">
-          {navigationItems.map((item) => (
-            <button
-              key={item.name}
-              onClick={() => handleNavigation(item.name)}
-              className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
-                activeNav === item.name
-                  ? `${isDarkMode ? 'bg-gray-700 text-white' : 'bg-primary/10 text-primary'}`
-                  : `${isDarkMode ? 'text-gray-400 hover:bg-gray-700 hover:text-white' : 'text-dark/60 hover:bg-neutral-light hover:text-dark'}`
-              }`}
-            >
-              <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                {item.icon}
-              </svg>
-              {!isSidebarCollapsed && <span className="font-medium">{item.name}</span>}
-            </button>
-          ))}
-        </nav>
+          {/* Navigation */}
+          <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+            {navigationItems.map((item) => (
+              <button
+                key={item.name}
+                onClick={() => handleNavigation(item)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+                  activeNav === item.name
+                  ? `${isDarkMode ? 'bg-primary/20 text-primary' : 'bg-primary/10 text-primary'} font-semibold`
+                  : `${isDarkMode ? 'text-gray-400 hover:bg-gray-700 hover:text-white' : 'text-neutral-mid hover:bg-neutral-light hover:text-neutral-dark'}`
+              } ${isSidebarCollapsed ? 'justify-center' : ''}`}
+              >
+                <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  {item.icon}
+                </svg>
+              {!isSidebarCollapsed && <span className="text-sm">{item.name}</span>}
+              </button>
+            ))}
+          </nav>
+        </div>
       </aside>
 
       {/* Main Content */}
       <div className={`${isSidebarCollapsed ? 'lg:ml-20' : 'lg:ml-64'} transition-all duration-300`}>
-        {/* Header */}
-        <header className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-neutral-mid/10'} border-b sticky top-0 z-30`}>
-          <div className="px-6 py-4 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <button
-                onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
-                className="lg:hidden p-2 rounded-lg hover:bg-neutral-light"
-              >
-                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
-              </button>
-              <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-dark'}`}>Campaigns</h1>
-            </div>
+        <TopBar
+          isDarkMode={isDarkMode}
+          toggleTheme={toggleTheme}
+          onLogout={handleLogout}
+          userInitial={userInitial}
+          userLabel={userGreeting}
+          onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
+          collapseSearchOnMobile
+        />
 
-            <div className="flex items-center gap-4">
-              {/* Theme Toggle */}
-              <button
-                onClick={toggleTheme}
-                className={`p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors`}
-              >
-                <svg className={`w-5 h-5 ${isDarkMode ? 'text-gray-300' : 'text-dark/60'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  {isDarkMode ? (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z" />
-                  ) : (
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
-                  )}
-                </svg>
-              </button>
-
-              {/* User Menu */}
-              <button
-                onClick={handleLogout}
-                className={`flex items-center gap-2 p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors`}
-              >
-                <div className="w-8 h-8 bg-gradient-to-br from-primary to-primary/80 rounded-full flex items-center justify-center">
-                  <span className="text-xs font-bold text-white">
-                    {user?.name?.charAt(0).toUpperCase() || 'U'}
-                  </span>
-                </div>
-              </button>
-            </div>
+        <main className="p-6 space-y-6">
+          <div>
+            <h1 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-dark'}`}>Campaigns</h1>
+            <p className={`${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-1`}>Manage your outbound calling campaigns</p>
           </div>
-        </header>
-
-        {/* Page Content */}
-        <main className="p-6">
-          {/* Create Campaign Button */}
-          <div className="mb-6 flex justify-between items-center">
-            <p className={`${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>
-              Manage your outbound calling campaigns
-            </p>
+          <div className="mb-6 flex justify-end items-center">
             <button
               onClick={() => setShowCreateModal(true)}
               className="px-6 py-3 bg-primary text-white rounded-xl hover:bg-primary/90 transition-colors font-medium flex items-center gap-2"
@@ -359,9 +315,11 @@ export default function CampaignsPage() {
             </div>
           ) : (
             <div className="grid gap-6">
-              {campaigns.map((campaign) => (
+              {campaigns.map((campaign, idx) => {
+                const campaignId = campaign.id || campaign._id || `${campaign.caller_id}-${idx}`;
+                return (
                 <div
-                  key={campaign.id}
+                  key={campaignId}
                   className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl p-6 hover:shadow-lg transition-shadow`}
                 >
                   <div className="flex items-start justify-between mb-4">
@@ -380,25 +338,25 @@ export default function CampaignsPage() {
 
                   {campaign.stats && (
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                      <div key={`${campaign.id}-total`}>
+                      <div key={`${campaignId}-total`}>
                         <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Total Leads</p>
                         <p className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-dark'}`}>
                           {campaign.stats.total_leads}
                         </p>
                       </div>
-                      <div key={`${campaign.id}-completed`}>
+                      <div key={`${campaignId}-completed`}>
                         <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Completed</p>
                         <p className={`text-xl font-bold text-green-500`}>
                           {campaign.stats.completed}
                         </p>
                       </div>
-                      <div key={`${campaign.id}-queued`}>
+                      <div key={`${campaignId}-queued`}>
                         <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Queued</p>
                         <p className={`text-xl font-bold text-blue-500`}>
                           {campaign.stats.queued}
                         </p>
                       </div>
-                      <div key={`${campaign.id}-calling`}>
+                      <div key={`${campaignId}-calling`}>
                         <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Calling</p>
                         <p className={`text-xl font-bold text-yellow-500`}>
                           {campaign.stats.calling}
@@ -409,25 +367,25 @@ export default function CampaignsPage() {
 
                   <div className="flex flex-wrap gap-2">
                     <button
-                      onClick={() => handleViewDetails(campaign.id)}
+                      onClick={() => handleViewDetails(campaign.id || campaign._id || '')}
                       className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/20'} transition-colors text-sm font-medium`}
                     >
                       View Details
                     </button>
                     <button
-                      onClick={() => handleManageLeads(campaign.id)}
+                      onClick={() => handleManageLeads(campaign.id || campaign._id || '')}
                       className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/20'} transition-colors text-sm font-medium`}
                     >
                       Manage Leads
                     </button>
                     <button
-                      onClick={() => handleExport(campaign.id)}
+                      onClick={() => handleExport(campaign.id || campaign._id || '')}
                       className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/20'} transition-colors text-sm font-medium`}
                     >
                       Export
                     </button>
                     <button
-                      onClick={() => handleDeleteCampaign(campaign.id, campaign.name)}
+                      onClick={() => handleDeleteCampaign(campaign.id || campaign._id || '', campaign.name)}
                       className={`px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors text-sm font-medium flex items-center gap-2`}
                     >
                       <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -437,7 +395,8 @@ export default function CampaignsPage() {
                     </button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </main>
