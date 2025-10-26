@@ -13,8 +13,10 @@ from app.routes.outbound_calls import outbound_calls_router
 from app.routes.phone_numbers import phone_numbers_router, twilio_management_router, subaccounts_router, messaging_services_router
 from app.routes.campaigns import router as campaigns_router
 from app.routes.twilio_webhooks import router as twilio_webhooks_router
+from app.routes.campaign_twilio_callbacks import router as campaign_twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.config.database import Database
+from app.services.campaign_scheduler import campaign_scheduler
 import logging
 
 # Configure logging
@@ -78,16 +80,19 @@ app.include_router(messaging_services_router, prefix="/api/phone-numbers/messagi
 
 # Twilio Webhooks (dynamic routing)
 app.include_router(twilio_webhooks_router, prefix="/api/twilio-webhooks", tags=["Twilio Webhooks"])
+app.include_router(campaign_twilio_router, tags=["Campaign Webhooks"])
 
 @app.on_event("startup")
 async def startup_event():
     """Connect to database on startup"""    
     Database.connect()
     logging.info("Connected to MongoDB")
+    await campaign_scheduler.start()
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Close database connection on shutdown"""
+    await campaign_scheduler.shutdown()
     Database.close()
     logging.info("Closed MongoDB connection")
 
