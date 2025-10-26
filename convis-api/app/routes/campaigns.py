@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List
 import csv
 import io
@@ -18,6 +18,8 @@ from app.models.campaign import (
     CampaignStats,
     LeadResponse,
     CampaignUpdate,
+    AttemptBackoff,
+    ManualRetryRequest,
 )
 from app.services.phone_service import PhoneService
 from app.services.campaign_dialer import CampaignDialer
@@ -53,6 +55,13 @@ def serialize_campaign(doc: dict) -> CampaignResponse:
         doc["database_config"] = {**doc["database_config"]}
     else:
         doc["database_config"] = None
+    doc["lines"] = int(doc.get("lines") or doc.get("pacing", {}).get("max_concurrent", 1))
+    doc["attempts_per_number"] = int(doc.get("attempts_per_number") or doc.get("retry_policy", {}).get("max_attempts", 3))
+    doc["priority"] = doc.get("priority", "standard")
+    attempt_backoff = doc.get("attempt_backoff") or AttemptBackoff.default().model_dump()
+    if isinstance(attempt_backoff, AttemptBackoff):
+        attempt_backoff = attempt_backoff.model_dump()
+    doc["attempt_backoff"] = attempt_backoff
     return CampaignResponse(**doc)
 
 
@@ -64,6 +73,8 @@ def serialize_lead(doc: dict) -> LeadResponse:
         doc["created_at"] = doc["created_at"].isoformat()
     if isinstance(doc.get("updated_at"), datetime):
         doc["updated_at"] = doc["updated_at"].isoformat()
+    if "order_index" in doc and doc["order_index"] is not None:
+        doc["order_index"] = int(doc["order_index"])
     return LeadResponse(**doc)
 
 
@@ -116,6 +127,10 @@ async def create_campaign(payload: CampaignCreate):
             "created_at": now,
             "updated_at": now,
             "next_index": 0,
+            "lines": payload.lines,
+            "attempts_per_number": payload.attempts_per_number,
+            "attempt_backoff": payload.attempt_backoff.model_dump(),
+            "priority": payload.priority,
         }
 
         logger.info(f"Inserting campaign document: {doc}")
@@ -203,6 +218,13 @@ async def update_campaign(campaign_id: str, payload: CampaignUpdate):
             else:
                 update_doc["database_config"] = {**db_config_value}
 
+        if "attempt_backoff" in update_doc and update_doc["attempt_backoff"]:
+            attempt_value = update_doc["attempt_backoff"]
+            if isinstance(attempt_value, AttemptBackoff):
+                update_doc["attempt_backoff"] = attempt_value.model_dump()
+            else:
+                update_doc["attempt_backoff"] = AttemptBackoff(**attempt_value).model_dump()
+
         if "working_window" in update_doc and update_doc["working_window"]:
             window = update_doc["working_window"]
             if "days" in window and window["days"]:
@@ -273,6 +295,7 @@ async def trigger_test_call(campaign_id: str):
         db = Database.get_db()
         campaigns_collection = db["campaigns"]
         leads_collection = db["leads"]
+        call_attempts_collection = db["call_attempts"]
 
         try:
             campaign_obj_id = ObjectId(campaign_id)
@@ -283,15 +306,54 @@ async def trigger_test_call(campaign_id: str):
         if not campaign:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
 
+        stale_threshold = datetime.utcnow() - timedelta(minutes=5)
         active_call = leads_collection.find_one({
             "campaign_id": campaign_obj_id,
-            "status": "calling"
+            "status": "calling",
+            "updated_at": {"$gte": stale_threshold}
         })
+
+        if active_call:
+            latest_attempt = call_attempts_collection.find_one(
+                {"lead_id": active_call["_id"]},
+                sort=[("started_at", -1)]
+            )
+            terminal_statuses = {"completed", "busy", "no-answer", "failed", "canceled"}
+            if latest_attempt and latest_attempt.get("status") in terminal_statuses:
+                leads_collection.update_one(
+                    {"_id": active_call["_id"]},
+                    {
+                        "$set": {
+                            "status": "queued",
+                            "last_outcome": latest_attempt.get("status", "manual-reset"),
+                            "next_retry_at": None,
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+                active_call = None
+
         if active_call:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="A call is already in progress for this campaign. Please wait for it to finish before testing."
             )
+        # Requeue any stale calls that never completed
+        leads_collection.update_many(
+            {
+                "campaign_id": campaign_obj_id,
+                "status": "calling",
+                "updated_at": {"$lt": stale_threshold}
+            },
+            {
+                "$set": {
+                    "status": "queued",
+                    "last_outcome": "stale-call-reset",
+                    "next_retry_at": None,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
 
         next_lead = dialer_service.get_next_lead(campaign_id, ignore_window=True)
         if not next_lead:
@@ -302,9 +364,10 @@ async def trigger_test_call(campaign_id: str):
 
         call_sid = dialer_service.place_call(campaign_id, str(next_lead["_id"]))
         if not call_sid:
+            detail_message = dialer_service.last_error or "Unable to place test call. Verify Twilio credentials, caller ID, and lead phone number."
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Unable to place test call. Verify Twilio credentials, caller ID, and lead phone number."
+                detail=detail_message
             )
 
         return {
@@ -333,6 +396,7 @@ async def upload_leads(
     Upload leads from CSV file.
     Expected columns: phone, name (optional), email (optional)
     """
+    next_index_counter = 0
     try:
         db = Database.get_db()
         campaigns_collection = db["campaigns"]
@@ -347,6 +411,7 @@ async def upload_leads(
         campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
         if not campaign:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+        next_index_counter = int(campaign.get("next_index", 0) or 0)
 
         # Get campaign country and timezone
         campaign_country = campaign.get("country", "US")
@@ -433,6 +498,10 @@ async def upload_leads(
                 "email": email,
                 "status": "queued",
                 "attempts": 0,
+                "order_index": next_index_counter,
+                "next_retry_at": None,
+                "fallback_round": 0,
+                "last_outcome": None,
                 "last_call_sid": None,
                 "retry_on": None,
                 "sentiment": None,
@@ -449,6 +518,7 @@ async def upload_leads(
             }
 
             leads_to_insert.append(lead_doc)
+            next_index_counter += 1
             valid += 1
 
         # Bulk insert leads
@@ -457,6 +527,11 @@ async def upload_leads(
             # Create indexes
             leads_collection.create_index([("campaign_id", 1), ("status", 1), ("_id", 1)])
             leads_collection.create_index([("campaign_id", 1), ("retry_on", 1)])
+            leads_collection.create_index([("campaign_id", 1), ("order_index", 1)])
+            campaigns_collection.update_one(
+                {"_id": campaign_obj_id},
+                {"$set": {"next_index": next_index_counter}}
+            )
             logger.info(f"Inserted {len(leads_to_insert)} leads for campaign {campaign_id}")
 
         message = f"Uploaded {valid} valid leads"
@@ -494,7 +569,7 @@ async def get_campaign_leads(campaign_id: str, skip: int = 0, limit: int = 100):
 
         docs = list(
             leads_collection.find({"campaign_id": campaign_obj_id})
-            .sort("_id", 1)
+            .sort([("order_index", 1), ("_id", 1)])
             .skip(skip)
             .limit(limit)
         )
@@ -536,6 +611,95 @@ async def get_retry_leads(campaign_id: str):
     except Exception as error:
         logger.error(f"Error fetching retry leads: {error}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch retry leads")
+
+
+@router.get("/{campaign_id}/active-call", status_code=status.HTTP_200_OK)
+async def get_active_calls(campaign_id: str):
+    """Return the lead(s) currently in progress for this campaign."""
+    try:
+        db = Database.get_db()
+        leads_collection = db["leads"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        docs = list(
+            leads_collection.find({
+                "campaign_id": campaign_obj_id,
+                "status": "calling"
+            }).sort("updated_at", -1)
+        )
+
+        return {
+            "count": len(docs),
+            "active_calls": [serialize_lead(doc) for doc in docs]
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error fetching active calls for campaign {campaign_id}: {error}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch active calls")
+
+
+@router.post("/{campaign_id}/manual-retry", status_code=status.HTTP_200_OK)
+async def manual_retry_leads(campaign_id: str, payload: ManualRetryRequest):
+    """
+    Manually queue a list of leads for immediate retry (fallback list override).
+    """
+    try:
+        if not payload.lead_ids:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="lead_ids may not be empty")
+
+        db = Database.get_db()
+        campaigns_collection = db["campaigns"]
+        leads_collection = db["leads"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
+        if not campaign:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+        lead_object_ids = []
+        for lead_id in payload.lead_ids:
+            try:
+                lead_object_ids.append(ObjectId(lead_id))
+            except Exception:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid lead_id format: {lead_id}")
+
+        now = datetime.utcnow()
+        result = leads_collection.update_many(
+            {
+                "_id": {"$in": lead_object_ids},
+                "campaign_id": campaign_obj_id
+            },
+            {
+                "$set": {
+                    "status": "queued",
+                    "next_retry_at": now,
+                    "updated_at": now,
+                    "last_outcome": payload.reason or "manual-retry",
+                },
+                "$inc": {"fallback_round": 1}
+            }
+        )
+
+        return {
+            "message": f"Queued {result.modified_count} lead(s) for retry",
+            "modified": result.modified_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error performing manual retry for campaign {campaign_id}: {error}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to queue manual retry")
 
 
 @router.patch("/{campaign_id}/status", response_model=CampaignResponse, status_code=status.HTTP_200_OK)
@@ -664,6 +828,61 @@ async def get_campaign_stats(campaign_id: str):
     except Exception as error:
         logger.error(f"Error fetching campaign stats: {error}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch stats")
+
+
+@router.get("/{campaign_id}/status", status_code=status.HTTP_200_OK)
+async def get_campaign_status_overview(campaign_id: str):
+    """
+    Lightweight status summary used by dispatcher dashboards.
+    """
+    try:
+        db = Database.get_db()
+        campaigns_collection = db["campaigns"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
+        if not campaign:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+        leads_collection = db["leads"]
+        pipeline = [
+            {"$match": {"campaign_id": campaign_obj_id}},
+            {"$group": {"_id": "$status", "count": {"$sum": 1}}}
+        ]
+        summary = {doc["_id"]: doc["count"] for doc in leads_collection.aggregate(pipeline)}
+        now = datetime.utcnow()
+        next_retry = leads_collection.count_documents({
+            "campaign_id": campaign_obj_id,
+            "status": {"$in": ["queued", "pending"]},
+            "next_retry_at": {"$lte": now}
+        })
+        in_progress = summary.get("calling", 0)
+        max_lines = min(
+            campaign.get("pacing", {}).get("max_concurrent", 1),
+            campaign.get("lines", 1)
+        )
+
+        return {
+            "campaign_id": campaign_id,
+            "status": campaign.get("status"),
+            "counts": summary,
+            "next_retry_ready": next_retry,
+            "concurrency": {
+                "active": in_progress,
+                "max_lines": max_lines,
+                "available": max(0, max_lines - in_progress)
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error fetching campaign status overview: {error}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to fetch status")
 
 
 @router.get("/{campaign_id}/export", status_code=status.HTTP_200_OK)

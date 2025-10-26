@@ -44,6 +44,20 @@ const PROVIDER_OPTIONS: { value: SupportedProvider; label: string; helper: strin
   { value: 'custom', label: 'Custom Provider', helper: 'Any other compatible AI API' },
 ];
 
+function getUserInitials(name?: string, email?: string): string {
+  if (name?.trim()) {
+    const parts = name.trim().split(/\s+/).slice(0, 2);
+    const initials = parts.map((part) => part[0]?.toUpperCase()).join('');
+    if (initials) {
+      return initials;
+    }
+  }
+  if (email?.trim()) {
+    return email.trim()[0]?.toUpperCase() || 'U';
+  }
+  return 'U';
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -371,20 +385,6 @@ export default function SettingsPage() {
     return preferred.split(' ')[0];
   }, [user]);
 
-
-  const getUserInitials = (name?: string, email?: string) => {
-    if (name?.trim()) {
-      const parts = name.trim().split(/\s+/).slice(0, 2);
-      const initials = parts.map((part) => part[0]?.toUpperCase()).join('');
-      if (initials) {
-        return initials;
-      }
-    }
-    if (email?.trim()) {
-      return email.trim()[0]?.toUpperCase() || 'U';
-    }
-    return 'U';
-  };
 
   const userInitials = getUserInitials(profileData.companyName, profileData.email);
   const companyDisplayName = profileData.companyName?.trim() || 'Your company name';

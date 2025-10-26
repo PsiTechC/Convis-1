@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 
 from pydantic import BaseModel, Field, validator
 
@@ -37,6 +37,51 @@ class RetryPolicy(BaseModel):
     retry_after_minutes: List[int] = Field(default_factory=lambda: [15, 60, 1440])
 
 
+class AttemptBackoff(BaseModel):
+    """
+    Defines how retries should be scheduled.
+
+    Supported formats:
+        {"type": "fixed", "seconds": 60}
+        {"type": "exponential", "initial": 60, "base": 2}
+        {"type": "mixed", "schedule": ["immediate", "+300s", "next_day_start"]}
+    """
+
+    type: Literal["fixed", "exponential", "mixed", "daily"] = "mixed"
+    seconds: Optional[int] = Field(
+        default=60,
+        description="Used for fixed/daily policies; number of seconds before retry"
+    )
+    initial: Optional[int] = Field(
+        default=120,
+        description="Initial delay (seconds) for exponential policies"
+    )
+    base: Optional[int] = Field(
+        default=2,
+        description="Base multiplier for exponential policies"
+    )
+    schedule: List[str] = Field(
+        default_factory=lambda: ["immediate", "+300s", "next_day_start"],
+        description="Mixed schedule tokens"
+    )
+
+    @classmethod
+    def default(cls) -> "AttemptBackoff":
+        return cls()
+
+    @validator("schedule")
+    def validate_tokens(cls, tokens: List[str]) -> List[str]:
+        seen = []
+        for token in tokens:
+            if token not in {"immediate", "next_day_start"} and not token.startswith("+"):
+                raise ValueError(
+                    f"Invalid schedule token '{token}'. "
+                    "Use 'immediate', 'next_day_start', or expressions such as '+300s' / '+5m'."
+                )
+            seen.append(token)
+        return seen
+
+
 class Pacing(BaseModel):
     calls_per_minute: int = Field(1, ge=1, le=30)
     max_concurrent: int = Field(1, ge=1, le=10)
@@ -67,6 +112,10 @@ class CampaignBase(BaseModel):
     calendar_enabled: bool = False
     system_prompt_override: Optional[str] = None
     database_config: Optional[CampaignDatabaseConfig] = None
+    lines: int = Field(1, ge=1, le=20, description="Max simultaneous lines for the campaign")
+    attempts_per_number: int = Field(3, ge=1, le=10)
+    attempt_backoff: AttemptBackoff = Field(default_factory=AttemptBackoff.default)
+    priority: str = Field(default="standard", description="standard|fallback-first|new-first")
 
 
 class CampaignCreate(CampaignBase):
@@ -174,6 +223,7 @@ class LeadResponse(LeadBase):
     sentiment: Optional[SentimentAnalysis] = None
     summary: Optional[str] = None
     calendar_booked: bool = False
+    order_index: Optional[int] = Field(default=None, description="Zero-based ordering from original upload")
     created_at: datetime
     updated_at: datetime
 
@@ -187,6 +237,11 @@ class LeadUploadResponse(BaseModel):
     invalid: int
     mismatches: int
     message: str
+
+
+class ManualRetryRequest(BaseModel):
+    lead_ids: List[str]
+    reason: Optional[str] = Field(default=None, description="Optional reason for retrying")
 
 
 # ===== CALL ATTEMPT MODELS =====

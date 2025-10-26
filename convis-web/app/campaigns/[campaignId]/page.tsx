@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useParams } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../../components/Navigation';
@@ -31,6 +31,7 @@ interface Campaign {
     calls_per_minute: number;
     max_concurrent: number;
   };
+  assistant_id?: string | null;
   start_at?: string | null;
   stop_at?: string | null;
   calendar_enabled?: boolean;
@@ -78,6 +79,12 @@ interface Lead {
   custom_fields?: Record<string, unknown> | null;
   created_at: string;
   updated_at: string;
+  order_index?: number | null;
+}
+
+interface AssistantSummary {
+  id: string;
+  name: string;
 }
 
 type StoredUser = {
@@ -151,6 +158,29 @@ export default function CampaignDetailPage() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isLeadViewerOpen, setIsLeadViewerOpen] = useState(false);
+  const [assistantInfo, setAssistantInfo] = useState<AssistantSummary | null>(null);
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callToNumber, setCallToNumber] = useState('');
+  const [isInitiatingCall, setIsInitiatingCall] = useState(false);
+  const [verifiedCallerIds, setVerifiedCallerIds] = useState<any[]>([]);
+  const [isLoadingCallerIds, setIsLoadingCallerIds] = useState(false);
+  const [activeCallSid, setActiveCallSid] = useState<string | null>(null);
+  const [activeCallStatus, setActiveCallStatus] = useState('');
+  const [isCallActive, setIsCallActive] = useState(false);
+  const [activeCalls, setActiveCalls] = useState<Lead[]>([]);
+  const [isLoadingActiveCalls, setIsLoadingActiveCalls] = useState(false);
+  const callStatusIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nextQueuedLead = useMemo(() => {
+    const queued = leads.filter((lead) => lead.status === 'queued');
+    if (!queued.length) return null;
+    const sorted = [...queued].sort((a, b) => {
+      const orderA = a.order_index ?? Number.MAX_SAFE_INTEGER;
+      const orderB = b.order_index ?? Number.MAX_SAFE_INTEGER;
+      if (orderA !== orderB) return orderA - orderB;
+      return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
+    });
+    return sorted[0];
+  }, [leads]);
 
   const displayName = useMemo(() => {
     if (!user) return '';
@@ -251,14 +281,82 @@ export default function CampaignDetailPage() {
     } catch (err) {
       console.error('Error fetching leads', err);
     }
-  }, [resolvedCampaignId]);
+  }, [API_URL, resolvedCampaignId]);
+
+  const fetchActiveCalls = useCallback(async () => {
+    if (!resolvedCampaignId) return;
+    try {
+      setIsLoadingActiveCalls(true);
+      const response = await fetch(`${API_URL}/api/campaigns/${resolvedCampaignId}/active-call`);
+      if (response.ok) {
+        const data = await response.json();
+        const list = Array.isArray(data?.active_calls) ? data.active_calls : [];
+        setActiveCalls(list);
+      } else {
+        setActiveCalls([]);
+      }
+    } catch (err) {
+      console.error('Error fetching active call info', err);
+      setActiveCalls([]);
+    } finally {
+      setIsLoadingActiveCalls(false);
+    }
+  }, [API_URL, resolvedCampaignId]);
 
   useEffect(() => {
     if (!resolvedCampaignId) return;
     fetchCampaign();
     fetchStats();
     fetchLeads();
-  }, [resolvedCampaignId, fetchCampaign, fetchStats, fetchLeads]);
+    fetchActiveCalls();
+  }, [resolvedCampaignId, fetchCampaign, fetchStats, fetchLeads, fetchActiveCalls]);
+
+  useEffect(() => {
+    if (!resolvedCampaignId) return;
+    setIsLoadingActiveCalls(true);
+    fetchActiveCalls();
+    const interval = setInterval(fetchActiveCalls, 4000);
+    return () => clearInterval(interval);
+  }, [resolvedCampaignId, fetchActiveCalls]);
+
+  useEffect(() => {
+    const loadAssistantInfo = async () => {
+      if (!campaign?.assistant_id) {
+        setAssistantInfo(null);
+        return;
+      }
+      try {
+        const token = localStorage.getItem('token');
+        const response = await fetch(`${API_URL}/api/ai-assistants/${campaign.assistant_id}`, {
+          headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+        });
+        if (!response.ok) {
+          setAssistantInfo(null);
+          return;
+        }
+        const data = await response.json();
+        const assistantId = data.id || data._id || campaign.assistant_id;
+        setAssistantInfo({
+          id: assistantId,
+          name: data.name || 'Unnamed Assistant',
+        });
+      } catch (assistantError) {
+        console.error('Failed to load assistant info', assistantError);
+        setAssistantInfo(null);
+      }
+    };
+
+    loadAssistantInfo();
+  }, [campaign?.assistant_id]);
+
+  useEffect(() => {
+    return () => {
+      if (callStatusIntervalRef.current) {
+        clearInterval(callStatusIntervalRef.current);
+        callStatusIntervalRef.current = null;
+      }
+    };
+  }, []);
 
   const handleNavigation = (navItem: NavigationItem) => {
     setActiveNav(navItem.name);
@@ -298,6 +396,7 @@ export default function CampaignDetailPage() {
       await fetchCampaign();
       await fetchStats();
       await fetchLeads();
+      await fetchActiveCalls();
       alert(`Campaign ${status === 'running' ? 'started' : status === 'paused' ? 'paused' : 'stopped'} successfully.`);
     } catch (err) {
       console.error('Error updating campaign status', err);
@@ -325,12 +424,176 @@ export default function CampaignDetailPage() {
       const data = await response.json();
       await fetchStats();
       await fetchLeads();
+      await fetchActiveCalls();
       alert(data.message || 'Test call initiated successfully.');
     } catch (err) {
       console.error('Error triggering test call', err);
       alert(err instanceof Error ? err.message : 'Failed to trigger test call');
     } finally {
       setIsTestingCall(false);
+    }
+  };
+
+  const fetchVerifiedCallerIds = useCallback(async () => {
+    if (!userIdValue) {
+      setVerifiedCallerIds([]);
+      return;
+    }
+    try {
+      setIsLoadingCallerIds(true);
+      const token = localStorage.getItem('token');
+      if (!token) {
+        setVerifiedCallerIds([]);
+        return;
+      }
+      const response = await fetch(`${API_URL}/api/phone-numbers/twilio/verified-caller-ids/${userIdValue}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setVerifiedCallerIds(Array.isArray(data.verified_caller_ids) ? data.verified_caller_ids : []);
+      } else {
+        setVerifiedCallerIds([]);
+      }
+    } catch (callerIdError) {
+      console.error('Failed to load verified caller IDs', callerIdError);
+      setVerifiedCallerIds([]);
+    } finally {
+      setIsLoadingCallerIds(false);
+    }
+  }, [API_URL, userIdValue]);
+
+  const checkCallStatus = useCallback(async (callSid: string) => {
+    if (!userIdValue) return;
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const response = await fetch(`${API_URL}/api/outbound-calls/call-status/${callSid}/${userIdValue}`, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setActiveCallStatus(data.status || '');
+        if (['completed', 'failed', 'canceled'].includes(data.status)) {
+          setIsCallActive(false);
+          setActiveCallSid(null);
+          if (callStatusIntervalRef.current) {
+            clearInterval(callStatusIntervalRef.current);
+            callStatusIntervalRef.current = null;
+          }
+          fetchStats();
+          fetchLeads();
+          fetchActiveCalls();
+        }
+      }
+    } catch (statusError) {
+      console.error('Error checking call status', statusError);
+    }
+  }, [API_URL, fetchActiveCalls, fetchLeads, fetchStats, userIdValue]);
+
+  const hangupCall = useCallback(async () => {
+    if (!activeCallSid || !userIdValue) return;
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) return;
+      const response = await fetch(`${API_URL}/api/outbound-calls/hangup/${activeCallSid}/${userIdValue}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+        },
+      });
+      if (response.ok) {
+        setIsCallActive(false);
+        setActiveCallSid(null);
+        setActiveCallStatus('completed');
+        if (callStatusIntervalRef.current) {
+          clearInterval(callStatusIntervalRef.current);
+          callStatusIntervalRef.current = null;
+        }
+        fetchStats();
+        fetchLeads();
+        fetchActiveCalls();
+        alert('Call ended successfully');
+      } else {
+        alert('Failed to end call');
+      }
+    } catch (hangupError) {
+      console.error('Error ending call', hangupError);
+      alert('An error occurred while ending the call');
+    }
+  }, [API_URL, activeCallSid, fetchActiveCalls, fetchLeads, fetchStats, userIdValue]);
+
+  const handleMakeCall = async () => {
+    if (!assistantInfo?.id) {
+      alert('This campaign does not have an AI assistant assigned.');
+      return;
+    }
+    if (!campaign?.caller_id) {
+      alert('Campaign is missing a caller ID. Update the campaign configuration first.');
+      return;
+    }
+    if (!callToNumber.trim()) {
+      alert('Please enter a phone number to call');
+      return;
+    }
+
+    const sanitized = callToNumber.replace(/[\s-()]/g, '');
+    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(sanitized)) {
+      alert('Please enter a valid phone number (e.g., +1234567890)');
+      return;
+    }
+
+    try {
+      setIsInitiatingCall(true);
+      const token = localStorage.getItem('token');
+      if (!token) {
+        alert('You are not authenticated. Please log in again.');
+        return;
+      }
+      const response = await fetch(`${API_URL}/api/outbound-calls/make-call/${assistantInfo.id}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ phone_number: sanitized }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        const callSid = data.call_sid;
+        if (callSid) {
+          setActiveCallSid(callSid);
+          setActiveCallStatus('initiated');
+          setIsCallActive(true);
+          fetchStats();
+          fetchLeads();
+          fetchActiveCalls();
+          if (callStatusIntervalRef.current) {
+            clearInterval(callStatusIntervalRef.current);
+          }
+          callStatusIntervalRef.current = setInterval(() => {
+            checkCallStatus(callSid);
+          }, 2000);
+        }
+        setIsCallModalOpen(false);
+        setCallToNumber('');
+        alert('Outbound call initiated. Your assistant will handle the conversation.');
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        alert(errorData.detail || 'Failed to initiate call');
+      }
+    } catch (callError) {
+      console.error('Error initiating call', callError);
+      alert('An error occurred while initiating the call');
+    } finally {
+      setIsInitiatingCall(false);
     }
   };
 
@@ -347,6 +610,31 @@ export default function CampaignDetailPage() {
       default:
         return 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-200';
     }
+  };
+
+  const leadStatusBadgeClass = (status: string) => {
+    switch (status) {
+      case 'queued':
+        return 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200';
+      case 'completed':
+        return 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200';
+      case 'failed':
+        return 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200';
+      case 'busy':
+        return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-200';
+      case 'no-answer':
+        return 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-200';
+      default:
+        return 'bg-neutral-light text-neutral-dark dark:bg-gray-900 dark:text-gray-200';
+    }
+  };
+
+  const formatLeadStatus = (status: string) => {
+    if (!status) return 'Unknown';
+    return status
+      .split(/[-_]/)
+      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+      .join(' ');
   };
 
   if (!user) {
@@ -519,7 +807,51 @@ export default function CampaignDetailPage() {
                       </>
                     )}
                   </button>
+                  <button
+                    onClick={() => {
+                      setIsCallModalOpen(true);
+                      setCallToNumber('');
+                      fetchVerifiedCallerIds();
+                    }}
+                    disabled={!assistantInfo || isInitiatingCall}
+                    className={`px-4 py-2 rounded-lg ${!assistantInfo || isInitiatingCall ? 'bg-gray-400 cursor-not-allowed text-white' : 'bg-blue-500 text-white hover:bg-blue-600'} transition-colors text-sm font-semibold flex items-center gap-2`}
+                    title={!assistantInfo ? 'Assign an AI assistant to this campaign to enable outbound calls' : undefined}
+                  >
+                    {isInitiatingCall ? (
+                      <>
+                        <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                        Dialing...
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                        </svg>
+                        Manual Outbound Call
+                      </>
+                    )}
+                  </button>
                 </div>
+
+                {isCallActive && (
+                  <div className={`mt-4 p-4 rounded-xl ${isDarkMode ? 'bg-blue-900/30 border border-blue-800 text-blue-200' : 'bg-blue-50 border border-blue-200 text-blue-900'} flex flex-wrap items-center justify-between gap-3`}>
+                    <div>
+                      <p className="text-sm font-semibold">Active outbound call in progress</p>
+                      <p className="text-xs mt-1">
+                        Status: <span className="font-medium">{activeCallStatus || 'in-progress'}</span>
+                      </p>
+                    </div>
+                    <button
+                      onClick={hangupCall}
+                      className={`px-4 py-2 rounded-lg text-sm font-semibold ${isDarkMode ? 'bg-red-700 hover:bg-red-600 text-white' : 'bg-red-500 hover:bg-red-600 text-white'} transition-colors`}
+                    >
+                      Hang Up
+                    </button>
+                  </div>
+                )}
 
                 <div className="flex flex-wrap gap-3 mt-4">
                   <button
@@ -543,7 +875,7 @@ export default function CampaignDetailPage() {
                 </div>
               </section>
 
-              <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <section className="grid grid-cols-1 xl:grid-cols-3 gap-6">
                 <div className={`${isDarkMode ? 'bg-gray-800 text-gray-100' : 'bg-white text-dark'} rounded-2xl p-6 shadow-sm`}>
                   <h3 className="text-lg font-semibold mb-4">Performance</h3>
                   {stats ? (
@@ -613,6 +945,38 @@ export default function CampaignDetailPage() {
                     </div>
                   </div>
                 </div>
+
+                <div className={`${isDarkMode ? 'bg-gray-800 text-gray-100' : 'bg-white text-dark'} rounded-2xl p-6 shadow-sm`}>
+                  <h3 className="text-lg font-semibold mb-4">Live Call Monitor</h3>
+                  {isLoadingActiveCalls ? (
+                    <p className="text-sm text-gray-500">Checking active calls…</p>
+                  ) : activeCalls.length > 0 ? (
+                    <div className="space-y-4">
+                      {activeCalls.map((lead, idx) => {
+                        const uniqueKey = lead.id || (lead as { _id?: string })._id || `${lead.e164 || lead.raw_number}-${idx}`;
+                        return (
+                          <div key={uniqueKey} className={`p-3 rounded-xl ${isDarkMode ? 'bg-gray-700' : 'bg-neutral-light'}`}>
+                            <p className="text-xs uppercase tracking-wide text-primary font-semibold">Dialing Lead #{typeof lead.order_index === 'number' ? lead.order_index + 1 : '—'}</p>
+                            <p className="text-lg font-bold mt-1">{getLeadDisplayName(lead)}</p>
+                            <p className="font-mono text-sm">{lead.e164 || lead.raw_number || '—'}</p>
+                            <p className="text-xs mt-1">Attempt {lead.attempts} · {formatLeadStatus(lead.status)}</p>
+                            <p className="text-xs text-gray-500">Last updated {formatDateTime(lead.updated_at)}</p>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-gray-500">No calls are in progress at the moment.</p>
+                  )}
+
+                  {nextQueuedLead && (
+                    <div className={`mt-6 border-t pt-4 ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/20'}`}>
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Next in Queue</p>
+                      <p className="text-base font-semibold">#{typeof nextQueuedLead.order_index === 'number' ? nextQueuedLead.order_index + 1 : '—'} · {getLeadDisplayName(nextQueuedLead)}</p>
+                      <p className="font-mono text-sm">{nextQueuedLead.e164 || nextQueuedLead.raw_number || '—'}</p>
+                    </div>
+                  )}
+                </div>
               </section>
 
               <section className={`${isDarkMode ? 'bg-gray-800 text-gray-100' : 'bg-white text-dark'} rounded-2xl p-6 shadow-sm`}>
@@ -629,6 +993,7 @@ export default function CampaignDetailPage() {
                   <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700 text-sm">
                     <thead className={isDarkMode ? 'bg-gray-900 text-gray-300' : 'bg-neutral-light text-gray-600'}>
                       <tr>
+                        <th className="px-4 py-2 text-left font-semibold">#</th>
                         <th className="px-4 py-2 text-left font-semibold">Batch</th>
                         <th className="px-4 py-2 text-left font-semibold">Lead</th>
                         <th className="px-4 py-2 text-left font-semibold">Contact Number</th>
@@ -641,21 +1006,22 @@ export default function CampaignDetailPage() {
                     </thead>
                     <tbody className={isDarkMode ? 'divide-y divide-gray-700' : 'divide-y divide-gray-200'}>
                       {leads.length === 0 ? (
-                        <tr>
-                          <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
+                        <tr key="no-leads">
+                          <td colSpan={9} className="px-4 py-6 text-center text-gray-500">
                             No leads found for this campaign.
                           </td>
                         </tr>
                       ) : (
-                        leads.map((lead) => (
-                          <tr key={lead.id}>
+                        leads.map((lead, index) => (
+                          <tr key={lead.id || (lead as { [key: string]: unknown })._id || `lead-row-${index}`}>
+                            <td className="px-4 py-2 font-mono text-xs">{typeof lead.order_index === 'number' ? lead.order_index + 1 : index + 1}</td>
                             <td className="px-4 py-2">{lead.batch_name || '—'}</td>
                             <td className="px-4 py-2">{getLeadDisplayName(lead)}</td>
                             <td className="px-4 py-2 font-mono">{lead.e164 || lead.raw_number || '—'}</td>
                             <td className="px-4 py-2">{lead.email || '—'}</td>
                             <td className="px-4 py-2">
-                              <span className="inline-flex items-center px-2 py-1 rounded-full bg-neutral-light text-xs font-medium dark:bg-gray-900">
-                                {lead.status}
+                              <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${leadStatusBadgeClass(lead.status)}`}>
+                                {formatLeadStatus(lead.status)}
                               </span>
                             </td>
                             <td className="px-4 py-2">{lead.attempts}</td>
@@ -716,6 +1082,208 @@ export default function CampaignDetailPage() {
             campaignId={resolvedCampaignId}
             isDarkMode={isDarkMode}
           />
+          {isCallModalOpen && (
+            <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-fadeIn">
+              <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl max-w-md w-full shadow-2xl`}>
+                <div className={`px-6 py-5 border-b ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} flex items-center justify-between`}>
+                  <div>
+                    <h2 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Manual Outbound Call
+                    </h2>
+                    <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                      From: {campaign.caller_id || 'No caller ID configured'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={() => {
+                      setIsCallModalOpen(false);
+                      setCallToNumber('');
+                    }}
+                    className={`p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors`}
+                  >
+                    <svg className={`w-6 h-6 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+
+                <div className="p-6">
+                  <div className={`mb-6 p-4 rounded-xl ${isDarkMode ? 'bg-blue-900/20 border border-blue-800' : 'bg-blue-50 border border-blue-200'}`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-12 h-12 rounded-full flex items-center justify-center ${isDarkMode ? 'bg-blue-800' : 'bg-blue-100'}`}>
+                        <svg className="w-6 h-6 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                        </svg>
+                      </div>
+                      <div>
+                        <p className={`text-xs font-semibold uppercase tracking-wider ${isDarkMode ? 'text-blue-400' : 'text-blue-700'}`}>
+                          AI Assistant
+                        </p>
+                        <p className={`text-lg font-semibold ${isDarkMode ? 'text-blue-300' : 'text-blue-900'}`}>
+                          {assistantInfo?.name || 'No assistant assigned'}
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Number to call
+                    </label>
+                    <input
+                      type="tel"
+                      value={callToNumber}
+                      onChange={(event) => setCallToNumber(event.target.value)}
+                      placeholder="Enter phone number (e.g., +1234567890)"
+                      className={`w-full px-4 py-3 rounded-xl border focus:outline-none focus:ring-2 ${
+                        isDarkMode
+                          ? 'bg-gray-900 border-gray-700 text-white focus:ring-primary/60'
+                          : 'bg-white border-gray-300 text-neutral-dark focus:ring-primary/40'
+                      }`}
+                    />
+                    <p className={`text-xs mt-2 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                      You can also pick from your verified caller IDs below to auto-fill this field.
+                    </p>
+                  </div>
+
+                  <div className="mb-6">
+                    <label className={`block text-sm font-semibold mb-3 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Verified Caller IDs
+                    </label>
+                    {isLoadingCallerIds ? (
+                      <div className="flex items-center justify-center py-8">
+                        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+                      </div>
+                    ) : verifiedCallerIds.length > 0 ? (
+                      <div className="space-y-2 max-h-72 overflow-y-auto">
+                        {verifiedCallerIds.map((caller, index) => {
+                          const callerNumber = typeof caller === 'string' ? caller : caller?.phone_number;
+                          const callerLabel =
+                            typeof caller === 'string'
+                              ? caller
+                              : caller?.friendly_name || caller?.phone_number || 'Verified Number';
+                          if (!callerNumber) {
+                            return null;
+                          }
+                          return (
+                            <button
+                              key={index}
+                              onClick={() => setCallToNumber(callerNumber)}
+                              className={`w-full text-left p-4 rounded-xl border-2 transition-all duration-200 ${
+                                callToNumber === callerNumber
+                                  ? `${isDarkMode ? 'bg-primary/20 border-primary' : 'bg-primary/10 border-primary'}`
+                                  : `${isDarkMode ? 'bg-gray-700 border-gray-600 hover:border-gray-500' : 'bg-white border-gray-200 hover:border-gray-300'}`
+                              }`}
+                            >
+                              <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3 flex-1">
+                                  <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 ${
+                                    callToNumber === callerNumber
+                                      ? 'bg-primary text-white'
+                                      : `${isDarkMode ? 'bg-gray-600 text-gray-300' : 'bg-gray-200 text-gray-600'}`
+                                  }`}>
+                                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                    </svg>
+                                  </div>
+                                  <div className="min-w-0 flex-1">
+                                    <h4 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                                      {callerLabel || 'Verified Number'}
+                                    </h4>
+                                    <p className={`text-sm font-mono ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                      {callerNumber}
+                                    </p>
+                                  </div>
+                                </div>
+                                {callToNumber === callerNumber && (
+                                  <svg className="w-6 h-6 text-primary flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                                  </svg>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className={`p-6 rounded-xl text-center ${isDarkMode ? 'bg-yellow-900/20 border border-yellow-800' : 'bg-yellow-50 border border-yellow-200'}`}>
+                        <svg className="w-12 h-12 mx-auto mb-3 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                        </svg>
+                        <p className={`text-sm font-semibold mb-2 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-900'}`}>
+                          No Verified Caller IDs
+                        </p>
+                        <p className={`text-xs ${isDarkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>
+                          Verify numbers in your Twilio console to quickly select them from here.
+                        </p>
+                        <a
+                          href="https://console.twilio.com/us1/develop/phone-numbers/manage/verified"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className={`inline-block mt-3 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                            isDarkMode ? 'bg-yellow-800 hover:bg-yellow-700 text-yellow-200' : 'bg-yellow-600 hover:bg-yellow-700 text-white'
+                          }`}
+                        >
+                          Verify Numbers in Twilio →
+                        </a>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-green-900/20 border border-green-800' : 'bg-green-50 border border-green-200'}`}>
+                    <div className="flex items-start gap-2">
+                      <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <div>
+                        <p className={`text-sm font-semibold ${isDarkMode ? 'text-green-400' : 'text-green-900'}`}>
+                          What to expect
+                        </p>
+                        <p className={`text-xs mt-1 ${isDarkMode ? 'text-green-300' : 'text-green-800'}`}>
+                          The recipient will receive a call from <strong>{campaign.caller_id || 'your Twilio number'}</strong> and will be handled by <strong>{assistantInfo?.name || 'your AI assistant'}</strong>.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className={`px-6 py-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} flex gap-3`}>
+                  <button
+                    onClick={() => {
+                      setIsCallModalOpen(false);
+                      setCallToNumber('');
+                    }}
+                    className={`flex-1 px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-neutral-light hover:bg-neutral-mid/20 text-neutral-dark'} transition-colors font-semibold`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleMakeCall}
+                    disabled={isInitiatingCall || !callToNumber.trim()}
+                    className={`flex-1 px-4 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                      isInitiatingCall || !callToNumber.trim()
+                        ? 'bg-gray-400 cursor-not-allowed text-gray-600'
+                        : 'bg-gradient-to-r from-green-500 to-green-600 text-white hover:shadow-lg hover:shadow-green-500/25'
+                    }`}
+                  >
+                    {isInitiatingCall ? (
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                        Calling...
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center gap-2">
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                        </svg>
+                        Make Call
+                      </div>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>
