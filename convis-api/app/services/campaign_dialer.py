@@ -4,14 +4,16 @@ Campaign dialer service with sequential calling and Redis locking
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
+import os
+
+import pytz
 import redis
 from bson import ObjectId
 from twilio.rest import Client
-import os
-import pytz
 
 from app.config.database import Database
-from app.services.phone_service import PhoneService
+from app.config.settings import settings
+from app.utils.twilio_helpers import decrypt_twilio_credentials
 
 logger = logging.getLogger(__name__)
 
@@ -21,16 +23,18 @@ class CampaignDialer:
 
     def __init__(self):
         # Redis client for distributed locking
-        redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
+        redis_url = settings.redis_url or os.getenv("REDIS_URL", "redis://localhost:6379")
         self.redis_client = redis.from_url(redis_url, decode_responses=True)
 
-        # Twilio client
-        account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-        auth_token = os.getenv("TWILIO_AUTH_TOKEN")
-        self.twilio_client = Client(account_sid, auth_token) if account_sid and auth_token else None
+        # Default Twilio client (used if no per-user credentials are found)
+        account_sid = settings.twilio_account_sid or os.getenv("TWILIO_ACCOUNT_SID")
+        auth_token = settings.twilio_auth_token or os.getenv("TWILIO_AUTH_TOKEN")
+        self.default_twilio_client = Client(account_sid, auth_token) if account_sid and auth_token else None
+        self._user_twilio_clients: Dict[str, Client] = {}
 
         # Base URL for TwiML
-        self.base_url = os.getenv("BASE_URL", "https://your-domain.com")
+        configured_base_url = settings.base_url or settings.api_base_url
+        self.base_url = configured_base_url or os.getenv("BASE_URL", "https://your-domain.com")
         self.twiml_url = os.getenv("OUTBOUND_TWIML_URL")
         if not self.twiml_url:
             self.twiml_url = f"{self.base_url}/api/twilio-webhooks/outbound-call"
@@ -40,6 +44,7 @@ class CampaignDialer:
         self.recording_callback = os.getenv("TW_RECORDING_CALLBACK")
         if not self.recording_callback:
             self.recording_callback = f"{self.base_url}/api/twilio-webhooks/recording"
+        self.last_error: Optional[str] = None
 
     def acquire_lock(self, campaign_id: str, ttl: int = 180) -> bool:
         """
@@ -131,7 +136,7 @@ class CampaignDialer:
             leads = leads_collection.find({
                 "campaign_id": ObjectId(campaign_id),
                 "status": "queued"
-            }).sort("_id", 1).limit(10)  # Check next 10 leads
+            }).sort([("order_index", 1), ("_id", 1)]).limit(10)  # Check next 10 leads
 
             for lead in leads:
                 within_window = self.is_within_working_window(lead, working_window)
@@ -163,14 +168,11 @@ class CampaignDialer:
             Call SID or None if failed
         """
         try:
-            if not self.twilio_client:
-                logger.error("Twilio client not configured")
-                return None
-
             db = Database.get_db()
             campaigns_collection = db["campaigns"]
             leads_collection = db["leads"]
             call_attempts_collection = db["call_attempts"]
+            provider_connections_collection = db["provider_connections"]
 
             # Get campaign and lead
             campaign = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
@@ -178,14 +180,31 @@ class CampaignDialer:
 
             if not campaign or not lead:
                 logger.error(f"Campaign or lead not found")
+                self.last_error = "Campaign or lead record is missing in the database."
                 return None
 
             # Get caller ID and phone number
             caller_id = campaign.get("caller_id")
             to_number = lead.get("e164")
 
+            # Validate caller ID and lead phone number before attempting Twilio call
+            if not caller_id:
+                logger.error(f"Campaign {campaign_id} missing caller ID")
+                self.last_error = "Campaign is missing a caller ID. Configure a verified Twilio number for this campaign."
+                return None
+
             if not to_number:
                 logger.error(f"Lead {lead_id} has no valid phone number")
+                self.last_error = "Lead does not have a valid phone number in E.164 format."
+                return None
+
+            twilio_client = self._get_twilio_client_for_campaign(campaign, provider_connections_collection)
+            if not twilio_client:
+                self.last_error = (
+                    "No active Twilio credentials found. Connect Twilio under Settings or "
+                    "set TWILIO_ACCOUNT_SID/TWILIO_AUTH_TOKEN environment variables."
+                )
+                logger.error(f"Missing Twilio credentials for campaign {campaign_id}")
                 return None
 
             # Update lead status to calling
@@ -214,14 +233,14 @@ class CampaignDialer:
             if "http" not in base_url:
                 base_url = f"https://{base_url.lstrip('/')}"
 
-            call = self.twilio_client.calls.create(
+            call = twilio_client.calls.create(
                 to=to_number,
                 from_=caller_id,
                 url=f"{base_url}?leadId={lead_id}&campaignId={campaign_id}&assistantId={assistant_id}",
                 status_callback=f"{status_cb}?leadId={lead_id}&campaignId={campaign_id}" if status_cb else None,
                 status_callback_event=["initiated", "ringing", "answered", "completed"],
                 status_callback_method="POST",
-                record="record-from-answer",
+                record="true",
                 recording_status_callback=f"{recording_cb}?leadId={lead_id}&campaignId={campaign_id}" if recording_cb else None,
                 recording_status_callback_method="POST",
                 timeout=30
@@ -251,6 +270,7 @@ class CampaignDialer:
                 {"$set": {"last_call_sid": call.sid}}
             )
 
+            self.last_error = None
             return call.sid
 
         except Exception as e:
@@ -261,7 +281,175 @@ class CampaignDialer:
                 {"_id": ObjectId(lead_id)},
                 {"$set": {"status": "queued"}}
             )
+            try:
+                from twilio.base.exceptions import TwilioRestException
+                if isinstance(e, TwilioRestException):
+                    self.last_error = f"Twilio error {e.code}: {e.msg or e.msg}"
+                else:
+                    self.last_error = str(e)
+            except Exception:
+                self.last_error = str(e)
             return None
+
+    def _get_twilio_client_for_campaign(self, campaign: Dict[str, Any], provider_connections_collection) -> Optional[Client]:
+        """Return a Twilio client using the campaign owner's credentials or fall back to defaults."""
+        user_id = campaign.get("user_id")
+        if user_id:
+            user_key = str(user_id)
+            cached = self._user_twilio_clients.get(user_key)
+            if cached:
+                return cached
+
+            try:
+                user_obj_id = ObjectId(user_id) if not isinstance(user_id, ObjectId) else user_id
+            except Exception:
+                logger.warning(f"Invalid user_id on campaign {campaign.get('_id')}")
+                user_obj_id = None
+
+            if user_obj_id:
+                connection = provider_connections_collection.find_one({
+                    "user_id": user_obj_id,
+                    "provider": "twilio"
+                })
+                if connection:
+                    account_sid, auth_token = decrypt_twilio_credentials(connection)
+                    if account_sid and auth_token:
+                        try:
+                            client = Client(account_sid, auth_token)
+                            self._user_twilio_clients[user_key] = client
+                            return client
+                        except Exception as cred_error:
+                            logger.error(f"Failed to initialize Twilio client for user {user_id}: {cred_error}")
+
+        return self.default_twilio_client
+
+    def _map_call_status(self, call_status: str) -> str:
+        status_map = {
+            "completed": "completed",
+            "answered": "completed",
+            "busy": "busy",
+            "no-answer": "no-answer",
+            "failed": "failed",
+            "canceled": "failed",
+            "machine": "machine",
+        }
+        return status_map.get(call_status, "failed")
+
+    def _compute_next_retry(
+        self,
+        campaign: Dict[str, Any],
+        attempts: int,
+        now: datetime,
+        call_status: str,
+    ) -> Optional[datetime]:
+        policy = campaign.get("attempt_backoff") or {}
+        strategy = policy.get("type", "mixed")
+
+        if strategy == "mixed":
+            schedule = policy.get("schedule") or []
+            if not schedule:
+                schedule = ["immediate", "+300s", "next_day_start"]
+            index = min(max(attempts - 1, 0), len(schedule) - 1)
+            token = schedule[index]
+            candidate = self._interpret_backoff_token(token, campaign, now)
+        elif strategy == "fixed":
+            seconds = policy.get("seconds", 60)
+            candidate = now + timedelta(seconds=seconds)
+        elif strategy == "exponential":
+            initial = policy.get("initial", 120)
+            base = policy.get("base", 2)
+            delay = initial * (base ** max(attempts - 1, 0))
+            candidate = now + timedelta(seconds=delay)
+        elif strategy == "daily":
+            candidate = self._next_business_start(campaign, now, min_days=1)
+        else:
+            candidate = now + timedelta(seconds=120)
+
+        if candidate and not self._is_within_window(campaign, candidate):
+            candidate = self._next_business_start(campaign, candidate, min_days=0)
+
+        stop_at = campaign.get("stop_at")
+        if candidate and stop_at and candidate > stop_at:
+            return None
+
+        return candidate
+
+    def _interpret_backoff_token(self, token: str, campaign: Dict[str, Any], now: datetime) -> Optional[datetime]:
+        normalized = token.strip().lower()
+        if normalized == "immediate":
+            return now
+        if normalized == "next_day_start":
+            return self._next_business_start(campaign, now, min_days=1)
+        if normalized.startswith("+"):
+            value = normalized[1:].strip()
+            multiplier = 1
+            try:
+                if value.endswith("minutes") or value.endswith("minute"):
+                    amount = int(value.split()[0])
+                    multiplier = amount * 60
+                elif value.endswith("m"):
+                    amount = int(value[:-1])
+                    multiplier = amount * 60
+                elif value.endswith("hours") or value.endswith("hour"):
+                    amount = int(value.split()[0])
+                    multiplier = amount * 3600
+                elif value.endswith("h"):
+                    amount = int(value[:-1])
+                    multiplier = amount * 3600
+                elif value.endswith("s"):
+                    amount = int(value[:-1])
+                    multiplier = amount
+                else:
+                    multiplier = int(value)
+            except ValueError:
+                multiplier = 300
+            return now + timedelta(seconds=multiplier)
+        return now + timedelta(minutes=5)
+
+    def _is_within_window(self, campaign: Dict[str, Any], moment: datetime) -> bool:
+        window = campaign.get("working_window") or {}
+        tz_name = window.get("timezone", "UTC")
+        tz = pytz.timezone(tz_name)
+        aware_moment = moment if moment.tzinfo else pytz.utc.localize(moment)
+        local_dt = aware_moment.astimezone(tz)
+        days = window.get("days") or [0, 1, 2, 3, 4]
+        if days and local_dt.weekday() not in days:
+            return False
+        start_str = window.get("start", "09:00")
+        end_str = window.get("end", "17:00")
+        start_hour, start_min = map(int, start_str.split(":"))
+        end_hour, end_min = map(int, end_str.split(":"))
+        start_dt = local_dt.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
+        end_dt = local_dt.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
+        return start_dt <= local_dt <= end_dt
+
+    def _next_business_start(self, campaign: Dict[str, Any], reference: datetime, min_days: int = 1) -> Optional[datetime]:
+        window = campaign.get("working_window") or {}
+        tz_name = window.get("timezone", "UTC")
+        tz = pytz.timezone(tz_name)
+        days = window.get("days") or [0, 1, 2, 3, 4]
+        start_str = window.get("start", "09:00")
+        start_hour, start_min = map(int, start_str.split(":"))
+        aware_ref = reference if reference.tzinfo else pytz.utc.localize(reference)
+        local_ref = aware_ref.astimezone(tz)
+
+        for offset in range(min_days, min_days + 8):
+            candidate_day = local_ref + timedelta(days=offset)
+            if days and candidate_day.weekday() not in days:
+                continue
+            naive = datetime(
+                candidate_day.year,
+                candidate_day.month,
+                candidate_day.day,
+                start_hour,
+                start_min,
+                tzinfo=None
+            )
+            local_start = tz.localize(naive)
+            if offset == 0 and local_start <= aware_ref:
+                continue
+            return local_start.astimezone(pytz.utc).replace(tzinfo=None)
+        return None
 
     def dial_next(self, campaign_id: str) -> bool:
         """
@@ -301,14 +489,7 @@ class CampaignDialer:
             return False
 
     def handle_call_completed(self, campaign_id: str, lead_id: str, call_status: str):
-        """
-        Handle call completion and schedule retry or next call.
-
-        Args:
-            campaign_id: Campaign ID
-            lead_id: Lead ID
-            call_status: Final call status from Twilio
-        """
+        """Handle call completion and schedule retries/fallbacks."""
         try:
             db = Database.get_db()
             leads_collection = db["leads"]
@@ -320,53 +501,60 @@ class CampaignDialer:
             if not lead or not campaign:
                 return
 
-            # Map Twilio status to our status
-            status_map = {
-                "completed": "completed",
-                "busy": "busy",
-                "no-answer": "no-answer",
-                "failed": "failed",
-                "canceled": "failed"
+            now = datetime.utcnow()
+            mapped_status = self._map_call_status(call_status)
+            attempts = lead.get("attempts", 0)
+            max_attempts = campaign.get("attempts_per_number") or campaign.get("retry_policy", {}).get("max_attempts", 3)
+            update_doc = {
+                "last_outcome": call_status,
+                "updated_at": now,
             }
 
-            new_status = status_map.get(call_status, "failed")
-
-            # Check if we should retry
-            should_retry = new_status in ["busy", "no-answer", "failed"]
-            max_attempts = campaign.get("retry_policy", {}).get("max_attempts", 3)
-            current_attempts = lead.get("attempts", 0)
-
-            if should_retry and current_attempts < max_attempts:
-                # Schedule for retry tomorrow
-                leads_collection.update_one(
-                    {"_id": ObjectId(lead_id)},
-                    {
-                        "$set": {
-                            "status": new_status,
-                            "retry_on": "tomorrow",
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
-                logger.info(f"Lead {lead_id} scheduled for retry")
+            if mapped_status == "completed":
+                update_doc.update({
+                    "status": "completed",
+                    "next_retry_at": None,
+                    "fallback_round": lead.get("fallback_round", 0)
+                })
             else:
-                # Mark as final status
-                leads_collection.update_one(
-                    {"_id": ObjectId(lead_id)},
-                    {
-                        "$set": {
-                            "status": new_status,
-                            "retry_on": None,
-                            "updated_at": datetime.utcnow()
-                        }
-                    }
-                )
-                logger.info(f"Lead {lead_id} marked as {new_status}")
+                if attempts >= max_attempts:
+                    update_doc.update({
+                        "status": "failed",
+                        "next_retry_at": None,
+                        "fallback_round": lead.get("fallback_round", 0)
+                    })
+                else:
+                    next_retry = self._compute_next_retry(campaign, attempts, now, call_status)
+                    if next_retry is None:
+                        update_doc.update({
+                            "status": "failed",
+                            "next_retry_at": None,
+                            "fallback_round": lead.get("fallback_round", 0)
+                        })
+                    else:
+                        fallback_round = lead.get("fallback_round", 0)
+                        if next_retry > now:
+                            fallback_round += 1
+                        update_doc.update({
+                            "status": "queued",
+                            "next_retry_at": next_retry,
+                            "fallback_round": fallback_round
+                        })
 
-            # Release lock and dial next
+            leads_collection.update_one(
+                {"_id": ObjectId(lead_id)},
+                {"$set": update_doc}
+            )
+
+            logger.info(
+                "Lead %s updated with status=%s next_retry=%s",
+                lead_id,
+                update_doc.get("status"),
+                update_doc.get("next_retry_at")
+            )
+
+            # Release lock so dispatcher can grab the next lead
             self.release_lock(campaign_id)
-
-            # Schedule next dial after a short delay (handled by scheduler)
 
         except Exception as e:
             logger.error(f"Error handling call completion: {e}")

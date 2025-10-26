@@ -1,304 +1,237 @@
 """
-Campaign scheduler service
-Handles retry logic, next-day retry lists, and automated campaign execution
+Asynchronous campaign dispatcher that enforces concurrency, business hours,
+and fallback retry logic on top of the existing CampaignDialer.
 """
+
+from __future__ import annotations
+
+import asyncio
 import logging
 from datetime import datetime, timedelta
-from typing import List
-from bson import ObjectId
+from typing import Optional, Dict, Any
+
 import pytz
+from bson import ObjectId
+from pymongo import ReturnDocument
 
 from app.config.database import Database
+from app.config.settings import settings
 from app.services.campaign_dialer import CampaignDialer
 
 logger = logging.getLogger(__name__)
 
 
+def utc_now() -> datetime:
+    return datetime.utcnow()
+
+
 class CampaignScheduler:
-    """Service for scheduling campaign operations"""
+    """Background dispatcher that continuously feeds leads into the dialer."""
 
-    def __init__(self):
-        self.db = Database.get_db()
-        self.dialer = CampaignDialer()
+    def __init__(self, interval_seconds: Optional[int] = None):
+        self.interval_seconds = interval_seconds or settings.campaign_dispatch_interval_seconds
+        self._task: Optional[asyncio.Task] = None
+        self._stop_event = asyncio.Event()
+        self._dialer = CampaignDialer()
 
-    def process_retry_leads(self, campaign_id: str):
-        """
-        Process leads marked for retry.
-        Called daily to move "retry_on=tomorrow" leads back to queued.
+    async def start(self):
+        if self._task and not self._task.done():
+            logger.info("Campaign dispatcher already running")
+            return
+        logger.info("Starting campaign dispatcher (interval=%ss)", self.interval_seconds)
+        self._stop_event.clear()
+        loop = asyncio.get_running_loop()
+        self._task = loop.create_task(self._run(), name="campaign-dispatcher")
 
-        Args:
-            campaign_id: Campaign ID
-        """
+    async def shutdown(self):
+        if not self._task:
+            return
+        logger.info("Stopping campaign dispatcher")
+        self._stop_event.set()
+        self._task.cancel()
         try:
-            campaigns_collection = self.db["campaigns"]
-            leads_collection = self.db["leads"]
+            await self._task
+        except asyncio.CancelledError:
+            pass
+        finally:
+            self._task = None
 
-            campaign = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
-            if not campaign:
-                logger.error(f"Campaign {campaign_id} not found")
-                return
+    async def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, self.dispatch_once)
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.exception("Campaign dispatcher tick failed: %s", exc)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=self.interval_seconds)
+            except asyncio.TimeoutError:
+                continue
 
-            # Get working window timezone
-            working_window = campaign.get("working_window", {})
-            campaign_tz_str = working_window.get("timezone", "America/New_York")
-            campaign_tz = pytz.timezone(campaign_tz_str)
-            now = datetime.now(campaign_tz)
+    # ====== Core tick ======
+    def dispatch_once(self):
+        """One synchronous tick that scans running campaigns and dials leads."""
+        db = Database.get_db()
+        campaigns_collection = db["campaigns"]
+        running_campaigns = campaigns_collection.find({"status": "running"})
+        now = utc_now()
+        total_dispatched = 0
 
-            # Move retry leads back to queued
-            result = leads_collection.update_many(
-                {
-                    "campaign_id": ObjectId(campaign_id),
-                    "retry_on": "tomorrow"
+        for campaign in running_campaigns:
+            try:
+                if not self._campaign_is_active(campaign, now):
+                    continue
+
+                slots = self._available_slots_for_campaign(db, campaign)
+                if slots <= 0:
+                    continue
+
+                for _ in range(slots):
+                    lead = self._reserve_lead(db, campaign, now)
+                    if not lead:
+                        break
+                    dispatched = self._start_call(campaign, lead)
+                    if dispatched:
+                        total_dispatched += 1
+            except Exception as campaign_error:
+                logger.exception(
+                    "Failed to process campaign %s: %s",
+                    campaign.get("_id"),
+                    campaign_error
+                )
+
+        if total_dispatched:
+            logger.info("Dispatched %s lead(s) this tick", total_dispatched)
+
+    def _campaign_is_active(self, campaign: Dict[str, Any], now: datetime) -> bool:
+        start_at = campaign.get("start_at")
+        if start_at and start_at > now:
+            return False
+
+        stop_at = campaign.get("stop_at")
+        if stop_at and stop_at <= now:
+            return False
+
+        return self._within_business_hours(campaign, now)
+
+    def _within_business_hours(self, campaign: Dict[str, Any], now: datetime) -> bool:
+        window = campaign.get("working_window") or {}
+        tz_name = window.get("timezone") or settings.default_timezone
+        start_str = window.get("start", "09:00")
+        end_str = window.get("end", "17:00")
+        days = window.get("days") or [0, 1, 2, 3, 4]
+
+        tz = pytz.timezone(tz_name)
+        aware_now = pytz.utc.localize(now)
+        local_now = aware_now.astimezone(tz)
+
+        if days and local_now.weekday() not in days:
+            return False
+
+        start_hour, start_minute = map(int, start_str.split(":"))
+        end_hour, end_minute = map(int, end_str.split(":"))
+
+        start_dt = local_now.replace(
+            hour=start_hour, minute=start_minute, second=0, microsecond=0
+        )
+        end_dt = local_now.replace(
+            hour=end_hour, minute=end_minute, second=0, microsecond=0
+        )
+
+        return start_dt <= local_now <= end_dt
+
+    def _available_slots_for_campaign(self, db, campaign: Dict[str, Any]) -> int:
+        leads_collection = db["leads"]
+        campaign_id = campaign["_id"]
+        in_progress = leads_collection.count_documents({
+            "campaign_id": campaign_id,
+            "status": "calling"
+        })
+        pacing = campaign.get("pacing", {})
+        pacing_limit = pacing.get("max_concurrent", 1)
+        lines = campaign.get("lines", 1)
+        max_slots = max(1, min(pacing_limit, lines))
+        available = max_slots - in_progress
+        return max(0, available)
+
+    def _reserve_lead(self, db, campaign: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
+        leads_collection = db["leads"]
+        campaign_id = campaign["_id"]
+        attempts_limit = campaign.get("attempts_per_number") or campaign.get("retry_policy", {}).get("max_attempts", 3)
+
+        query = {
+            "campaign_id": campaign_id,
+            "status": "queued",
+            "$or": [
+                {"attempts": {"$exists": False}},
+                {"attempts": {"$lt": attempts_limit}}
+            ],
+            "$or": [
+                {"next_retry_at": {"$exists": False}},
+                {"next_retry_at": None},
+                {"next_retry_at": {"$lte": now}},
+            ],
+        }
+
+        sort = [("next_retry_at", 1), ("_id", 1)]
+        if campaign.get("priority") == "fallback-first":
+            sort = [("fallback_round", -1), ("next_retry_at", 1), ("_id", 1)]
+
+        lead = leads_collection.find_one_and_update(
+            query,
+            {
+                "$set": {
+                    "status": "calling",
+                    "updated_at": now,
+                    "next_retry_at": None,
+                    "last_outcome": "dialing",
                 },
+                "$inc": {"attempts": 1},
+            },
+            sort=sort,
+            return_document=ReturnDocument.AFTER
+        )
+
+        if lead:
+            lead.setdefault("fallback_round", 0)
+            logger.info(
+                "Reserved lead %s (attempt %s) for campaign %s",
+                lead.get("_id"),
+                lead.get("attempts"),
+                campaign_id
+            )
+        return lead
+
+    def _start_call(self, campaign: Dict[str, Any], lead: Dict[str, Any]) -> bool:
+        campaign_id = str(campaign["_id"])
+        lead_id = str(lead["_id"])
+        try:
+            call_sid = self._dialer.place_call(campaign_id, lead_id)
+            if not call_sid:
+                raise RuntimeError(self._dialer.last_error or "Unknown dialer error")
+            return True
+        except Exception as error:
+            logger.error(
+                "Failed to start call for campaign %s lead %s: %s",
+                campaign_id,
+                lead_id,
+                error
+            )
+            # Revert lead state to queued so it can be retried later
+            db = Database.get_db()
+            db["leads"].update_one(
+                {"_id": ObjectId(lead_id)},
                 {
                     "$set": {
                         "status": "queued",
-                        "retry_on": None,
-                        "updated_at": datetime.utcnow()
+                        "last_outcome": "dispatch-error",
+                        "updated_at": utc_now()
                     }
                 }
             )
-
-            if result.modified_count > 0:
-                logger.info(f"Moved {result.modified_count} leads back to queue for campaign {campaign_id}")
-
-        except Exception as e:
-            logger.error(f"Error processing retry leads: {e}")
-
-    def process_all_campaign_retries(self):
-        """
-        Process retries for all running campaigns.
-        Should be called by a daily cron job.
-        """
-        try:
-            campaigns_collection = self.db["campaigns"]
-
-            # Get all running campaigns
-            campaigns = campaigns_collection.find({"status": "running"})
-
-            for campaign in campaigns:
-                campaign_id = str(campaign["_id"])
-                logger.info(f"Processing retries for campaign {campaign_id}")
-                self.process_retry_leads(campaign_id)
-
-        except Exception as e:
-            logger.error(f"Error processing campaign retries: {e}")
-
-    def check_and_dial_campaigns(self):
-        """
-        Check all running campaigns and dial next lead if ready.
-        Should be called periodically (e.g., every 5-10 minutes).
-        """
-        try:
-            campaigns_collection = self.db["campaigns"]
-            leads_collection = self.db["leads"]
-
-            # Get all running campaigns
-            campaigns = campaigns_collection.find({"status": "running"})
-
-            for campaign in campaigns:
-                campaign_id = str(campaign["_id"])
-
-                start_at = campaign.get("start_at")
-                stop_at = campaign.get("stop_at")
-                utc_now = datetime.utcnow()
-
-                if start_at and isinstance(start_at, datetime) and utc_now < start_at:
-                    logger.info(f"Campaign {campaign_id} scheduled to start at {start_at}, skipping until then")
-                    continue
-
-                if stop_at and isinstance(stop_at, datetime) and utc_now > stop_at:
-                    logger.info(f"Campaign {campaign_id} stop time reached; marking as completed")
-                    campaigns_collection.update_one(
-                        {"_id": campaign["_id"]},
-                        {"$set": {"status": "completed", "updated_at": datetime.utcnow()}}
-                    )
-                    continue
-
-                # Check if there's an active call for this campaign
-                active_call = leads_collection.find_one({
-                    "campaign_id": campaign["_id"],
-                    "status": "calling"
-                })
-
-                if active_call:
-                    logger.info(f"Campaign {campaign_id} has active call, skipping")
-                    continue
-
-                # Check if we're within working window
-                working_window = campaign.get("working_window", {})
-                if not self._is_campaign_window_open(working_window):
-                    logger.info(f"Campaign {campaign_id} outside working window")
-                    continue
-
-                # Check if there are queued leads
-                queued_count = leads_collection.count_documents({
-                    "campaign_id": campaign["_id"],
-                    "status": "queued"
-                })
-
-                if queued_count == 0:
-                    logger.info(f"Campaign {campaign_id} has no queued leads")
-                    # Mark campaign as completed if all leads processed
-                    all_leads = leads_collection.count_documents({"campaign_id": campaign["_id"]})
-                    completed_or_failed = leads_collection.count_documents({
-                        "campaign_id": campaign["_id"],
-                        "status": {"$in": ["completed", "failed"]}
-                    })
-
-                    if all_leads == completed_or_failed:
-                        campaigns_collection.update_one(
-                            {"_id": campaign["_id"]},
-                            {"$set": {"status": "completed", "updated_at": datetime.utcnow()}}
-                        )
-                        logger.info(f"Campaign {campaign_id} marked as completed")
-                    continue
-
-                # Dial next lead
-                logger.info(f"Attempting to dial next lead for campaign {campaign_id}")
-                success = self.dialer.dial_next(campaign_id)
-                if success:
-                    logger.info(f"Successfully dialed next lead for campaign {campaign_id}")
-                else:
-                    logger.warning(f"Failed to dial next lead for campaign {campaign_id}")
-
-        except Exception as e:
-            logger.error(f"Error checking campaigns: {e}")
-
-    def _is_campaign_window_open(self, working_window: dict) -> bool:
-        """
-        Check if campaign working window is currently open.
-
-        Args:
-            working_window: Working window configuration
-
-        Returns:
-            True if window is open, False otherwise
-        """
-        try:
-            tz_str = working_window.get("timezone", "America/New_York")
-            tz = pytz.timezone(tz_str)
-            now = datetime.now(tz)
-
-            # Check day
-            allowed_days = working_window.get("days", [])
-            if now.weekday() not in allowed_days:
-                return False
-
-            # Check time
-            start_time = working_window.get("start", "09:00")
-            end_time = working_window.get("end", "17:00")
-
-            start_hour, start_min = map(int, start_time.split(":"))
-            end_hour, end_min = map(int, end_time.split(":"))
-
-            start_dt = now.replace(hour=start_hour, minute=start_min, second=0, microsecond=0)
-            end_dt = now.replace(hour=end_hour, minute=end_min, second=0, microsecond=0)
-
-            return start_dt <= now <= end_dt
-
-        except Exception as e:
-            logger.error(f"Error checking window: {e}")
             return False
 
-    def start_campaign(self, campaign_id: str) -> bool:
-        """
-        Start a campaign.
 
-        Args:
-            campaign_id: Campaign ID
-
-        Returns:
-            True if started successfully
-        """
-        try:
-            campaigns_collection = self.db["campaigns"]
-
-            # Update status to running
-            result = campaigns_collection.update_one(
-                {"_id": ObjectId(campaign_id)},
-                {
-                    "$set": {
-                        "status": "running",
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
-
-            if result.modified_count > 0:
-                logger.info(f"Campaign {campaign_id} started")
-                # Dial first lead
-                self.dialer.dial_next(campaign_id)
-                return True
-
-            return False
-
-        except Exception as e:
-            logger.error(f"Error starting campaign: {e}")
-            return False
-
-    def pause_campaign(self, campaign_id: str) -> bool:
-        """
-        Pause a campaign.
-
-        Args:
-            campaign_id: Campaign ID
-
-        Returns:
-            True if paused successfully
-        """
-        try:
-            campaigns_collection = self.db["campaigns"]
-
-            result = campaigns_collection.update_one(
-                {"_id": ObjectId(campaign_id)},
-                {
-                    "$set": {
-                        "status": "paused",
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
-
-            if result.modified_count > 0:
-                logger.info(f"Campaign {campaign_id} paused")
-                return True
-
-            return False
-
-        except Exception as e:
-            logger.error(f"Error pausing campaign: {e}")
-            return False
-
-    def stop_campaign(self, campaign_id: str) -> bool:
-        """
-        Stop a campaign permanently.
-
-        Args:
-            campaign_id: Campaign ID
-
-        Returns:
-            True if stopped successfully
-        """
-        try:
-            campaigns_collection = self.db["campaigns"]
-
-            result = campaigns_collection.update_one(
-                {"_id": ObjectId(campaign_id)},
-                {
-                    "$set": {
-                        "status": "stopped",
-                        "updated_at": datetime.utcnow()
-                    }
-                }
-            )
-
-            if result.modified_count > 0:
-                logger.info(f"Campaign {campaign_id} stopped")
-                return True
-
-            return False
-
-        except Exception as e:
-            logger.error(f"Error stopping campaign: {e}")
-            return False
+campaign_scheduler = CampaignScheduler()

@@ -95,12 +95,37 @@ export default function LeadViewerModal({
     return String(value);
   };
 
-  const getDisplayName = (lead: LeadRecord) => {
-    if (lead.first_name || lead.last_name) {
-      return `${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim() || lead.name || '—';
-    }
-    return lead.name || '—';
-  };
+const getDisplayName = (lead: LeadRecord) => {
+  if (lead.first_name || lead.last_name) {
+    return `${lead.first_name ?? ''} ${lead.last_name ?? ''}`.trim() || lead.name || '—';
+  }
+  return lead.name || '—';
+};
+
+const leadStatusBadgeClass = (status: string) => {
+  switch (status) {
+    case 'queued':
+      return 'bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-200';
+    case 'completed':
+      return 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200';
+    case 'failed':
+      return 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200';
+    case 'busy':
+      return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-200';
+    case 'no-answer':
+      return 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-200';
+    default:
+      return 'bg-neutral-light text-neutral-dark dark:bg-gray-900 dark:text-gray-200';
+  }
+};
+
+const formatLeadStatus = (status: string) => {
+  if (!status) return 'Unknown';
+  return status
+    .split(/[-_]/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(' ');
+};
 
   return (
     <div className={`fixed inset-0 z-50 flex items-center justify-center px-4 py-6 ${backgroundClass}`}>
@@ -155,8 +180,11 @@ export default function LeadViewerModal({
                   </tr>
                 </thead>
                 <tbody className={isDarkMode ? 'divide-y divide-gray-700 text-gray-200' : 'divide-y divide-neutral-mid/10 text-neutral-dark'}>
-                  {leads.map((lead) => (
-                    <tr key={lead.id}>
+                  {leads.map((lead, idx) => {
+                    const fallbackId = (lead as { _id?: string })._id;
+                    const rowKey = lead.id || fallbackId || `${lead.e164 || lead.raw_number}-${idx}`;
+                    return (
+                      <tr key={rowKey}>
                       <td className="px-4 py-3">{lead.batch_name || '—'}</td>
                       <td className="px-4 py-3">{lead.first_name || '—'}</td>
                       <td className="px-4 py-3">{lead.last_name || '—'}</td>
@@ -164,7 +192,11 @@ export default function LeadViewerModal({
                       <td className="px-4 py-3 font-mono">{lead.e164 || lead.raw_number || '—'}</td>
                       <td className="px-4 py-3">{lead.timezone || '—'}</td>
                       <td className="px-4 py-3">{lead.email || '—'}</td>
-                      <td className="px-4 py-3 capitalize">{lead.status}</td>
+                      <td className="px-4 py-3">
+                        <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${leadStatusBadgeClass(lead.status)}`}>
+                          {formatLeadStatus(lead.status)}
+                        </span>
+                      </td>
                       <td className="px-4 py-3 text-center">{lead.attempts}</td>
                       <td className="px-4 py-3">{formatDateTime(lead.updated_at)}</td>
                       <td className="px-4 py-3">
@@ -181,7 +213,8 @@ export default function LeadViewerModal({
                         )}
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>

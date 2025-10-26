@@ -11,6 +11,7 @@ from bson import ObjectId
 import logging
 
 from app.config.database import Database
+from app.services.call_status_processor import process_call_status
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.twiml.messaging_response import MessagingResponse
 
@@ -448,32 +449,7 @@ async def campaign_call_status(
         if not CallSid or not CallStatus:
             return {"error": "Missing required parameters"}
 
-        db = Database.get_db()
-        call_attempts_collection = db["call_attempts"]
-
-        # Update call attempt
-        update_data = {
-            "status": CallStatus,
-            "updated_at": datetime.utcnow()
-        }
-
-        if CallDuration:
-            update_data["duration"] = int(CallDuration)
-
-        # Mark end time for terminal statuses
-        if CallStatus in ["completed", "busy", "no-answer", "failed", "canceled"]:
-            update_data["ended_at"] = datetime.utcnow()
-
-        call_attempts_collection.update_one(
-            {"call_sid": CallSid},
-            {"$set": update_data}
-        )
-
-        # If call is completed, handle lead status and dial next
-        if CallStatus in ["completed", "busy", "no-answer", "failed", "canceled"] and leadId and campaignId:
-            from app.services.campaign_dialer import CampaignDialer
-            dialer = CampaignDialer()
-            dialer.handle_call_completed(campaignId, leadId, CallStatus)
+        process_call_status(CallSid, CallStatus, CallDuration, leadId, campaignId)
 
         return {"message": "Status updated"}
 
