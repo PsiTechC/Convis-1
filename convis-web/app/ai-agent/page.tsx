@@ -264,10 +264,15 @@ export default function AIAgentPage() {
   }, [router]);
 
   useEffect(() => {
-    if (!isEditMode && formData.api_key_id === '' && apiKeys.length > 0) {
+    if (isEditMode || formData.api_key_id || apiKeys.length === 0) {
+      return;
+    }
+
+    const preferredKey = apiKeys.find((key) => key.provider === 'openai') || apiKeys[0];
+    if (preferredKey) {
       setFormData((prev) => ({
         ...prev,
-        api_key_id: apiKeys[0].id,
+        api_key_id: preferredKey.id,
       }));
     }
   }, [apiKeys, isEditMode, formData.api_key_id]);
@@ -471,12 +476,15 @@ export default function AIAgentPage() {
         return;
       }
 
-      if (!isLoadingKeys) {
-        const hasOpenAIKey = apiKeys.some((key) => key.provider === 'openai');
-        if (!hasOpenAIKey) {
-          alert('Please add an OpenAI API key in Settings to preview voices.');
-          return;
-        }
+      const selectedKey = apiKeys.find((key) => key.id === formData.api_key_id);
+      if (!selectedKey) {
+        alert('Please select an API key before previewing a voice.');
+        return;
+      }
+
+      if (selectedKey.provider !== 'openai') {
+        alert('Voice demos currently require an OpenAI API key. Please choose an OpenAI key from the list.');
+        return;
       }
 
       const token = localStorage.getItem('token');
@@ -497,6 +505,7 @@ export default function AIAgentPage() {
           voice: voiceId,
           text: demoText,
           user_id: resolvedUserId,
+          api_key_id: selectedKey.id,
         }),
       });
 
@@ -528,7 +537,8 @@ export default function AIAgentPage() {
       console.error('Error playing voice demo:', error);
       setPlayingVoice(null);
       setAudioElement(null);
-      alert('Failed to play voice demo. Please check your API configuration.');
+      const message = error instanceof Error ? error.message : 'Failed to play voice demo. Please check your API configuration.';
+      alert(message);
     }
   };
 

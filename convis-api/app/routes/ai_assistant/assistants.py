@@ -44,6 +44,25 @@ LEGACY_TTS_VOICES = {
     "cedar",  # keep for existing assistants even if OpenAI rejects it later
 }
 
+TTS1_VOICES = {"alloy", "verse"}
+DEFAULT_TTS_MODEL = "gpt-4o-mini-tts"
+
+
+def resolve_tts_model_and_voice(requested_voice: str) -> tuple[str, str]:
+    """Return the preferred OpenAI TTS model and the voice id to pass to it."""
+
+    normalized = requested_voice.lower()
+
+    if normalized in TTS1_VOICES:
+        return "tts-1", normalized
+
+    if normalized in LEGACY_TTS_VOICES:
+        # Legacy voices are no longer supported; quietly fall back to Alloy so the demo still works
+        return DEFAULT_TTS_MODEL, "alloy"
+
+    # All other voices map to the GPT-4o mini TTS model which exposes the richer catalogue
+    return DEFAULT_TTS_MODEL, normalized
+
 
 class VoiceDemoRequest(BaseModel):
     voice: Literal[
@@ -62,6 +81,7 @@ class VoiceDemoRequest(BaseModel):
         "cedar",
     ]
     user_id: str
+    api_key_id: Optional[str] = None
     text: str = "Hello! This is a sample of my voice. I'm here to assist you with your conversations."
 
     @validator("voice", pre=True)
@@ -669,17 +689,44 @@ async def generate_voice_demo(request: VoiceDemoRequest):
                 detail="Invalid user_id format"
             )
 
-        # Find user's OpenAI API key
-        api_key_doc = api_keys_collection.find_one({
-            "user_id": user_obj_id,
-            "provider": "openai"
-        })
+        api_key_doc = None
 
-        if not api_key_doc:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No OpenAI API key found. Please add an OpenAI API key in Settings."
-            )
+        if request.api_key_id:
+            try:
+                api_key_obj_id = ObjectId(request.api_key_id)
+            except Exception:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid api_key_id format"
+                )
+
+            api_key_doc = api_keys_collection.find_one({
+                "_id": api_key_obj_id,
+                "user_id": user_obj_id,
+            })
+
+            if not api_key_doc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="API key not found for this user"
+                )
+
+            if api_key_doc.get("provider") != "openai":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Voice previews currently require an OpenAI API key."
+                )
+        else:
+            api_key_doc = api_keys_collection.find_one({
+                "user_id": user_obj_id,
+                "provider": "openai"
+            })
+
+            if not api_key_doc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="No OpenAI API key found. Please add an OpenAI API key in Settings."
+                )
 
         # Decrypt the API key
         try:
@@ -692,51 +739,77 @@ async def generate_voice_demo(request: VoiceDemoRequest):
             )
 
         voice_to_use = request.voice
-        if voice_to_use in LEGACY_TTS_VOICES:
-            logger.warning(
-                "Voice '%s' is retained for backwards compatibility but is not currently supported by OpenAI. "
-                "Falling back to 'alloy'.",
+        model_name, resolved_voice = resolve_tts_model_and_voice(voice_to_use)
+        if resolved_voice != voice_to_use:
+            logger.info(
+                "Using fallback voice '%s' (requested '%s') for demo",
+                resolved_voice,
                 voice_to_use,
             )
-            voice_to_use = "alloy"
 
         # Call OpenAI TTS API
         async with httpx.AsyncClient() as client:
-            response = await client.post(
-                "https://api.openai.com/v1/audio/speech",
-                headers={
-                    "Authorization": f"Bearer {openai_api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "tts-1",
-                    "input": request.text,
-                    "voice": voice_to_use,
-                    "response_format": "mp3"
-                },
-                timeout=30.0
-            )
+            async def request_tts(model: str, voice: str):
+                return await client.post(
+                    "https://api.openai.com/v1/audio/speech",
+                    headers={
+                        "Authorization": f"Bearer {openai_api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model,
+                        "input": request.text,
+                        "voice": voice,
+                        "response_format": "mp3"
+                    },
+                    timeout=30.0
+                )
 
+            response = await request_tts(model_name, resolved_voice)
+
+            # If OpenAI rejects the requested voice, retry once with Alloy so the UI demo still plays something
             if response.status_code != 200:
-                logger.error(f"OpenAI API error: {response.text}")
                 error_detail = "Failed to generate voice sample"
                 try:
                     error_json = response.json()
                     if 'error' in error_json:
                         error_detail = error_json['error'].get('message', error_detail)
-                except:
-                    pass
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=error_detail
+                except Exception:
+                    error_json = None
+
+                logger.warning(
+                    "Voice demo request failed (voice=%s, model=%s): %s",
+                    resolved_voice,
+                    model_name,
+                    error_detail,
                 )
+
+                if resolved_voice != "alloy":
+                    logger.info("Retrying voice demo with Alloy fallback")
+                    fallback_response = await request_tts(DEFAULT_TTS_MODEL, "alloy")
+                    if fallback_response.status_code == 200:
+                        response = fallback_response
+                        resolved_voice = "alloy"
+                    else:
+                        # Prefer original error message for transparency
+                        raise HTTPException(
+                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            detail=error_detail
+                        )
+                else:
+                    raise HTTPException(
+                        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                        detail=error_detail
+                    )
 
             # Return audio as response
             return Response(
                 content=response.content,
                 media_type="audio/mpeg",
                 headers={
-                    "Content-Disposition": f"inline; filename=voice-demo-{request.voice}.mp3"
+                    "Content-Disposition": f"inline; filename=voice-demo-{resolved_voice}.mp3",
+                    "X-Voice-Used": resolved_voice,
+                    "X-Voice-Model": model_name,
                 }
             )
 
