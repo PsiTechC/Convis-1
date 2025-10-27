@@ -105,6 +105,14 @@ interface PhoneNumber {
   friendly_name?: string;
 }
 
+interface CalendarAccount {
+  id: string;
+  provider: string;
+  email: string;
+  created_at?: string;
+  updated_at?: string;
+}
+
 interface CampaignDatabaseConfigForm {
   enabled: boolean;
   type: string;
@@ -249,6 +257,7 @@ export default function CreateCampaignModal({
   const [isLoading, setIsLoading] = useState(false);
   const [aiAgents, setAiAgents] = useState<AIAgent[]>([]);
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
+  const [calendarAccounts, setCalendarAccounts] = useState<CalendarAccount[]>([]);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [leadBatchName, setLeadBatchName] = useState<string>('');
   const [isTimezoneManuallySet, setIsTimezoneManuallySet] = useState(false);
@@ -295,12 +304,28 @@ export default function CreateCampaignModal({
     }
   }, [userId]);
 
+  const fetchCalendarAccounts = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('token');
+      const response = await fetch(`${API_URL}/api/calendar/accounts/${userId}`, {
+        headers: token ? { 'Authorization': `Bearer ${token}` } : undefined,
+      });
+      if (response.ok) {
+        const data = await response.json();
+        setCalendarAccounts(data.accounts || []);
+      }
+    } catch (error) {
+      console.error('Error fetching calendar accounts:', error);
+    }
+  }, [userId]);
+
   useEffect(() => {
     if (isOpen) {
       fetchAIAgents();
       fetchPhoneNumbers();
+      fetchCalendarAccounts();
     }
-  }, [isOpen, fetchAIAgents, fetchPhoneNumbers]);
+  }, [isOpen, fetchAIAgents, fetchPhoneNumbers, fetchCalendarAccounts]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -953,18 +978,75 @@ export default function CreateCampaignModal({
                 </p>
               </div>
 
-              <div>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={formData.calendar_enabled}
-                    onChange={(e) => handleInputChange('calendar_enabled', e.target.checked)}
-                    className="w-5 h-5 text-primary rounded focus:ring-2 focus:ring-primary"
-                  />
-                  <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                    Enable calendar booking (auto-book appointments from conversations)
-                  </span>
-                </label>
+              <div className={`${isDarkMode ? 'bg-gray-700/40 border-gray-600' : 'bg-gray-50 border-gray-200'} border rounded-lg p-4`}>
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formData.calendar_enabled}
+                        onChange={(e) => handleInputChange('calendar_enabled', e.target.checked)}
+                        className="w-5 h-5 text-primary rounded focus:ring-2 focus:ring-primary"
+                      />
+                      <span className={`text-sm font-medium ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        Enable calendar booking (auto-book appointments from conversations)
+                      </span>
+                    </label>
+                    <p className={`text-xs mt-1 ml-7 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      The bot will automatically save appointments to your connected calendar during calls.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Connected Calendar Display */}
+                {calendarAccounts.length > 0 ? (
+                  <div className="mt-3 ml-7">
+                    <div className={`text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-2`}>
+                      Connected Calendar{calendarAccounts.length > 1 ? 's' : ''}:
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {calendarAccounts.map((account) => (
+                        <div
+                          key={account.id}
+                          className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-lg ${
+                            account.provider === 'google'
+                              ? 'bg-red-500 text-white'
+                              : 'bg-blue-500 text-white'
+                          }`}
+                        >
+                          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
+                            {account.provider === 'google' ? (
+                              <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/>
+                            ) : (
+                              <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v6h-2zm0 8h2v2h-2z"/>
+                            )}
+                          </svg>
+                          <span className="text-xs font-medium">{account.email}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : (
+                  formData.calendar_enabled && (
+                    <div className={`mt-3 ml-7 flex items-start gap-2 p-3 rounded-lg ${isDarkMode ? 'bg-yellow-900/30 border border-yellow-700' : 'bg-yellow-50 border border-yellow-200'}`}>
+                      <svg className="w-5 h-5 flex-shrink-0 text-yellow-500 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                      </svg>
+                      <div className="flex-1">
+                        <p className={`text-xs font-medium ${isDarkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>
+                          No calendar connected
+                        </p>
+                        <p className={`text-xs mt-1 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-700'}`}>
+                          Please connect a calendar from the{' '}
+                          <a href="/connect-calendar" target="_blank" className="underline font-medium">
+                            Calendar Settings
+                          </a>
+                          {' '}page to enable appointment booking.
+                        </p>
+                      </div>
+                    </div>
+                  )
+                )}
               </div>
 
               <div className={`${isDarkMode ? 'bg-gray-700/40 border-gray-600' : 'bg-gray-50 border-gray-200'} border rounded-lg p-4`}>

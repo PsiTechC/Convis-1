@@ -332,6 +332,24 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                             response_start_timestamp_twilio = None
                             latest_media_timestamp = 0
                             last_assistant_item = None
+
+                            # Create call log entry for this inbound call
+                            if call_sid:
+                                try:
+                                    call_log_entry = {
+                                        "call_sid": call_sid,
+                                        "stream_sid": stream_sid,
+                                        "assistant_id": assistant_id,
+                                        "user_id": assistant_user_id,
+                                        "call_type": "inbound",
+                                        "call_status": "in-progress",
+                                        "started_at": datetime.utcnow(),
+                                        "created_at": datetime.utcnow()
+                                    }
+                                    db['call_logs'].insert_one(call_log_entry)
+                                    logger.info(f"Created call log for inbound call {call_sid}")
+                                except Exception as log_err:
+                                    logger.error(f"Error creating call log: {log_err}")
                         elif data['event'] == 'mark':
                             if mark_queue:
                                 mark_queue.pop(0)
@@ -525,6 +543,7 @@ async def handle_recording_status(request: Request):
     """
     Callback endpoint for Twilio recording status updates.
     Saves recording URL to database when recording is completed.
+    Triggers post-call processing for appointment booking.
 
     Twilio sends these parameters:
     - RecordingSid: Unique recording identifier
@@ -570,6 +589,32 @@ async def handle_recording_status(request: Request):
 
             if result.modified_count > 0:
                 logger.info(f"Updated call log with recording URL for call {call_sid}")
+
+                # Get the call log to find assistant and user info
+                call_log = call_logs_collection.find_one({'call_sid': call_sid})
+
+                if call_log and recording_url:
+                    assistant_id = call_log.get('assistant_id')
+
+                    if assistant_id:
+                        # Trigger post-call processing for appointment booking
+                        try:
+                            from app.services.inbound_post_call_processor import InboundPostCallProcessor
+
+                            processor = InboundPostCallProcessor()
+                            # Process in background to avoid blocking the webhook response
+                            asyncio.create_task(
+                                processor.process_inbound_call(
+                                    call_sid=call_sid,
+                                    assistant_id=assistant_id,
+                                    recording_url=recording_url
+                                )
+                            )
+                            logger.info(f"Triggered post-call processing for inbound call {call_sid}")
+                        except ImportError as e:
+                            logger.warning(f"Post-call processor not available: {e}")
+                        except Exception as e:
+                            logger.error(f"Error triggering post-call processing: {e}")
             else:
                 logger.warning(f"Call log not found for call_sid: {call_sid}")
 

@@ -9,6 +9,7 @@ import httpx
 from bson import ObjectId
 
 from app.config.database import Database
+from app.utils.encryption import encryption_service
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,37 @@ class CalendarService:
         self.calendar_accounts_collection = self.db["calendar_accounts"]
         self.appointments_collection = self.db["appointments"]
         self.leads_collection = self.db["leads"]
+
+    def _decrypt_token(self, encrypted_token: str) -> str:
+        """Decrypt OAuth token."""
+        try:
+            return encryption_service.decrypt(encrypted_token)
+        except Exception as e:
+            logger.error(f"Error decrypting token: {e}")
+            # If decryption fails, might be plain text (backwards compatibility)
+            return encrypted_token
+
+    async def _handle_token_error(self, account: Dict[str, Any], error: Exception) -> None:
+        """Handle token-related errors, including revoked tokens."""
+        error_str = str(error).lower()
+
+        # Check for token revocation errors
+        if any(keyword in error_str for keyword in ["invalid_grant", "token_revoked", "invalid_token", "unauthorized"]):
+            logger.warning(f"OAuth token revoked or invalid for account {account.get('_id')}. Marking account as invalid.")
+
+            # Mark account as requiring re-authorization
+            self.calendar_accounts_collection.update_one(
+                {"_id": account["_id"]},
+                {
+                    "$set": {
+                        "oauth.is_valid": False,
+                        "oauth.error": "Token revoked or invalid. Please reconnect your calendar.",
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+        else:
+            logger.error(f"Token error for account {account.get('_id')}: {error}")
 
     async def get_calendar_account(self, user_id: str, provider: str = "google") -> Optional[Dict[str, Any]]:
         """
@@ -55,12 +87,15 @@ class CalendarService:
         """
         try:
             oauth_data = account.get("oauth", {})
-            refresh_token = oauth_data.get("refreshToken")
+            encrypted_refresh_token = oauth_data.get("refreshToken")
             provider = account.get("provider")
 
-            if not refresh_token:
+            if not encrypted_refresh_token:
                 logger.error("No refresh token available")
                 return None
+
+            # Decrypt refresh token
+            refresh_token = self._decrypt_token(encrypted_refresh_token)
 
             if provider == "google":
                 # Google OAuth token refresh
@@ -81,12 +116,15 @@ class CalendarService:
                     data = response.json()
                     new_access_token = data.get("access_token")
 
+                    # Encrypt new access token before storing
+                    encrypted_access_token = encryption_service.encrypt(new_access_token)
+
                     # Update stored token
                     self.calendar_accounts_collection.update_one(
                         {"_id": account["_id"]},
                         {
                             "$set": {
-                                "oauth.accessToken": new_access_token,
+                                "oauth.accessToken": encrypted_access_token,
                                 "oauth.expiry": datetime.utcnow().timestamp() + data.get("expires_in", 3600),
                                 "updated_at": datetime.utcnow()
                             }
@@ -115,12 +153,15 @@ class CalendarService:
                     data = response.json()
                     new_access_token = data.get("access_token")
 
+                    # Encrypt new access token before storing
+                    encrypted_access_token = encryption_service.encrypt(new_access_token)
+
                     # Update stored token
                     self.calendar_accounts_collection.update_one(
                         {"_id": account["_id"]},
                         {
                             "$set": {
-                                "oauth.accessToken": new_access_token,
+                                "oauth.accessToken": encrypted_access_token,
                                 "oauth.expiry": datetime.utcnow().timestamp() + data.get("expires_in", 3600),
                                 "updated_at": datetime.utcnow()
                             }
@@ -129,6 +170,10 @@ class CalendarService:
 
                     return new_access_token
 
+        except httpx.HTTPStatusError as e:
+            # Handle HTTP errors (including revoked tokens)
+            await self._handle_token_error(account, e)
+            return None
         except Exception as e:
             logger.error(f"Error refreshing access token: {e}")
             return None
@@ -137,11 +182,14 @@ class CalendarService:
         """Return a valid access token, refreshing it if needed."""
         try:
             oauth_data = account.get("oauth", {})
-            access_token = oauth_data.get("accessToken")
+            encrypted_access_token = oauth_data.get("accessToken")
             expiry = oauth_data.get("expiry", 0)
 
-            if not access_token:
+            if not encrypted_access_token:
                 return None
+
+            # Decrypt access token
+            access_token = self._decrypt_token(encrypted_access_token)
 
             # Refresh token if it expires within the next minute
             if datetime.utcnow().timestamp() >= expiry - 60:
@@ -243,20 +291,29 @@ class CalendarService:
             logger.error(f"Error creating Microsoft event: {e}")
             return None
 
-    async def fetch_google_events(self, access_token: str, max_events: int = 10) -> List[Dict[str, Any]]:
-        """Fetch upcoming Google Calendar events."""
+    async def fetch_google_events(self, access_token: str, max_events: int = 10, account: Optional[Dict[str, Any]] = None, time_min: Optional[str] = None, time_max: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch Google Calendar events. If time_min/time_max not provided, fetches upcoming events."""
         try:
-            now_iso = datetime.utcnow().isoformat() + "Z"
+            # Default to upcoming events if no time range specified
+            if not time_min:
+                time_min = datetime.utcnow().isoformat() + "Z"
+
+            params = {
+                "timeMin": time_min,
+                "maxResults": max_events,
+                "singleEvents": True,
+                "orderBy": "startTime",
+            }
+
+            # Add time_max if provided
+            if time_max:
+                params["timeMax"] = time_max
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     "https://www.googleapis.com/calendar/v3/calendars/primary/events",
                     headers={"Authorization": f"Bearer {access_token}"},
-                    params={
-                        "timeMin": now_iso,
-                        "maxResults": max_events,
-                        "singleEvents": True,
-                        "orderBy": "startTime",
-                    },
+                    params=params,
                     timeout=30.0,
                 )
                 response.raise_for_status()
@@ -277,22 +334,39 @@ class CalendarService:
                         "organizer": item.get("organizer", {}).get("email"),
                     })
                 return events
+        except httpx.HTTPStatusError as exc:
+            if account:
+                await self._handle_token_error(account, exc)
+            logger.error(f"Error fetching Google events: {exc}")
+            return []
         except Exception as exc:
             logger.error(f"Error fetching Google events: {exc}")
             return []
 
-    async def fetch_microsoft_events(self, access_token: str, max_events: int = 10) -> List[Dict[str, Any]]:
-        """Fetch upcoming Microsoft (Outlook/Teams) calendar events."""
+    async def fetch_microsoft_events(self, access_token: str, max_events: int = 10, account: Optional[Dict[str, Any]] = None, time_min: Optional[str] = None, time_max: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Fetch Microsoft (Outlook/Teams) calendar events. If time_min/time_max not provided, fetches upcoming events."""
         try:
+            params = {
+                "$top": max_events,
+                "$orderby": "start/dateTime",
+                "$select": "id,subject,start,end,location,onlineMeetingUrl,organizer,webLink",
+            }
+
+            # Add time filtering if provided
+            filters = []
+            if time_min:
+                filters.append(f"start/dateTime ge '{time_min}'")
+            if time_max:
+                filters.append(f"start/dateTime lt '{time_max}'")
+
+            if filters:
+                params["$filter"] = " and ".join(filters)
+
             async with httpx.AsyncClient() as client:
                 response = await client.get(
                     "https://graph.microsoft.com/v1.0/me/events",
                     headers={"Authorization": f"Bearer {access_token}"},
-                    params={
-                        "$top": max_events,
-                        "$orderby": "start/dateTime",
-                        "$select": "id,subject,start,end,location,onlineMeetingUrl,organizer,webLink",
-                    },
+                    params=params,
                     timeout=30.0,
                 )
                 response.raise_for_status()
@@ -312,12 +386,17 @@ class CalendarService:
                         "organizer": ((item.get("organizer") or {}).get("emailAddress") or {}).get("address"),
                     })
                 return events
+        except httpx.HTTPStatusError as exc:
+            if account:
+                await self._handle_token_error(account, exc)
+            logger.error(f"Error fetching Microsoft events: {exc}")
+            return []
         except Exception as exc:
             logger.error(f"Error fetching Microsoft events: {exc}")
             return []
 
-    async def fetch_upcoming_events(self, user_id: str, provider: Optional[str] = None, max_events: int = 10) -> List[Dict[str, Any]]:
-        """Return aggregated upcoming events for the given user."""
+    async def fetch_upcoming_events(self, user_id: str, provider: Optional[str] = None, max_events: int = 10, time_min: Optional[str] = None, time_max: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Return aggregated events for the given user. Supports date range filtering."""
         try:
             query: Dict[str, Any] = {"user_id": ObjectId(user_id)}
             if provider:
@@ -327,6 +406,11 @@ class CalendarService:
             events: List[Dict[str, Any]] = []
 
             for account in accounts:
+                # Skip accounts marked as invalid
+                if account.get("oauth", {}).get("is_valid") is False:
+                    logger.warning("Skipping invalid account %s", account.get("_id"))
+                    continue
+
                 token = await self.ensure_access_token(account)
                 if not token:
                     logger.warning("No valid access token for account %s", account.get("_id"))
@@ -336,9 +420,9 @@ class CalendarService:
                 provider_events: List[Dict[str, Any]] = []
 
                 if provider_name == "google":
-                    provider_events = await self.fetch_google_events(token, max_events)
+                    provider_events = await self.fetch_google_events(token, max_events, account, time_min, time_max)
                 elif provider_name == "microsoft":
-                    provider_events = await self.fetch_microsoft_events(token, max_events)
+                    provider_events = await self.fetch_microsoft_events(token, max_events, account, time_min, time_max)
 
                 for event in provider_events:
                     event["provider"] = provider_name
@@ -378,18 +462,11 @@ class CalendarService:
                 logger.warning(f"No {provider} calendar account for user {user_id}")
                 return
 
-            # Get access token (refresh if needed)
-            oauth_data = account.get("oauth", {})
-            access_token = oauth_data.get("accessToken")
-            expiry = oauth_data.get("expiry", 0)
-
-            # Check if token expired
-            if datetime.utcnow().timestamp() >= expiry:
-                logger.info("Access token expired, refreshing...")
-                access_token = await self.refresh_access_token(account)
-                if not access_token:
-                    logger.error("Failed to refresh access token")
-                    return
+            # Get access token (refresh if needed) - use ensure_access_token for decryption and refresh
+            access_token = await self.ensure_access_token(account)
+            if not access_token:
+                logger.error("Failed to get valid access token")
+                return
 
             # Create calendar event
             event_id = None
@@ -428,5 +505,71 @@ class CalendarService:
 
         except Exception as e:
             logger.error(f"Error booking appointment: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+    async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google"):
+        """
+        Book an appointment for an inbound call.
+
+        Args:
+            call_sid: Twilio call SID
+            user_id: User ID (owner of the calendar)
+            assistant_id: AI assistant ID
+            appointment: Appointment details from AI analysis
+            provider: "google" or "microsoft"
+        """
+        try:
+            # Get calendar account
+            account = await self.get_calendar_account(user_id, provider)
+            if not account:
+                logger.warning(f"No {provider} calendar account for user {user_id}")
+                return
+
+            # Get access token (refresh if needed) - use ensure_access_token for decryption and refresh
+            access_token = await self.ensure_access_token(account)
+            if not access_token:
+                logger.error("Failed to get valid access token")
+                return
+
+            # Create calendar event
+            event_id = None
+            if provider == "google":
+                event_id = await self.create_google_event(access_token, appointment)
+            elif provider == "microsoft":
+                event_id = await self.create_microsoft_event(access_token, appointment)
+
+            if not event_id:
+                logger.error("Failed to create calendar event")
+                return
+
+            # Save appointment record (for inbound calls, we don't have lead_id or campaign_id)
+            appointment_doc = {
+                "user_id": ObjectId(user_id),
+                "assistant_id": ObjectId(assistant_id),
+                "call_sid": call_sid,
+                "call_type": "inbound",
+                "provider": provider,
+                "provider_event_id": event_id,
+                "title": appointment.get("title", "Inbound Call Appointment"),
+                "start": datetime.fromisoformat(appointment.get("start_iso")),
+                "end": datetime.fromisoformat(appointment.get("end_iso")),
+                "timezone": appointment.get("timezone", "America/New_York"),
+                "created_at": datetime.utcnow()
+            }
+
+            self.appointments_collection.insert_one(appointment_doc)
+
+            # Update call log to mark appointment booked
+            call_logs = self.db["call_logs"]
+            call_logs.update_one(
+                {"call_sid": call_sid},
+                {"$set": {"appointment_booked": True, "updated_at": datetime.utcnow()}}
+            )
+
+            logger.info(f"Inbound appointment booked for call {call_sid}: {event_id}")
+
+        except Exception as e:
+            logger.error(f"Error booking inbound appointment: {e}")
             import traceback
             logger.error(traceback.format_exc())
