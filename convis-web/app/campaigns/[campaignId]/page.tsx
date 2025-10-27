@@ -74,6 +74,7 @@ interface Lead {
   raw_number?: string | null;
   batch_name?: string | null;
   status: string;
+  last_outcome?: string | null;
   attempts: number;
   timezone?: string | null;
   custom_fields?: Record<string, unknown> | null;
@@ -315,9 +316,19 @@ export default function CampaignDetailPage() {
     if (!resolvedCampaignId) return;
     setIsLoadingActiveCalls(true);
     fetchActiveCalls();
-    const interval = setInterval(fetchActiveCalls, 4000);
+    const interval = setInterval(fetchActiveCalls, 1000);
     return () => clearInterval(interval);
   }, [resolvedCampaignId, fetchActiveCalls]);
+
+  // ULTRA-FAST MODE: Poll leads every 1 second for instant status updates
+  useEffect(() => {
+    if (!resolvedCampaignId) return;
+    const leadsInterval = setInterval(() => {
+      fetchLeads();
+      fetchStats();
+    }, 1000);
+    return () => clearInterval(leadsInterval);
+  }, [resolvedCampaignId, fetchLeads, fetchStats]);
 
   useEffect(() => {
     const loadAssistantInfo = async () => {
@@ -418,14 +429,20 @@ export default function CampaignDetailPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
-        throw new Error(errorData.detail || 'Unable to initiate test call');
+        const detailMessage =
+          typeof errorData.detail === 'string' && errorData.detail.trim().length > 0
+            ? errorData.detail
+            : 'Unable to initiate test call';
+        console.warn('Test call could not be initiated', detailMessage);
+        alert(detailMessage);
+        return;
       }
 
-      const data = await response.json();
+      const data = await response.json().catch(() => null);
       await fetchStats();
       await fetchLeads();
       await fetchActiveCalls();
-      alert(data.message || 'Test call initiated successfully.');
+      alert((data && data.message) || 'Test call initiated successfully.');
     } catch (err) {
       console.error('Error triggering test call', err);
       alert(err instanceof Error ? err.message : 'Failed to trigger test call');
@@ -619,11 +636,17 @@ export default function CampaignDetailPage() {
       case 'completed':
         return 'bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-200';
       case 'failed':
+      case 'no-answer':
         return 'bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-200';
       case 'busy':
         return 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-200';
-      case 'no-answer':
-        return 'bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-200';
+      case 'calling':
+      case 'initiated':
+      case 'ringing':
+      case 'answered':
+        return 'bg-purple-100 text-purple-700 dark:bg-purple-900 dark:text-purple-200 animate-pulse';
+      case 'machine':
+        return 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-200';
       default:
         return 'bg-neutral-light text-neutral-dark dark:bg-gray-900 dark:text-gray-200';
     }
@@ -631,6 +654,26 @@ export default function CampaignDetailPage() {
 
   const formatLeadStatus = (status: string) => {
     if (!status) return 'Unknown';
+
+    // Map specific statuses to user-friendly names
+    const statusMap: Record<string, string> = {
+      'no-answer': 'Not Connected',
+      'failed': 'Not Connected',
+      'busy': 'Busy',
+      'completed': 'Call Completed',
+      'queued': 'Queued',
+      'calling': 'Ongoing Call',
+      'machine': 'Voicemail',
+      'initiated': 'Initiating...',
+      'ringing': 'Ringing...',
+      'answered': 'Answered',
+    };
+
+    // Return mapped status or format the original
+    if (statusMap[status]) {
+      return statusMap[status];
+    }
+
     return status
       .split(/[-_]/)
       .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
@@ -959,7 +1002,7 @@ export default function CampaignDetailPage() {
                             <p className="text-xs uppercase tracking-wide text-primary font-semibold">Dialing Lead #{typeof lead.order_index === 'number' ? lead.order_index + 1 : '—'}</p>
                             <p className="text-lg font-bold mt-1">{getLeadDisplayName(lead)}</p>
                             <p className="font-mono text-sm">{lead.e164 || lead.raw_number || '—'}</p>
-                            <p className="text-xs mt-1">Attempt {lead.attempts} · {formatLeadStatus(lead.status)}</p>
+                            <p className="text-xs mt-1">{formatLeadStatus(lead.status)}</p>
                             <p className="text-xs text-gray-500">Last updated {formatDateTime(lead.updated_at)}</p>
                           </div>
                         );
@@ -999,7 +1042,6 @@ export default function CampaignDetailPage() {
                         <th className="px-4 py-2 text-left font-semibold">Contact Number</th>
                         <th className="px-4 py-2 text-left font-semibold">Email</th>
                         <th className="px-4 py-2 text-left font-semibold">Status</th>
-                        <th className="px-4 py-2 text-left font-semibold">Attempts</th>
                         <th className="px-4 py-2 text-left font-semibold">Timezone</th>
                         <th className="px-4 py-2 text-left font-semibold">Updated</th>
                       </tr>
@@ -1007,7 +1049,7 @@ export default function CampaignDetailPage() {
                     <tbody className={isDarkMode ? 'divide-y divide-gray-700' : 'divide-y divide-gray-200'}>
                       {leads.length === 0 ? (
                         <tr key="no-leads">
-                          <td colSpan={9} className="px-4 py-6 text-center text-gray-500">
+                          <td colSpan={8} className="px-4 py-6 text-center text-gray-500">
                             No leads found for this campaign.
                           </td>
                         </tr>
@@ -1020,11 +1062,17 @@ export default function CampaignDetailPage() {
                             <td className="px-4 py-2 font-mono">{lead.e164 || lead.raw_number || '—'}</td>
                             <td className="px-4 py-2">{lead.email || '—'}</td>
                             <td className="px-4 py-2">
-                              <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${leadStatusBadgeClass(lead.status)}`}>
-                                {formatLeadStatus(lead.status)}
-                              </span>
+                              <div className="flex flex-col gap-1">
+                                <span className={`inline-flex items-center px-2 py-1 rounded-full text-xs font-semibold ${leadStatusBadgeClass(lead.status)}`}>
+                                  {formatLeadStatus(lead.status)}
+                                </span>
+                                {lead.last_outcome && lead.last_outcome !== lead.status && (
+                                  <span className="text-xs text-gray-500">
+                                    Last: {formatLeadStatus(lead.last_outcome)}
+                                  </span>
+                                )}
+                              </div>
                             </td>
-                            <td className="px-4 py-2">{lead.attempts}</td>
                             <td className="px-4 py-2">{lead.timezone || '—'}</td>
                             <td className="px-4 py-2">{formatDateTime(lead.updated_at)}</td>
                           </tr>

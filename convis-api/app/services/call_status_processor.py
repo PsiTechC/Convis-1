@@ -24,6 +24,8 @@ def process_call_status(
     if not call_sid or not call_status:
         raise ValueError("call_sid and call_status are required")
 
+    logger.info(f"[PROCESSOR] Processing call status - SID: {call_sid}, Status: {call_status}, Lead: {lead_id}, Campaign: {campaign_id}")
+
     db = Database.get_db()
     call_attempts_collection = db["call_attempts"]
 
@@ -40,12 +42,31 @@ def process_call_status(
 
     if call_status in ["completed", "busy", "no-answer", "failed", "canceled"]:
         update_data["ended_at"] = datetime.utcnow()
+        logger.info(f"[PROCESSOR] Call ended - Status: {call_status}, SID: {call_sid}")
 
     call_attempts_collection.update_one(
         {"call_sid": call_sid},
         {"$set": update_data},
         upsert=True
     )
+    logger.info(f"[PROCESSOR] Updated call attempt record for SID: {call_sid}")
 
-    if call_status in ["completed", "busy", "no-answer", "failed", "canceled"] and lead_id and campaign_id:
-        _dialer.handle_call_completed(campaign_id, lead_id, call_status)
+    # CRITICAL FIX: If campaignId is missing, look it up from the lead
+    if call_status in ["completed", "busy", "no-answer", "failed", "canceled"]:
+        if not campaign_id and lead_id:
+            logger.warning(f"[PROCESSOR] campaignId missing from webhook, looking up from lead {lead_id}")
+            try:
+                from bson import ObjectId
+                leads_collection = db["leads"]
+                lead = leads_collection.find_one({"_id": ObjectId(lead_id)})
+                if lead and lead.get("campaign_id"):
+                    campaign_id = str(lead["campaign_id"])
+                    logger.info(f"[PROCESSOR] Found campaign_id: {campaign_id} from lead")
+            except Exception as e:
+                logger.error(f"[PROCESSOR] Failed to lookup campaign from lead: {e}")
+
+        if lead_id and campaign_id:
+            logger.info(f"[PROCESSOR] Triggering handle_call_completed for Lead: {lead_id}, Campaign: {campaign_id}")
+            _dialer.handle_call_completed(campaign_id, lead_id, call_status)
+        else:
+            logger.warning(f"[PROCESSOR] Skipping handle_call_completed - Status: {call_status}, Lead: {lead_id}, Campaign: {campaign_id}")

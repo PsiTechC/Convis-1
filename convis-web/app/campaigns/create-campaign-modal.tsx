@@ -140,7 +140,6 @@ interface CampaignFormData {
   retry_delays: string;
   calendar_enabled: boolean;
   calendar_account_id: string;
-  system_prompt_override: string;
   database_config: CampaignDatabaseConfigForm;
 }
 
@@ -193,7 +192,6 @@ const createDefaultFormState = (): CampaignFormData => ({
   retry_delays: '15,60,1440',
   calendar_enabled: false,
   calendar_account_id: '',
-  system_prompt_override: '',
   database_config: {
     enabled: false,
     type: 'postgresql',
@@ -230,7 +228,6 @@ const mapCampaignToFormData = (campaign: ExistingCampaign): CampaignFormData => 
     retry_delays: (retryPolicy.retry_after_minutes || []).join(',') || '15,60,1440',
     calendar_enabled: !!campaign.calendar_enabled,
     calendar_account_id: campaign.calendar_account_id || '',
-    system_prompt_override: campaign.system_prompt_override || '',
     database_config: {
       enabled: !!databaseConfig?.enabled,
       type: databaseConfig?.type || 'postgresql',
@@ -419,7 +416,9 @@ export default function CreateCampaignModal({
     }
 
     if (currentStep === 3) {
-      if (!csvFile && !isEditMode) {
+      // CSV is required when creating new campaign OR when user is on step 3 (upload leads step)
+      // Only skip validation if editing campaign and starting from step 1 or 2 (not on upload step)
+      if (!csvFile && (!isEditMode || initialStep === 3)) {
         newErrors.csvFile = 'Please upload a CSV file with leads';
       }
     }
@@ -471,8 +470,6 @@ export default function CreateCampaignModal({
       const startAtIso = formData.start_date ? new Date(formData.start_date).toISOString() : null;
       const stopAtIso = formData.end_date ? new Date(formData.end_date).toISOString() : null;
 
-      const systemPrompt = formData.system_prompt_override.trim();
-
       const basePayload = {
         name: formData.name,
         country: formData.country,
@@ -496,7 +493,6 @@ export default function CreateCampaignModal({
         stop_at: stopAtIso,
         calendar_enabled: formData.calendar_enabled,
         calendar_account_id: formData.calendar_enabled && formData.calendar_account_id ? formData.calendar_account_id : null,
-        system_prompt_override: systemPrompt || null,
         database_config: databaseConfigPayload,
       };
 
@@ -814,22 +810,6 @@ export default function CreateCampaignModal({
                   ))}
                 </select>
                 {errors.assistant_id && <p className="text-red-500 text-sm mt-1">{errors.assistant_id}</p>}
-              </div>
-
-              <div>
-                <label className={`block text-sm font-medium mb-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                  System Prompt Override
-                </label>
-                <textarea
-                  value={formData.system_prompt_override}
-                  onChange={(e) => handleInputChange('system_prompt_override', e.target.value)}
-                  rows={4}
-                  placeholder="Optional: Provide campaign-specific instructions to prepend to the AI assistant."
-                  className={`w-full px-4 py-3 rounded-lg border border-gray-300 dark:border-gray-600 ${isDarkMode ? 'bg-gray-700 text-white' : 'bg-white text-dark'} focus:ring-2 focus:ring-primary focus:border-transparent`}
-                />
-                <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                  Leave blank to reuse the assistant&rsquo;s default system message. When provided, the campaign instructions are appended during calls.
-                </p>
               </div>
 
               <div>

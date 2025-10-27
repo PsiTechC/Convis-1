@@ -411,11 +411,15 @@ async def trigger_test_call(campaign_id: str):
             }
         )
 
-        next_lead = dialer_service.get_next_lead(campaign_id, ignore_window=True)
+        next_lead = dialer_service.get_next_lead(
+            campaign_id,
+            ignore_window=True,
+            ignore_attempt_limit=True,
+        )
         if not next_lead:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No leads are ready to be called right now. Check that leads are queued, within the working window, and below the retry limit."
+                detail="No queued leads available for test call. Make sure you have uploaded leads with status 'queued' for this campaign."
             )
 
         call_sid = dialer_service.place_call(campaign_id, str(next_lead["_id"]))
@@ -764,6 +768,7 @@ async def update_campaign_status(campaign_id: str, payload: CampaignStatusUpdate
     try:
         db = Database.get_db()
         campaigns_collection = db["campaigns"]
+        leads_collection = db["leads"]
 
         try:
             campaign_obj_id = ObjectId(campaign_id)
@@ -774,23 +779,116 @@ async def update_campaign_status(campaign_id: str, payload: CampaignStatusUpdate
         if payload.status not in ["running", "paused", "stopped", "completed"]:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid status")
 
-        # Update campaign
-        result = campaigns_collection.update_one(
-            {"_id": campaign_obj_id},
-            {
-                "$set": {
-                    "status": payload.status,
-                    "updated_at": datetime.utcnow()
-                }
-            }
-        )
-
-        if result.matched_count == 0:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
-
-        # If starting, trigger first dial
+        # If starting campaign, reset all leads to queued for a fresh session
         if payload.status == "running":
-            dialer_service.dial_next(campaign_id)
+            # Get current campaign to check if it was previously in a different state
+            current_campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
+            if not current_campaign:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+            # Only reset leads if campaign was not already running (fresh start)
+            if current_campaign.get("status") != "running":
+                logger.info(f"Starting fresh campaign session for {campaign_id} - resetting all leads to queued")
+
+                # Reset all leads to queued status, clear attempts and outcomes
+                leads_collection.update_many(
+                    {"campaign_id": campaign_obj_id},
+                    {
+                        "$set": {
+                            "status": "queued",
+                            "attempts": 0,
+                            "next_retry_at": None,
+                            "last_outcome": None,
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+
+                # Clear campaign's last call timestamp to start immediately
+                campaigns_collection.update_one(
+                    {"_id": campaign_obj_id},
+                    {
+                        "$set": {
+                            "status": payload.status,
+                            "last_call_ended_at": None,
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+                logger.info(f"Reset {leads_collection.count_documents({'campaign_id': campaign_obj_id})} leads to queued status")
+
+                # CRITICAL FIX: Immediately trigger first call instead of waiting for scheduler
+                # This eliminates the 2-second delay for first call
+                # When user manually starts campaign, bypass working window (they explicitly want it to run)
+                try:
+                    import threading
+                    def trigger_first_call():
+                        try:
+                            logger.info(f"[START_CAMPAIGN] Triggering immediate first call for campaign {campaign_id}")
+                            # Use ignore_window=True because user explicitly clicked Start Campaign
+                            lead = dialer_service.get_next_lead(campaign_id, ignore_window=True, ignore_attempt_limit=False)
+                            if lead:
+                                logger.info(f"[START_CAMPAIGN] Found lead: {lead.get('name')} ({lead.get('e164')})")
+                                call_sid = dialer_service.place_call(campaign_id, str(lead["_id"]))
+                                if call_sid:
+                                    logger.info(f"[START_CAMPAIGN] First call placed successfully: {call_sid}")
+                                else:
+                                    logger.warning(f"[START_CAMPAIGN] Failed to place first call: {dialer_service.last_error}")
+                            else:
+                                logger.warning(f"[START_CAMPAIGN] No leads available for immediate call")
+                        except Exception as e:
+                            logger.error(f"[START_CAMPAIGN] Error triggering first call: {e}")
+                            import traceback
+                            logger.error(traceback.format_exc())
+
+                    # Run in background thread to not block the API response
+                    threading.Thread(target=trigger_first_call, daemon=True).start()
+                except Exception as e:
+                    logger.error(f"Error starting first call thread: {e}")
+            else:
+                # Campaign is already running, just update status (resume scenario)
+                campaigns_collection.update_one(
+                    {"_id": campaign_obj_id},
+                    {
+                        "$set": {
+                            "status": payload.status,
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+        else:
+            # Update campaign status (pause/stop/complete)
+            result = campaigns_collection.update_one(
+                {"_id": campaign_obj_id},
+                {
+                    "$set": {
+                        "status": payload.status,
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+
+            if result.matched_count == 0:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+            # CRITICAL FIX: When stopping campaign, reset any stuck "calling" leads
+            # This ensures leads don't remain stuck if webhook fails
+            if payload.status in ["stopped", "paused"]:
+                stuck_leads = leads_collection.update_many(
+                    {
+                        "campaign_id": campaign_obj_id,
+                        "status": "calling"
+                    },
+                    {
+                        "$set": {
+                            "status": "no-answer",
+                            "last_outcome": "campaign-stopped",
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+                if stuck_leads.modified_count > 0:
+                    logger.warning(f"Reset {stuck_leads.modified_count} stuck 'calling' leads when stopping campaign {campaign_id}")
 
         # Get updated campaign
         doc = campaigns_collection.find_one({"_id": campaign_obj_id})
@@ -801,6 +899,47 @@ async def update_campaign_status(campaign_id: str, payload: CampaignStatusUpdate
     except Exception as error:
         logger.error(f"Error updating campaign status: {error}")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to update status")
+
+
+@router.post("/{campaign_id}/reset-stuck-leads", status_code=status.HTTP_200_OK)
+async def reset_stuck_leads(campaign_id: str):
+    """Emergency endpoint to reset leads stuck in 'calling' status"""
+    try:
+        db = Database.get_db()
+        leads_collection = db["leads"]
+
+        try:
+            campaign_obj_id = ObjectId(campaign_id)
+        except Exception:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid campaign_id format")
+
+        # Reset all stuck leads
+        result = leads_collection.update_many(
+            {
+                "campaign_id": campaign_obj_id,
+                "status": "calling"
+            },
+            {
+                "$set": {
+                    "status": "no-answer",
+                    "last_outcome": "manual-reset",
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
+        logger.info(f"Manually reset {result.modified_count} stuck leads for campaign {campaign_id}")
+
+        return {
+            "message": f"Reset {result.modified_count} stuck lead(s)",
+            "count": result.modified_count
+        }
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        logger.error(f"Error resetting stuck leads: {error}")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Failed to reset leads")
 
 
 @router.get("/{campaign_id}/stats", response_model=CampaignStats, status_code=status.HTTP_200_OK)

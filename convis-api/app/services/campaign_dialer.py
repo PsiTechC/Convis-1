@@ -2,9 +2,10 @@
 Campaign dialer service with sequential calling and Redis locking
 """
 import logging
+import os
+import threading
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-import os
 
 import pytz
 import redis
@@ -35,15 +36,18 @@ class CampaignDialer:
         # Base URL for TwiML
         configured_base_url = settings.base_url or settings.api_base_url
         self.base_url = configured_base_url or os.getenv("BASE_URL", "https://your-domain.com")
-        self.twiml_url = os.getenv("OUTBOUND_TWIML_URL")
-        if not self.twiml_url:
-            self.twiml_url = f"{self.base_url}/api/twilio-webhooks/outbound-call"
-        self.status_callback = os.getenv("TW_STATUS_CALLBACK")
-        if not self.status_callback:
-            self.status_callback = f"{self.base_url}/api/twilio-webhooks/call-status"
-        self.recording_callback = os.getenv("TW_RECORDING_CALLBACK")
-        if not self.recording_callback:
-            self.recording_callback = f"{self.base_url}/api/twilio-webhooks/recording"
+
+        # CRITICAL FIX: Always build URLs from base_url to avoid ${VAR} expansion issues
+        # Don't trust env vars with variable substitution
+        self.twiml_url = f"{self.base_url}/api/twilio-webhooks/outbound-call"
+        self.status_callback = f"{self.base_url}/api/twilio-webhooks/call-status"
+        self.recording_callback = f"{self.base_url}/api/twilio-webhooks/recording"
+
+        logger.info(f"[DIALER] Webhook URLs configured:")
+        logger.info(f"  TwiML: {self.twiml_url}")
+        logger.info(f"  Status Callback: {self.status_callback}")
+        logger.info(f"  Recording: {self.recording_callback}")
+
         self.last_error: Optional[str] = None
 
     def acquire_lock(self, campaign_id: str, ttl: int = 180) -> bool:
@@ -108,12 +112,19 @@ class CampaignDialer:
             logger.error(f"Error checking working window: {e}")
             return False
 
-    def get_next_lead(self, campaign_id: str, ignore_window: bool = False) -> Optional[Dict[str, Any]]:
+    def get_next_lead(
+        self,
+        campaign_id: str,
+        ignore_window: bool = False,
+        ignore_attempt_limit: bool = False,
+    ) -> Optional[Dict[str, Any]]:
         """
         Get the next lead to call for a campaign.
 
         Args:
             campaign_id: Campaign ID
+            ignore_window: Bypass working window check (for test calls)
+            ignore_attempt_limit: Bypass attempt limit check (for test calls)
 
         Returns:
             Lead document or None
@@ -129,25 +140,31 @@ class CampaignDialer:
                 logger.error(f"Campaign {campaign_id} not found")
                 return None
 
+            # Simple query: just get queued leads in CSV order
+            # Each lead is called exactly once - no attempt limits
+            query = {
+                "campaign_id": ObjectId(campaign_id),
+                "status": "queued"
+            }
+
+            # Sort by order_index first (CSV order)
+            sort = [("order_index", 1), ("_id", 1)]
+
             # Get working window
             working_window = campaign.get("working_window", {})
 
-            # Find next queued lead within working window
-            leads = leads_collection.find({
-                "campaign_id": ObjectId(campaign_id),
-                "status": "queued"
-            }).sort([("order_index", 1), ("_id", 1)]).limit(10)  # Check next 10 leads
+            # Find leads matching the query
+            leads = leads_collection.find(query).sort(sort).limit(10)  # Check next 10 leads
 
             for lead in leads:
-                within_window = self.is_within_working_window(lead, working_window)
-                if ignore_window and not within_window:
-                    logger.info(f"Lead {lead['_id']} outside working window but selected for test call override")
-                    within_window = True
+                # Check working window unless ignoring for test calls
+                if ignore_window:
+                    logger.info(f"Lead {lead['_id']} selected for test call (ignoring working window)")
+                    return lead
 
+                within_window = self.is_within_working_window(lead, working_window)
                 if within_window:
-                    max_attempts = campaign.get("retry_policy", {}).get("max_attempts", 3)
-                    if lead.get("attempts", 0) < max_attempts:
-                        return lead
+                    return lead
 
             logger.info(f"No available leads for campaign {campaign_id}")
             return None
@@ -233,20 +250,29 @@ class CampaignDialer:
             if "http" not in base_url:
                 base_url = f"https://{base_url.lstrip('/')}"
 
+            # Build complete webhook URLs with parameters
+            twiml_url_complete = f"{base_url}?leadId={lead_id}&campaignId={campaign_id}&assistantId={assistant_id}"
+            status_cb_complete = f"{status_cb}?leadId={lead_id}&campaignId={campaign_id}" if status_cb else None
+            recording_cb_complete = f"{recording_cb}?leadId={lead_id}&campaignId={campaign_id}" if recording_cb else None
+
+            logger.info(f"[PLACE_CALL] Initiating call for campaign {campaign_id}, lead {lead_id}")
+            logger.info(f"[PLACE_CALL] To: {to_number}, From: {caller_id}")
+            logger.info(f"[PLACE_CALL] Status Webhook: {status_cb_complete}")
+
             call = twilio_client.calls.create(
                 to=to_number,
                 from_=caller_id,
-                url=f"{base_url}?leadId={lead_id}&campaignId={campaign_id}&assistantId={assistant_id}",
-                status_callback=f"{status_cb}?leadId={lead_id}&campaignId={campaign_id}" if status_cb else None,
-                status_callback_event=["initiated", "ringing", "answered", "completed"],
+                url=twiml_url_complete,
+                status_callback=status_cb_complete,
+                status_callback_event=["initiated", "ringing", "answered", "completed", "busy", "no-answer", "failed", "canceled"],
                 status_callback_method="POST",
                 record="true",
-                recording_status_callback=f"{recording_cb}?leadId={lead_id}&campaignId={campaign_id}" if recording_cb else None,
+                recording_status_callback=recording_cb_complete,
                 recording_status_callback_method="POST",
                 timeout=30
             )
 
-            logger.info(f"Call placed: {call.sid} to {to_number}")
+            logger.info(f"[PLACE_CALL] SUCCESS - Call SID: {call.sid}")
 
             # Create call attempt record
             attempt_num = lead.get("attempts", 1)
@@ -505,11 +531,11 @@ class CampaignDialer:
             now = datetime.utcnow()
             mapped_status = self._map_call_status(call_status)
             attempts = lead.get("attempts", 0)
-            max_attempts = campaign.get("attempts_per_number") or campaign.get("retry_policy", {}).get("max_attempts", 3)
             update_doc = {
                 "last_outcome": call_status,
                 "updated_at": now,
             }
+            should_continue = campaign.get("status") == "running"
 
             if mapped_status == "completed":
                 update_doc.update({
@@ -519,41 +545,33 @@ class CampaignDialer:
                 })
                 logger.info(f"Lead {lead_id} marked as completed after successful call")
             else:
-                if attempts >= max_attempts:
-                    update_doc.update({
-                        "status": "failed",
-                        "next_retry_at": None,
-                        "fallback_round": lead.get("fallback_round", 0)
-                    })
-                    logger.info(f"Lead {lead_id} marked as failed after {attempts} attempts")
-                else:
-                    next_retry = self._compute_next_retry(campaign, attempts, now, call_status)
-                    if next_retry is None:
-                        update_doc.update({
-                            "status": "failed",
-                            "next_retry_at": None,
-                            "fallback_round": lead.get("fallback_round", 0)
-                        })
-                        logger.info(f"Lead {lead_id} marked as failed (no retry schedule)")
-                    else:
-                        fallback_round = lead.get("fallback_round", 0)
-                        if next_retry > now:
-                            fallback_round += 1
-                        update_doc.update({
-                            "status": "queued",
-                            "next_retry_at": next_retry,
-                            "fallback_round": fallback_round
-                        })
-                        logger.info(f"Lead {lead_id} queued for retry at {next_retry} (attempt {attempts}/{max_attempts})")
+                # Treat any non-completed outcome as terminal so we move to the next lead
+                fallback_round = lead.get("fallback_round", 0)
+                terminal_status = mapped_status if mapped_status in {"busy", "no-answer"} else "failed"
+                update_doc.update({
+                    "status": terminal_status,
+                    "next_retry_at": None,
+                    "fallback_round": fallback_round
+                })
+                logger.info(
+                    f"Lead {lead_id} ended with status {terminal_status} after attempt {attempts}; no additional retries will be scheduled"
+                )
 
             leads_collection.update_one(
                 {"_id": ObjectId(lead_id)},
                 {"$set": update_doc}
             )
 
+            # Update campaign's last_call_ended_at to enforce 10-second delay between calls
+            campaigns_collection.update_one(
+                {"_id": ObjectId(campaign_id)},
+                {"$set": {"last_call_ended_at": now}}
+            )
+
             logger.info(
                 f"Call completed for lead {lead_id}: status={call_status} → {update_doc.get('status')}, next_retry={update_doc.get('next_retry_at')}"
             )
+            logger.info(f"Campaign {campaign_id} will automatically pick up next lead via scheduler after 10-second delay")
 
         except Exception as e:
             logger.error(f"Error handling call completion for lead {lead_id}: {e}")
@@ -569,3 +587,9 @@ class CampaignDialer:
                 logger.info(f"Reset lead {lead_id} to queued after error")
             except Exception as reset_error:
                 logger.error(f"Failed to reset lead status: {reset_error}")
+        finally:
+            # Ensure the lock is always released even if errors occur above
+            try:
+                self.release_lock(campaign_id)
+            except Exception as release_error:
+                logger.error(f"Failed to release lock for campaign {campaign_id}: {release_error}")

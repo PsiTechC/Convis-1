@@ -57,8 +57,8 @@ class Settings(BaseSettings):
     enable_post_call_ai: bool = True
     enable_auto_retry: bool = True
 
-    # Campaign scheduler
-    campaign_dispatch_interval_seconds: int = 5
+    # Campaign scheduler (reduced to 1 second for ultra-fast call progression)
+    campaign_dispatch_interval_seconds: int = 1
 
     # Google Calendar
     google_client_id: Optional[str] = None
