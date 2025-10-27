@@ -444,17 +444,22 @@ async def campaign_call_status(
             leadId = request.query_params.get('leadId')
             campaignId = request.query_params.get('campaignId')
 
-        logger.info(f"Campaign call status - CallSid: {CallSid}, Status: {CallStatus}, Lead: {leadId}")
+        logger.info(f"[WEBHOOK] Campaign call status received - CallSid: {CallSid}, Status: {CallStatus}, Duration: {CallDuration}s, Lead: {leadId}, Campaign: {campaignId}")
 
         if not CallSid or not CallStatus:
+            logger.error(f"[WEBHOOK] Missing required parameters - CallSid: {CallSid}, CallStatus: {CallStatus}")
             return {"error": "Missing required parameters"}
 
+        # Process the status update
         process_call_status(CallSid, CallStatus, CallDuration, leadId, campaignId)
+        logger.info(f"[WEBHOOK] Successfully processed call status for CallSid: {CallSid}")
 
         return {"message": "Status updated"}
 
     except Exception as error:
-        logger.error(f"Error in campaign call status: {error}")
+        logger.error(f"[WEBHOOK] Error in campaign call status: {error}")
+        import traceback
+        logger.error(traceback.format_exc())
         return {"error": str(error)}
 
 

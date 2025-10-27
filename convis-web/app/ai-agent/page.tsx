@@ -1328,24 +1328,6 @@ export default function AIAgentPage() {
                 />
               </div>
 
-              {/* System Message */}
-              <div>
-                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
-                  System Message <span className="text-red-500">*</span>
-                </label>
-                <textarea
-                  name="system_message"
-                  value={formData.system_message}
-                  onChange={handleFormChange}
-                  placeholder="Describe the assistant's role and behavior..."
-                  rows={5}
-                  className={`w-full px-4 py-3 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-neutral-mid/20 text-neutral-dark'} focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none`}
-                />
-                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-2`}>
-                  This message defines how the AI assistant will behave and respond to users.
-                </p>
-              </div>
-
               {/* Call Greeting */}
               <div>
                 <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
@@ -1364,10 +1346,28 @@ export default function AIAgentPage() {
                 </p>
               </div>
 
+              {/* System Message */}
+              <div>
+                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
+                  Agent persona and prompt <span className="text-red-500">*</span>
+                </label>
+                <textarea
+                  name="system_message"
+                  value={formData.system_message}
+                  onChange={handleFormChange}
+                  placeholder="Describe the assistant's role and behavior..."
+                  rows={5}
+                  className={`w-full px-4 py-3 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-white border-neutral-mid/20 text-neutral-dark'} focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all resize-none`}
+                />
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-2`}>
+                  This message defines how the AI assistant will behave and respond to users.
+                </p>
+              </div>
+
               {/* Stored API Keys */}
               <div>
                 <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
-                  AI Provider Key <span className="text-red-500">*</span>
+                  LLM provider <span className="text-red-500">*</span>
                 </label>
                 <div className={`rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-800/60' : 'border-neutral-mid/20 bg-neutral-light/40'} p-4`}> 
                   {isLoadingKeys ? (
@@ -1439,7 +1439,7 @@ export default function AIAgentPage() {
               {/* Voice Selection */}
               <div>
                 <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-3`}>
-                  Voice Selection
+                  Agent voice selection
                 </label>
                 <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-4`}>
                   Click on a voice to select it, and use the play button to hear a demo

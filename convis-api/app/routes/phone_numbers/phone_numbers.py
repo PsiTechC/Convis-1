@@ -470,8 +470,11 @@ async def get_user_phone_numbers(user_id: str):
                 detail="Invalid user_id format"
             )
 
-        # Fetch phone numbers
-        phone_docs = list(phone_numbers_collection.find({"user_id": user_obj_id}))
+        # Fetch only active phone numbers
+        phone_docs = list(phone_numbers_collection.find({
+            "user_id": user_obj_id,
+            "status": "active"
+        }))
 
         phone_numbers = []
         for doc in phone_docs:

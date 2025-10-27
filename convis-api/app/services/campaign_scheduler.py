@@ -75,35 +75,73 @@ class CampaignScheduler:
         """One synchronous tick that scans running campaigns and dials leads."""
         db = Database.get_db()
         campaigns_collection = db["campaigns"]
-        running_campaigns = campaigns_collection.find({"status": "running"})
+        leads_collection = db["leads"]
+        running_campaigns = list(campaigns_collection.find({"status": "running"}))
         now = utc_now()
         total_dispatched = 0
 
+        # CRITICAL FIX: Reset stale "calling" leads (stuck > 30 seconds)
+        # This handles cases where Twilio webhook never arrives or call is declined/rejected
+        stale_threshold = now - timedelta(seconds=30)
+        stale_reset = leads_collection.update_many(
+            {
+                "status": "calling",
+                "updated_at": {"$lt": stale_threshold}
+            },
+            {
+                "$set": {
+                    "status": "no-answer",
+                    "last_outcome": "timeout-no-webhook",
+                    "updated_at": now
+                }
+            }
+        )
+        if stale_reset.modified_count > 0:
+            logger.warning(f"[SCHEDULER] Reset {stale_reset.modified_count} stale 'calling' leads (no webhook received after 30s)")
+
+        if running_campaigns:
+            logger.debug(f"[SCHEDULER] Found {len(running_campaigns)} running campaign(s)")
+
         for campaign in running_campaigns:
             try:
+                campaign_id = str(campaign.get("_id"))
+                campaign_name = campaign.get("name", "Unknown")
+
                 if not self._campaign_is_active(campaign, now):
+                    logger.debug(f"[SCHEDULER] Campaign {campaign_name} ({campaign_id}) is not active (checking delays/business hours)")
                     continue
 
                 slots = self._available_slots_for_campaign(db, campaign)
                 if slots <= 0:
+                    logger.debug(f"[SCHEDULER] Campaign {campaign_name} ({campaign_id}) has no available slots (current calls in progress)")
                     continue
+
+                logger.info(f"[SCHEDULER] Campaign {campaign_name} ({campaign_id}) has {slots} available slot(s)")
 
                 for _ in range(slots):
                     lead = self._reserve_lead(db, campaign, now)
                     if not lead:
+                        logger.debug(f"[SCHEDULER] No ready leads found for campaign {campaign_name} ({campaign_id})")
                         break
+                    lead_name = lead.get("name", "Unknown")
+                    logger.info(f"[SCHEDULER] Reserved lead {lead_name} for campaign {campaign_name}")
                     dispatched = self._start_call(campaign, lead)
                     if dispatched:
                         total_dispatched += 1
+                        logger.info(f"[SCHEDULER] Successfully dispatched call for lead {lead_name}")
+                    else:
+                        logger.warning(f"[SCHEDULER] Failed to dispatch call for lead {lead_name}")
             except Exception as campaign_error:
                 logger.exception(
-                    "Failed to process campaign %s: %s",
+                    "[SCHEDULER] Failed to process campaign %s: %s",
                     campaign.get("_id"),
                     campaign_error
                 )
 
         if total_dispatched:
-            logger.info("Dispatched %s lead(s) this tick", total_dispatched)
+            logger.info(f"[SCHEDULER] Dispatched {total_dispatched} lead(s) this tick")
+        elif running_campaigns:
+            logger.debug(f"[SCHEDULER] Tick completed - no leads dispatched (campaigns may be waiting for delays)")
 
     def _campaign_is_active(self, campaign: Dict[str, Any], now: datetime) -> bool:
         start_at = campaign.get("start_at")
@@ -113,6 +151,9 @@ class CampaignScheduler:
         stop_at = campaign.get("stop_at")
         if stop_at and stop_at <= now:
             return False
+
+        # NO DELAY MODE - Call immediately for maximum speed
+        # Removed inter-call delay entirely for instant sequential dialing
 
         return self._within_business_hours(campaign, now)
 
@@ -159,31 +200,16 @@ class CampaignScheduler:
     def _reserve_lead(self, db, campaign: Dict[str, Any], now: datetime) -> Optional[Dict[str, Any]]:
         leads_collection = db["leads"]
         campaign_id = campaign["_id"]
-        attempts_limit = campaign.get("attempts_per_number") or campaign.get("retry_policy", {}).get("max_attempts", 3)
 
+        # Simple query: just get queued leads in CSV order
+        # No attempt limits - each lead is called exactly once
         query = {
             "campaign_id": campaign_id,
-            "status": "queued",
-            "$and": [
-                {
-                    "$or": [
-                        {"attempts": {"$exists": False}},
-                        {"attempts": {"$lt": attempts_limit}}
-                    ]
-                },
-                {
-                    "$or": [
-                        {"next_retry_at": {"$exists": False}},
-                        {"next_retry_at": None},
-                        {"next_retry_at": {"$lte": now}},
-                    ]
-                }
-            ]
+            "status": "queued"
         }
 
-        sort = [("next_retry_at", 1), ("_id", 1)]
-        if campaign.get("priority") == "fallback-first":
-            sort = [("fallback_round", -1), ("next_retry_at", 1), ("_id", 1)]
+        # Sort by order_index first (call in CSV order)
+        sort = [("order_index", 1), ("_id", 1)]
 
         lead = leads_collection.find_one_and_update(
             query,
