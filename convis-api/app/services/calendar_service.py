@@ -4,7 +4,7 @@ Calendar integration service for Google Calendar and Microsoft Calendar
 import logging
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 import httpx
 from bson import ObjectId
 
@@ -133,6 +133,27 @@ class CalendarService:
             logger.error(f"Error refreshing access token: {e}")
             return None
 
+    async def ensure_access_token(self, account: Dict[str, Any]) -> Optional[str]:
+        """Return a valid access token, refreshing it if needed."""
+        try:
+            oauth_data = account.get("oauth", {})
+            access_token = oauth_data.get("accessToken")
+            expiry = oauth_data.get("expiry", 0)
+
+            if not access_token:
+                return None
+
+            # Refresh token if it expires within the next minute
+            if datetime.utcnow().timestamp() >= expiry - 60:
+                logger.info("Access token expiring soon; refreshing for account %s", account.get("_id"))
+                refreshed = await self.refresh_access_token(account)
+                if refreshed:
+                    access_token = refreshed
+            return access_token
+        except Exception as exc:
+            logger.error(f"Failed to ensure access token: {exc}")
+            return None
+
     async def create_google_event(self, access_token: str, event_data: Dict[str, Any]) -> Optional[str]:
         """
         Create Google Calendar event.
@@ -221,6 +242,115 @@ class CalendarService:
         except Exception as e:
             logger.error(f"Error creating Microsoft event: {e}")
             return None
+
+    async def fetch_google_events(self, access_token: str, max_events: int = 10) -> List[Dict[str, Any]]:
+        """Fetch upcoming Google Calendar events."""
+        try:
+            now_iso = datetime.utcnow().isoformat() + "Z"
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={
+                        "timeMin": now_iso,
+                        "maxResults": max_events,
+                        "singleEvents": True,
+                        "orderBy": "startTime",
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                events: List[Dict[str, Any]] = []
+                for item in payload.get("items", []):
+                    start = item.get("start", {})
+                    end = item.get("end", {})
+                    start_iso = start.get("dateTime") or (start.get("date") + "T00:00:00Z" if start.get("date") else None)
+                    end_iso = end.get("dateTime") or (end.get("date") + "T00:00:00Z" if end.get("date") else None)
+                    events.append({
+                        "id": item.get("id"),
+                        "title": item.get("summary", "(No title)"),
+                        "start": start_iso,
+                        "end": end_iso,
+                        "location": item.get("location"),
+                        "meeting_link": item.get("hangoutLink") or item.get("htmlLink"),
+                        "organizer": item.get("organizer", {}).get("email"),
+                    })
+                return events
+        except Exception as exc:
+            logger.error(f"Error fetching Google events: {exc}")
+            return []
+
+    async def fetch_microsoft_events(self, access_token: str, max_events: int = 10) -> List[Dict[str, Any]]:
+        """Fetch upcoming Microsoft (Outlook/Teams) calendar events."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    "https://graph.microsoft.com/v1.0/me/events",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    params={
+                        "$top": max_events,
+                        "$orderby": "start/dateTime",
+                        "$select": "id,subject,start,end,location,onlineMeetingUrl,organizer,webLink",
+                    },
+                    timeout=30.0,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                events: List[Dict[str, Any]] = []
+                for item in payload.get("value", []):
+                    start = item.get("start", {})
+                    end = item.get("end", {})
+                    events.append({
+                        "id": item.get("id"),
+                        "title": item.get("subject", "(No title)"),
+                        "start": start.get("dateTime"),
+                        "end": end.get("dateTime"),
+                        "timezone": start.get("timeZone"),
+                        "location": (item.get("location") or {}).get("displayName"),
+                        "meeting_link": item.get("onlineMeetingUrl") or item.get("webLink"),
+                        "organizer": ((item.get("organizer") or {}).get("emailAddress") or {}).get("address"),
+                    })
+                return events
+        except Exception as exc:
+            logger.error(f"Error fetching Microsoft events: {exc}")
+            return []
+
+    async def fetch_upcoming_events(self, user_id: str, provider: Optional[str] = None, max_events: int = 10) -> List[Dict[str, Any]]:
+        """Return aggregated upcoming events for the given user."""
+        try:
+            query: Dict[str, Any] = {"user_id": ObjectId(user_id)}
+            if provider:
+                query["provider"] = provider
+
+            accounts = list(self.calendar_accounts_collection.find(query))
+            events: List[Dict[str, Any]] = []
+
+            for account in accounts:
+                token = await self.ensure_access_token(account)
+                if not token:
+                    logger.warning("No valid access token for account %s", account.get("_id"))
+                    continue
+
+                provider_name = account.get("provider")
+                provider_events: List[Dict[str, Any]] = []
+
+                if provider_name == "google":
+                    provider_events = await self.fetch_google_events(token, max_events)
+                elif provider_name == "microsoft":
+                    provider_events = await self.fetch_microsoft_events(token, max_events)
+
+                for event in provider_events:
+                    event["provider"] = provider_name
+                    event["account_email"] = account.get("email")
+                events.extend(provider_events)
+
+            # Sort by start datetime when available
+            events.sort(key=lambda evt: evt.get("start") or "")
+            return events[:max_events]
+        except Exception as exc:
+            logger.error(f"Error fetching upcoming events: {exc}")
+            return []
 
     async def book_appointment(self, lead_id: str, campaign_id: str, appointment_data: Dict[str, Any], provider: str = "google"):
         """

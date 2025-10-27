@@ -11,6 +11,7 @@ from app.routes.ai_assistant import database as database_router
 from app.routes.inbound_calls import inbound_calls_router
 from app.routes.outbound_calls import outbound_calls_router
 from app.routes.phone_numbers import phone_numbers_router, twilio_management_router, subaccounts_router, messaging_services_router
+from app.routes.calendar import router as calendar_router
 from app.routes.campaigns import router as campaigns_router
 from app.routes.twilio_webhooks import router as twilio_webhooks_router
 from app.routes.campaign_twilio_callbacks import router as campaign_twilio_router
@@ -77,6 +78,7 @@ app.include_router(phone_numbers_router, prefix="/api/phone-numbers", tags=["Pho
 app.include_router(twilio_management_router, prefix="/api/phone-numbers/twilio", tags=["Twilio Management"])
 app.include_router(subaccounts_router, prefix="/api/phone-numbers/subaccounts", tags=["Subaccounts"])
 app.include_router(messaging_services_router, prefix="/api/phone-numbers/messaging-services", tags=["Messaging Services"])
+app.include_router(calendar_router, prefix="/api/calendar", tags=["Calendar"])
 
 # Twilio Webhooks (dynamic routing)
 app.include_router(twilio_webhooks_router, prefix="/api/twilio-webhooks", tags=["Twilio Webhooks"])

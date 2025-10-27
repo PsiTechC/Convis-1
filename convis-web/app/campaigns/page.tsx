@@ -145,6 +145,16 @@ export default function CampaignsPage() {
     }
   };
 
+  const getStatusLabel = (status: string) => (status ? status.charAt(0).toUpperCase() + status.slice(1) : 'Unknown');
+
+  const getCampaignSummary = (campaign: Campaign) => {
+    const summary = (campaign.system_prompt_override || '').trim();
+    if (summary.length > 0) {
+      return summary.length > 140 ? `${summary.slice(0, 137)}...` : summary;
+    }
+    return 'No campaign-specific instructions provided yet. Configure a prompt to guide the assistant during calls.';
+  };
+
   const handleViewDetails = (campaignId: string) => {
     router.push(`/campaigns/${campaignId}`);
   };
@@ -314,87 +324,105 @@ export default function CampaignsPage() {
               </button>
             </div>
           ) : (
-            <div className="grid gap-6">
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
               {campaigns.map((campaign, idx) => {
                 const campaignId = campaign.id || campaign._id || `${campaign.caller_id}-${idx}`;
+                const summary = getCampaignSummary(campaign);
+                const stats = campaign.stats;
+                const hasCalendar = Boolean(campaign.calendar_enabled);
                 return (
-                <div
-                  key={campaignId}
-                  className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl p-6 hover:shadow-lg transition-shadow`}
-                >
-                  <div className="flex items-start justify-between mb-4">
-                    <div>
-                      <h3 className={`text-lg font-bold mb-1 ${isDarkMode ? 'text-white' : 'text-dark'}`}>
-                        {campaign.name}
-                      </h3>
-                      <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>
-                        {campaign.country} • {campaign.caller_id}
-                      </p>
-                    </div>
-                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(campaign.status)}`}>
-                      {campaign.status.charAt(0).toUpperCase() + campaign.status.slice(1)}
-                    </span>
-                  </div>
-
-                  {campaign.stats && (
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-                      <div key={`${campaignId}-total`}>
-                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Total Leads</p>
-                        <p className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-dark'}`}>
-                          {campaign.stats.total_leads}
-                        </p>
+                  <div
+                    key={campaignId}
+                    className={`${isDarkMode ? 'bg-gray-800/90 border-gray-700' : 'bg-white border-neutral-mid/10'} rounded-2xl border shadow-sm hover:shadow-md transition-shadow flex flex-col`}
+                  >
+                    <div className="flex items-start justify-between gap-3 p-6 pb-4">
+                      <div className="flex items-center gap-3">
+                        <div className={`flex h-12 w-12 items-center justify-center rounded-2xl ${isDarkMode ? 'bg-primary/20 text-primary' : 'bg-primary/10 text-primary'}`}>
+                          <svg className="h-6 w-6" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.6} d="M5 8l7-5 7 5v9a4 4 0 01-4 4h-6a4 4 0 01-4-4z" />
+                          </svg>
+                        </div>
+                        <div>
+                          <p className={`text-sm font-semibold uppercase tracking-wide ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                            {campaign.country}
+                          </p>
+                          <h3 className={`text-xl font-semibold ${isDarkMode ? 'text-white' : 'text-dark'}`}>
+                            {campaign.name}
+                          </h3>
+                          <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/70'}`}>
+                            Caller ID: {campaign.caller_id || 'Not Assigned'}
+                          </p>
+                        </div>
                       </div>
-                      <div key={`${campaignId}-completed`}>
-                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Completed</p>
-                        <p className={`text-xl font-bold text-green-500`}>
-                          {campaign.stats.completed}
-                        </p>
-                      </div>
-                      <div key={`${campaignId}-queued`}>
-                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Queued</p>
-                        <p className={`text-xl font-bold text-blue-500`}>
-                          {campaign.stats.queued}
-                        </p>
-                      </div>
-                      <div key={`${campaignId}-calling`}>
-                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-dark/60'}`}>Calling</p>
-                        <p className={`text-xl font-bold text-yellow-500`}>
-                          {campaign.stats.calling}
-                        </p>
+                      <div className="flex flex-col items-end gap-2 text-right">
+                        <span className={`px-3 py-1 rounded-full text-xs font-semibold ${getStatusColor(campaign.status)}`}>
+                          {getStatusLabel(campaign.status)}
+                        </span>
+                        {hasCalendar && (
+                          <span className={`text-xs font-medium ${isDarkMode ? 'text-green-300' : 'text-green-600'}`}>
+                            Calendar Enabled
+                          </span>
+                        )}
                       </div>
                     </div>
-                  )}
 
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      onClick={() => handleViewDetails(campaign.id || campaign._id || '')}
-                      className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/20'} transition-colors text-sm font-medium`}
-                    >
-                      View Details
-                    </button>
-                    <button
-                      onClick={() => handleManageLeads(campaign.id || campaign._id || '')}
-                      className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/20'} transition-colors text-sm font-medium`}
-                    >
-                      Manage Leads
-                    </button>
-                    <button
-                      onClick={() => handleExport(campaign.id || campaign._id || '')}
-                      className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/20'} transition-colors text-sm font-medium`}
-                    >
-                      Export
-                    </button>
-                    <button
-                      onClick={() => handleDeleteCampaign(campaign.id || campaign._id || '', campaign.name)}
-                      className={`px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors text-sm font-medium flex items-center gap-2`}
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                      Delete
-                    </button>
+                    <div className={`px-6 pb-4 text-sm ${isDarkMode ? 'text-gray-300' : 'text-dark/70'}`}>
+                      {summary}
+                    </div>
+
+                    <div className={`px-6 pb-4 ${isDarkMode ? 'text-gray-200' : 'text-dark'}`}>
+                      <div className="grid grid-cols-2 gap-4 text-sm">
+                        <div>
+                          <p className={`${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'}`}>Total Leads</p>
+                          <p className="text-lg font-semibold">{stats ? stats.total_leads : '—'}</p>
+                        </div>
+                        <div>
+                          <p className={`${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'}`}>Completed</p>
+                          <p className="text-lg font-semibold text-green-500">{stats ? stats.completed : '—'}</p>
+                        </div>
+                        <div>
+                          <p className={`${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'}`}>Queued</p>
+                          <p className="text-lg font-semibold text-blue-500">{stats ? stats.queued : '—'}</p>
+                        </div>
+                        <div>
+                          <p className={`${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'}`}>Calling</p>
+                          <p className="text-lg font-semibold text-yellow-500">{stats ? stats.calling : '—'}</p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="mt-auto border-t border-dashed border-neutral-mid/20 px-6 py-4 dark:border-gray-700">
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          onClick={() => handleViewDetails(campaign.id || campaign._id || '')}
+                          className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/30'} transition-colors text-sm font-medium`}
+                        >
+                          View Details
+                        </button>
+                        <button
+                          onClick={() => handleManageLeads(campaign.id || campaign._id || '')}
+                          className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/30'} transition-colors text-sm font-medium`}
+                        >
+                          Manage Leads
+                        </button>
+                        <button
+                          onClick={() => handleExport(campaign.id || campaign._id || '')}
+                          className={`px-4 py-2 rounded-lg ${isDarkMode ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-neutral-light text-dark hover:bg-neutral-mid/30'} transition-colors text-sm font-medium`}
+                        >
+                          Export
+                        </button>
+                        <button
+                          onClick={() => handleDeleteCampaign(campaign.id || campaign._id || '', campaign.name)}
+                          className={`px-4 py-2 rounded-lg bg-red-500 text-white hover:bg-red-600 transition-colors text-sm font-medium flex items-center gap-2`}
+                        >
+                          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                          </svg>
+                          Delete
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                </div>
                 );
               })}
             </div>
