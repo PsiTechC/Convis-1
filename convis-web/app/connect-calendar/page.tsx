@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
 import { TopBar } from '../components/TopBar';
+import { MonthlyCalendar } from '../components/MonthlyCalendar';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 
@@ -54,8 +55,8 @@ const PROVIDER_LABELS: Record<Provider, string> = {
 };
 
 const PROVIDER_BADGE_CLASSES: Record<Provider, string> = {
-  google: 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-200',
-  microsoft: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-200',
+  google: 'bg-red-500 text-white dark:bg-red-600 dark:text-white',
+  microsoft: 'bg-blue-500 text-white dark:bg-blue-600 dark:text-white',
 };
 
 const formatDateTime = (value?: string | null) => {
@@ -160,11 +161,20 @@ export default function ConnectCalendarPage() {
     }
   }, []);
 
-  const fetchEvents = useCallback(async (userId: string) => {
+  const fetchEvents = useCallback(async (userId: string, timeMin?: string, timeMax?: string) => {
     try {
       setIsLoadingEvents(true);
       const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/calendar/events/${userId}?limit=10`, {
+
+      // Build query parameters
+      const params = new URLSearchParams({
+        limit: '100',  // Fetch up to 100 events for monthly view
+      });
+
+      if (timeMin) params.append('time_min', timeMin);
+      if (timeMax) params.append('time_max', timeMax);
+
+      const response = await fetch(`${API_URL}/api/calendar/events/${userId}?${params}`, {
         headers: token ? { Authorization: `Bearer ${token}` } : undefined,
       });
 
@@ -185,7 +195,17 @@ export default function ConnectCalendarPage() {
   useEffect(() => {
     if (!resolvedUserId) return;
     fetchAccounts(resolvedUserId);
-    fetchEvents(resolvedUserId);
+
+    // Fetch events for current month (3 months range: last month, current, next month)
+    const now = new Date();
+    const startOfRange = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const endOfRange = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+
+    fetchEvents(
+      resolvedUserId,
+      startOfRange.toISOString(),
+      endOfRange.toISOString()
+    );
   }, [resolvedUserId, fetchAccounts, fetchEvents]);
 
   useEffect(() => {
@@ -279,13 +299,32 @@ export default function ConnectCalendarPage() {
       setBanner({ type: 'success', message: 'Calendar disconnected.' });
       if (resolvedUserId) {
         fetchAccounts(resolvedUserId);
-        fetchEvents(resolvedUserId);
+
+        // Refetch events for current range
+        const now = new Date();
+        const startOfRange = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+        const endOfRange = new Date(now.getFullYear(), now.getMonth() + 2, 0);
+        fetchEvents(resolvedUserId, startOfRange.toISOString(), endOfRange.toISOString());
       }
     } catch (error) {
       console.error(error);
       setBanner({ type: 'error', message: error instanceof Error ? error.message : 'Failed to disconnect calendar.' });
     }
   };
+
+  const handleMonthChange = useCallback((year: number, month: number) => {
+    if (!resolvedUserId) return;
+
+    // Fetch events for the selected month +/- 1 month buffer
+    const startOfRange = new Date(year, month - 1, 1);
+    const endOfRange = new Date(year, month + 2, 0);
+
+    fetchEvents(
+      resolvedUserId,
+      startOfRange.toISOString(),
+      endOfRange.toISOString()
+    );
+  }, [resolvedUserId, fetchEvents]);
 
   if (!user) {
     return (
@@ -455,7 +494,7 @@ export default function ConnectCalendarPage() {
                   </div>
                 ) : events.length === 0 ? (
                   <p className={`${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                    No upcoming events detected. Once connected, your next 10 events will appear here.
+                    No upcoming events detected. Once connected, your upcoming events will appear here.
                   </p>
                 ) : (
                   <div className="space-y-4 max-h-[360px] overflow-y-auto pr-2">
@@ -493,6 +532,20 @@ export default function ConnectCalendarPage() {
               </div>
             </div>
           </section>
+
+          {/* Monthly Calendar View */}
+          {events.length > 0 && (
+            <section className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl p-6 shadow-sm`}>
+              <MonthlyCalendar
+                events={events}
+                isDarkMode={isDarkMode}
+                onDateClick={(date) => {
+                  console.log('Date clicked:', date);
+                }}
+                onMonthChange={handleMonthChange}
+              />
+            </section>
+          )}
 
           <section className={`${isDarkMode ? 'bg-gray-800/70 border-gray-700' : 'bg-white border-neutral-mid/10'} border rounded-2xl p-6`}>
             <h2 className={`text-xl font-semibold ${isDarkMode ? 'text-white' : 'text-dark'}`}>How it works</h2>

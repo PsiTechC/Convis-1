@@ -7,12 +7,14 @@ from urllib.parse import urlencode
 import httpx
 import jwt
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, Query, status, Depends
 from fastapi.responses import RedirectResponse
 
 from app.config.database import Database
 from app.config.settings import settings
 from app.services.calendar_service import CalendarService
+from app.utils.auth import get_current_user, verify_user_ownership
+from app.utils.encryption import encryption_service
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +136,10 @@ async def _fetch_microsoft_profile(access_token: str) -> dict:
 
 
 @router.get("/accounts/{user_id}")
-async def list_calendar_accounts(user_id: str):
+async def list_calendar_accounts(user_id: str, current_user: dict = Depends(get_current_user)):
+    # Verify user owns this resource
+    await verify_user_ownership(current_user, user_id)
+
     try:
         user_obj_id = ObjectId(user_id)
     except Exception:
@@ -147,7 +152,7 @@ async def list_calendar_accounts(user_id: str):
 
 
 @router.delete("/accounts/{account_id}")
-async def delete_calendar_account(account_id: str):
+async def delete_calendar_account(account_id: str, current_user: dict = Depends(get_current_user)):
     try:
         account_obj_id = ObjectId(account_id)
     except Exception:
@@ -155,15 +160,32 @@ async def delete_calendar_account(account_id: str):
 
     db = Database.get_db()
     accounts_collection = db["calendar_accounts"]
+
+    # First, verify the account exists and belongs to the current user
+    account = accounts_collection.find_one({"_id": account_obj_id})
+    if not account:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Calendar account not found")
+
+    # Verify ownership
+    account_user_id = str(account.get("user_id"))
+    await verify_user_ownership(current_user, account_user_id)
+
+    # Delete the account
     result = accounts_collection.delete_one({"_id": account_obj_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Calendar account not found")
+
+    logger.info(f"User {current_user['user_id']} disconnected calendar account {account_id}")
     return {"message": "Calendar disconnected"}
 
 
 @router.get("/{provider}/auth-url")
-async def get_auth_url(provider: str, user_id: str):
+async def get_auth_url(provider: str, user_id: str, current_user: dict = Depends(get_current_user)):
     normalized_provider = _validate_provider(provider)
+
+    # Verify user owns this resource
+    await verify_user_ownership(current_user, user_id)
+
     try:
         user_obj_id = ObjectId(user_id)
     except Exception:
@@ -186,7 +208,7 @@ async def get_auth_url(provider: str, user_id: str):
             "response_type": "code",
             "client_id": client_id,
             "redirect_uri": redirect_uri,
-            "scope": "https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
+            "scope": "https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/calendar.events https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile",
             "access_type": "offline",
             "prompt": "consent",
             "include_granted_scopes": "true",
@@ -249,14 +271,18 @@ async def oauth_callback(provider: str, code: str = Query(...), state: str = Que
         if existing and not refresh_token:
             refresh_token = (existing.get("oauth") or {}).get("refreshToken")
 
+        # Encrypt tokens before storing
+        encrypted_access_token = encryption_service.encrypt(access_token) if access_token else None
+        encrypted_refresh_token = encryption_service.encrypt(refresh_token) if refresh_token else None
+
         accounts_collection.update_one(
             {"user_id": user_obj_id, "provider": normalized_provider},
             {
                 "$set": {
                     "email": email,
                     "oauth": {
-                        "accessToken": access_token,
-                        "refreshToken": refresh_token,
+                        "accessToken": encrypted_access_token,
+                        "refreshToken": encrypted_refresh_token,
                         "expiry": datetime.utcnow().timestamp() + expires_in,
                     },
                     "updated_at": now,
@@ -280,7 +306,17 @@ async def oauth_callback(provider: str, code: str = Query(...), state: str = Que
 
 
 @router.get("/events/{user_id}")
-async def list_calendar_events(user_id: str, provider: Optional[str] = None, limit: int = 10):
+async def list_calendar_events(
+    user_id: str,
+    provider: Optional[str] = None,
+    limit: int = 10,
+    time_min: Optional[str] = Query(None, description="Start of time range (ISO 8601)"),
+    time_max: Optional[str] = Query(None, description="End of time range (ISO 8601)"),
+    current_user: dict = Depends(get_current_user)
+):
+    # Verify user owns this resource
+    await verify_user_ownership(current_user, user_id)
+
     try:
         ObjectId(user_id)
     except Exception:
@@ -290,7 +326,7 @@ async def list_calendar_events(user_id: str, provider: Optional[str] = None, lim
     if normalized_provider and normalized_provider not in SUPPORTED_PROVIDERS:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported provider filter")
 
-    limit = max(1, min(limit, 50))
+    limit = max(1, min(limit, 100))  # Increased to 100 for monthly view
     service = CalendarService()
-    events = await service.fetch_upcoming_events(user_id, normalized_provider, limit)
+    events = await service.fetch_upcoming_events(user_id, normalized_provider, limit, time_min, time_max)
     return {"events": events}
