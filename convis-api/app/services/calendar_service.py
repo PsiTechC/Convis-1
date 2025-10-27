@@ -436,18 +436,21 @@ class CalendarService:
             logger.error(f"Error fetching upcoming events: {exc}")
             return []
 
-    async def book_appointment(self, lead_id: str, campaign_id: str, appointment_data: Dict[str, Any], provider: str = "google"):
+    async def book_appointment(self, lead_id: str, campaign_id: str, appointment_data: Dict[str, Any], provider: str = "google") -> Optional[str]:
         """
-        Book an appointment for a lead.
+        Book an appointment for a lead using the campaign's assigned calendar account.
 
         Args:
             lead_id: Lead ID
             campaign_id: Campaign ID
             appointment_data: Appointment details from AI analysis
-            provider: "google" or "microsoft"
+            provider: "google" or "microsoft" (deprecated - uses campaign's assigned calendar)
+
+        Returns:
+            Provider event ID if created, otherwise None.
         """
         try:
-            # Get campaign to find user_id
+            # Get campaign to find user_id and calendar_account_id
             campaigns_collection = self.db["campaigns"]
             campaign = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
             if not campaign:
@@ -455,18 +458,29 @@ class CalendarService:
                 return
 
             user_id = str(campaign["user_id"])
+            calendar_account_id = campaign.get("calendar_account_id")
 
-            # Get calendar account
-            account = await self.get_calendar_account(user_id, provider)
-            if not account:
-                logger.warning(f"No {provider} calendar account for user {user_id}")
-                return
+            # Get the calendar account assigned to the campaign
+            if calendar_account_id:
+                account = self.calendar_accounts_collection.find_one({"_id": calendar_account_id})
+                if not account:
+                    logger.error(f"Calendar account {calendar_account_id} not found for campaign {campaign_id}")
+                    return
+                provider = account.get("provider", "google")
+                logger.info(f"Using assigned calendar account {calendar_account_id} ({provider}) for campaign {campaign_id}")
+            else:
+                # Fallback to first available calendar account for the user
+                logger.warning(f"No calendar account assigned to campaign {campaign_id}, using first available for user {user_id}")
+                account = await self.get_calendar_account(user_id, provider)
+                if not account:
+                    logger.warning(f"No calendar account available for user {user_id}")
+                    return
 
             # Get access token (refresh if needed) - use ensure_access_token for decryption and refresh
             access_token = await self.ensure_access_token(account)
             if not access_token:
                 logger.error("Failed to get valid access token")
-                return
+                return None
 
             # Create calendar event
             event_id = None
@@ -477,7 +491,7 @@ class CalendarService:
 
             if not event_id:
                 logger.error("Failed to create calendar event")
-                return
+                return None
 
             # Save appointment record
             appointment_doc = {
@@ -502,13 +516,15 @@ class CalendarService:
             )
 
             logger.info(f"Appointment booked for lead {lead_id}: {event_id}")
+            return event_id
 
         except Exception as e:
             logger.error(f"Error booking appointment: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            return None
 
-    async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google"):
+    async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google") -> Optional[str]:
         """
         Book an appointment for an inbound call.
 
@@ -518,6 +534,9 @@ class CalendarService:
             assistant_id: AI assistant ID
             appointment: Appointment details from AI analysis
             provider: "google" or "microsoft"
+
+        Returns:
+            Provider event ID if created, otherwise None.
         """
         try:
             # Get calendar account
@@ -568,8 +587,10 @@ class CalendarService:
             )
 
             logger.info(f"Inbound appointment booked for call {call_sid}: {event_id}")
+            return event_id
 
         except Exception as e:
             logger.error(f"Error booking inbound appointment: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            return None

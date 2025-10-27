@@ -164,15 +164,21 @@ class CampaignScheduler:
         query = {
             "campaign_id": campaign_id,
             "status": "queued",
-            "$or": [
-                {"attempts": {"$exists": False}},
-                {"attempts": {"$lt": attempts_limit}}
-            ],
-            "$or": [
-                {"next_retry_at": {"$exists": False}},
-                {"next_retry_at": None},
-                {"next_retry_at": {"$lte": now}},
-            ],
+            "$and": [
+                {
+                    "$or": [
+                        {"attempts": {"$exists": False}},
+                        {"attempts": {"$lt": attempts_limit}}
+                    ]
+                },
+                {
+                    "$or": [
+                        {"next_retry_at": {"$exists": False}},
+                        {"next_retry_at": None},
+                        {"next_retry_at": {"$lte": now}},
+                    ]
+                }
+            ]
         }
 
         sort = [("next_retry_at", 1), ("_id", 1)]

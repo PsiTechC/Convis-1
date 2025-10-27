@@ -3,6 +3,7 @@ import json
 import asyncio
 import websockets
 from datetime import datetime
+from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, WebSocket, Request, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.websockets import WebSocketDisconnect
@@ -28,6 +29,8 @@ from app.utils.openai_session import (
     send_call_end_acknowledgement,
     send_call_continue_acknowledgement,
 )
+from app.services.calendar_service import CalendarService
+from app.services.calendar_intent_service import CalendarIntentService
 from app.models.inbound_calls import InboundCallConfig, InboundCallResponse
 import logging
 
@@ -256,6 +259,172 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
         voice = assistant['voice']
         temperature = assistant['temperature']
         call_greeting = assistant.get('call_greeting')
+        timezone_hint = (
+            assistant.get('timezone')
+            or settings.default_timezone
+            or "America/New_York"
+        )
+
+        # Calendar integration state
+        assistant_user_id = assistant.get('user_id')
+        calendar_enabled = False
+        default_calendar_provider = "google"
+        calendar_service: Optional[CalendarService] = None
+        calendar_intent_service: Optional[CalendarIntentService] = None
+        conversation_history: List[Dict[str, str]] = []
+        scheduling_task: Optional[asyncio.Task] = None
+        appointment_scheduled = False
+        appointment_metadata: Dict[str, Any] = {}
+
+        # Add calendar scheduling instructions if user has calendar accounts
+        if assistant_user_id:
+            calendar_accounts_collection = db["calendar_accounts"]
+            has_calendar = calendar_accounts_collection.find_one({"user_id": assistant_user_id})
+            if has_calendar:
+                calendar_enabled = True
+                default_calendar_provider = has_calendar.get("provider", "google")
+                calendar_service = CalendarService()
+                calendar_intent_service = CalendarIntentService()
+                calendar_instructions = """
+
+---
+Calendar Scheduling Instructions:
+You can schedule meetings and appointments during this call. When the person requests to schedule a meeting or appointment:
+
+1. Ask for the preferred date and time
+2. Confirm the meeting title/purpose
+3. Confirm the duration (default to 30 minutes if not specified)
+4. Let them know you'll schedule it
+
+Example conversation:
+Person: "Can we schedule a follow-up meeting?"
+You: "Of course! When would you like to schedule the meeting? What date and time works best for you?"
+Person: "How about next Tuesday at 2 PM?"
+You: "Perfect! I'll schedule a follow-up meeting for next Tuesday at 2 PM. It will be for 30 minutes. Is that correct?"
+Person: "Yes, that works."
+You: "Great! I've noted that down and the meeting will be added to your calendar."
+
+IMPORTANT: Be natural and conversational. Don't mention "the system" or technical details. Simply confirm the appointment details with the person and let them know it will be scheduled."""
+                system_message = f"{system_message}{calendar_instructions}"
+
+        async def maybe_schedule_from_conversation(trigger: str = "") -> None:
+            """
+            Analyze recent conversation context and create a calendar event if appropriate.
+            Runs in the background so realtime audio is not blocked.
+            """
+            nonlocal scheduling_task, appointment_scheduled, appointment_metadata, call_sid
+
+            if (
+                not calendar_enabled
+                or calendar_intent_service is None
+                or calendar_service is None
+                or appointment_scheduled
+            ):
+                return
+
+            if scheduling_task and not scheduling_task.done():
+                return
+
+            if not conversation_history or not assistant_user_id or not openai_api_key:
+                return
+
+            if not call_sid:
+                logger.debug("Call SID unavailable; delaying calendar analysis")
+                return
+
+            async def _run_analysis() -> None:
+                nonlocal appointment_scheduled, appointment_metadata
+                try:
+                    result = await calendar_intent_service.extract_from_conversation(
+                        conversation_history,
+                        openai_api_key,
+                        timezone_hint,
+                    )
+                    if not result or not result.get("should_schedule"):
+                        return
+
+                    appointment = result.get("appointment") or {}
+                    start_iso = appointment.get("start_iso")
+                    end_iso = appointment.get("end_iso")
+                    if not start_iso or not end_iso:
+                        logger.debug(
+                            "Appointment payload missing start/end. Payload: %s",
+                            appointment,
+                        )
+                        return
+
+                    appointment.setdefault("timezone", timezone_hint)
+                    appointment.setdefault("notes", result.get("reason"))
+                    provider = appointment.get("provider") or default_calendar_provider
+
+                    event_id = await calendar_service.book_inbound_appointment(
+                        call_sid=call_sid,
+                        user_id=str(assistant_user_id),
+                        assistant_id=assistant_id,
+                        appointment=appointment,
+                        provider=provider,
+                    )
+                    if not event_id:
+                        logger.warning("Calendar booking returned no event ID; check calendar configuration")
+                        return
+
+                    appointment_scheduled = True
+                    appointment_metadata = {**appointment, "event_id": event_id, "provider": provider}
+
+                    try:
+                        db["call_logs"].update_one(
+                            {"call_sid": call_sid},
+                            {
+                                "$set": {
+                                    "appointment_booked": True,
+                                    "appointment_details": appointment_metadata,
+                                    "calendar_event_id": event_id,
+                                    "appointment_source": "realtime",
+                                    "updated_at": datetime.utcnow(),
+                                }
+                            },
+                        )
+                    except Exception as dberr:
+                        logger.error(f"Failed to update call log with appointment details: {dberr}")
+
+                    confirmation_text = result.get("confirmation_text") or (
+                        f"The meeting '{appointment.get('title', 'Meeting')}' was scheduled for "
+                        f"{appointment.get('start_iso')} {appointment.get('timezone')}."
+                    )
+                    system_prompt = (
+                        "Calendar event scheduled successfully. "
+                        "Politely confirm the booking details with the caller. "
+                        f"Suggested response: {confirmation_text}"
+                    )
+
+                    await openai_ws.send(
+                        json.dumps(
+                            {
+                                "type": "conversation.item.create",
+                                "item": {
+                                    "type": "message",
+                                    "role": "system",
+                                    "content": [{"type": "input_text", "text": system_prompt}],
+                                },
+                            }
+                        )
+                    )
+                    await openai_ws.send(json.dumps({"type": "response.create"}))
+                    logger.info(
+                        "Realtime calendar event booked for call %s (event_id=%s)",
+                        call_sid,
+                        event_id,
+                    )
+                except Exception as exc:
+                    logger.error(f"Calendar scheduling workflow failed: {exc}")
+
+            scheduling_task = asyncio.create_task(_run_analysis())
+
+            def _clear_task(_future: asyncio.Future) -> None:
+                nonlocal scheduling_task
+                scheduling_task = None
+
+            scheduling_task.add_done_callback(_clear_task)
 
         # OpenAI Realtime API requires temperature >= 0.6
         if temperature < 0.6:
@@ -362,6 +531,9 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                 """Receive events from the OpenAI Realtime API, send audio back to Twilio."""
                 nonlocal stream_sid, last_assistant_item, response_start_timestamp_twilio
                 nonlocal awaiting_hangup_confirmation, pending_hangup_goodbye, hangup_completed
+                nonlocal conversation_history, appointment_scheduled, scheduling_task
+
+                response_transcript_buffers: Dict[str, str] = {}
 
                 async def finalize_call():
                     nonlocal hangup_completed, pending_hangup_goodbye
@@ -447,7 +619,25 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 
                         # Handle audio transcript for debugging
                         if response.get('type') == 'response.audio_transcript.delta':
-                            logger.info(f"AI transcript: {response.get('delta', '')}")
+                            delta_text = response.get('delta', '')
+                            logger.info(f"AI transcript: {delta_text}")
+                            resp_id = response.get('response_id')
+                            if resp_id and delta_text:
+                                response_transcript_buffers[resp_id] = (
+                                    response_transcript_buffers.get(resp_id, "") + delta_text
+                                )
+
+                        if response.get('type') == 'response.audio_transcript.done':
+                            resp_id = response.get('response_id')
+                            transcript_text = ""
+                            if resp_id and resp_id in response_transcript_buffers:
+                                transcript_text = response_transcript_buffers.pop(resp_id)
+                            transcript_text = transcript_text or response.get('transcript', '')
+                            if transcript_text:
+                                conversation_history.append({"role": "assistant", "text": transcript_text})
+                                if len(conversation_history) > 30:
+                                    conversation_history = conversation_history[-30:]
+                                await maybe_schedule_from_conversation("assistant_transcript")
 
                         # Handle interruption when user starts speaking
                         if response.get('type') == 'input_audio_buffer.speech_started':
@@ -499,6 +689,11 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 
                                             if hangup_handled or pending_hangup_goodbye:
                                                 continue
+
+                                            conversation_history.append({"role": "user", "text": transcript})
+                                            if len(conversation_history) > 30:
+                                                conversation_history = conversation_history[-30:]
+                                            await maybe_schedule_from_conversation("user_transcript")
 
                                             # Search knowledge base
                                             try:

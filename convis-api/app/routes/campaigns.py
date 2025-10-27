@@ -41,6 +41,8 @@ def serialize_campaign(doc: dict) -> CampaignResponse:
     doc["user_id"] = str(doc["user_id"]) if isinstance(doc.get("user_id"), ObjectId) else doc.get("user_id")
     if doc.get("assistant_id") and isinstance(doc["assistant_id"], ObjectId):
         doc["assistant_id"] = str(doc["assistant_id"])
+    if doc.get("calendar_account_id") and isinstance(doc["calendar_account_id"], ObjectId):
+        doc["calendar_account_id"] = str(doc["calendar_account_id"])
     doc["created_at"] = doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else doc.get("created_at")
     doc["updated_at"] = doc["updated_at"].isoformat() if isinstance(doc.get("updated_at"), datetime) else doc.get("updated_at")
     doc["calendar_enabled"] = bool(doc.get("calendar_enabled", False))
@@ -104,6 +106,29 @@ async def create_campaign(payload: CampaignCreate):
                 logger.error(f"Invalid assistant_id format: {payload.assistant_id}, error: {e}")
                 raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid assistant_id format: {str(e)}")
 
+        # Validate calendar account if calendar is enabled
+        calendar_account_obj_id = None
+        if payload.calendar_enabled and payload.calendar_account_id:
+            try:
+                calendar_account_obj_id = ObjectId(payload.calendar_account_id)
+                # Verify the calendar account exists and belongs to this user
+                calendar_accounts_collection = db["calendar_accounts"]
+                calendar_account = calendar_accounts_collection.find_one({
+                    "_id": calendar_account_obj_id,
+                    "user_id": user_obj_id
+                })
+                if not calendar_account:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Calendar account not found or does not belong to this user"
+                    )
+                logger.info(f"Calendar account {calendar_account_obj_id} validated for user {user_obj_id}")
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Invalid calendar_account_id format: {payload.calendar_account_id}, error: {e}")
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid calendar_account_id format: {str(e)}")
+
         now = datetime.utcnow()
         calendar_enabled = payload.calendar_enabled
         system_prompt_override = (payload.system_prompt_override or "").strip() or None
@@ -121,6 +146,7 @@ async def create_campaign(payload: CampaignCreate):
             "start_at": payload.start_at,
             "stop_at": payload.stop_at,
             "calendar_enabled": calendar_enabled,
+            "calendar_account_id": calendar_account_obj_id,
             "system_prompt_override": system_prompt_override,
             "database_config": database_config,
             "status": "draft",
@@ -204,6 +230,36 @@ async def update_campaign(campaign_id: str, payload: CampaignUpdate):
                     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid assistant_id format: {exc}")
             else:
                 update_doc.pop("assistant_id", None)
+
+        # Validate calendar_account_id if provided
+        if "calendar_account_id" in update_doc:
+            calendar_account_value = update_doc.get("calendar_account_id")
+            if calendar_account_value:
+                try:
+                    calendar_account_obj_id = ObjectId(calendar_account_value)
+                    # Get the campaign to find the user_id
+                    campaign = campaigns_collection.find_one({"_id": campaign_obj_id})
+                    if not campaign:
+                        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Campaign not found")
+
+                    # Verify the calendar account exists and belongs to the campaign owner
+                    calendar_accounts_collection = db["calendar_accounts"]
+                    calendar_account = calendar_accounts_collection.find_one({
+                        "_id": calendar_account_obj_id,
+                        "user_id": campaign.get("user_id")
+                    })
+                    if not calendar_account:
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="Calendar account not found or does not belong to campaign owner"
+                        )
+                    update_doc["calendar_account_id"] = calendar_account_obj_id
+                except HTTPException:
+                    raise
+                except Exception as exc:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid calendar_account_id format: {exc}")
+            else:
+                update_doc.pop("calendar_account_id", None)
 
         if "system_prompt_override" in update_doc:
             prompt_value = update_doc.get("system_prompt_override")
