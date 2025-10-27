@@ -110,6 +110,7 @@ class CampaignBase(BaseModel):
     start_at: Optional[datetime] = None
     stop_at: Optional[datetime] = None
     calendar_enabled: bool = False
+    calendar_account_id: Optional[str] = Field(None, description="ID of the calendar account to use for booking")
     system_prompt_override: Optional[str] = None
     database_config: Optional[CampaignDatabaseConfig] = None
     lines: int = Field(1, ge=1, le=20, description="Max simultaneous lines for the campaign")
@@ -133,6 +134,7 @@ class CampaignUpdate(BaseModel):
     start_at: Optional[datetime] = None
     stop_at: Optional[datetime] = None
     calendar_enabled: Optional[bool] = None
+    calendar_account_id: Optional[str] = None
     system_prompt_override: Optional[str] = None
     database_config: Optional[CampaignDatabaseConfig] = None
 
@@ -146,6 +148,7 @@ class CampaignResponse(CampaignBase):
     next_index: int = 0
     stats: Optional[Dict[str, Any]] = None
     calendar_enabled: bool = False
+    calendar_account_id: Optional[str] = None
     system_prompt_override: Optional[str] = None
     database_config: Optional[CampaignDatabaseConfig] = None
 

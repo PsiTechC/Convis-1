@@ -499,6 +499,7 @@ class CampaignDialer:
             campaign = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
 
             if not lead or not campaign:
+                logger.warning(f"Lead or campaign not found for call completion: lead={lead_id}, campaign={campaign_id}")
                 return
 
             now = datetime.utcnow()
@@ -516,6 +517,7 @@ class CampaignDialer:
                     "next_retry_at": None,
                     "fallback_round": lead.get("fallback_round", 0)
                 })
+                logger.info(f"Lead {lead_id} marked as completed after successful call")
             else:
                 if attempts >= max_attempts:
                     update_doc.update({
@@ -523,6 +525,7 @@ class CampaignDialer:
                         "next_retry_at": None,
                         "fallback_round": lead.get("fallback_round", 0)
                     })
+                    logger.info(f"Lead {lead_id} marked as failed after {attempts} attempts")
                 else:
                     next_retry = self._compute_next_retry(campaign, attempts, now, call_status)
                     if next_retry is None:
@@ -531,6 +534,7 @@ class CampaignDialer:
                             "next_retry_at": None,
                             "fallback_round": lead.get("fallback_round", 0)
                         })
+                        logger.info(f"Lead {lead_id} marked as failed (no retry schedule)")
                     else:
                         fallback_round = lead.get("fallback_round", 0)
                         if next_retry > now:
@@ -540,6 +544,7 @@ class CampaignDialer:
                             "next_retry_at": next_retry,
                             "fallback_round": fallback_round
                         })
+                        logger.info(f"Lead {lead_id} queued for retry at {next_retry} (attempt {attempts}/{max_attempts})")
 
             leads_collection.update_one(
                 {"_id": ObjectId(lead_id)},
@@ -547,14 +552,20 @@ class CampaignDialer:
             )
 
             logger.info(
-                "Lead %s updated with status=%s next_retry=%s",
-                lead_id,
-                update_doc.get("status"),
-                update_doc.get("next_retry_at")
+                f"Call completed for lead {lead_id}: status={call_status} → {update_doc.get('status')}, next_retry={update_doc.get('next_retry_at')}"
             )
 
-            # Release lock so dispatcher can grab the next lead
-            self.release_lock(campaign_id)
-
         except Exception as e:
-            logger.error(f"Error handling call completion: {e}")
+            logger.error(f"Error handling call completion for lead {lead_id}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            # Even if there's an error, try to reset lead status so it's not stuck
+            try:
+                db = Database.get_db()
+                db["leads"].update_one(
+                    {"_id": ObjectId(lead_id)},
+                    {"$set": {"status": "queued", "updated_at": datetime.utcnow()}}
+                )
+                logger.info(f"Reset lead {lead_id} to queued after error")
+            except Exception as reset_error:
+                logger.error(f"Failed to reset lead status: {reset_error}")
