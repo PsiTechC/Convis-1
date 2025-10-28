@@ -123,6 +123,28 @@ def resolve_api_key_metadata(api_keys_collection, key_identifier) -> Optional[Di
 def assistant_has_api_key(assistant: dict) -> bool:
     return bool(assistant.get('api_key_id') or assistant.get('openai_api_key'))
 
+def resolve_calendar_account_metadata(calendar_accounts_collection, calendar_account_id) -> Optional[Dict[str, Any]]:
+    """
+    Retrieve metadata for a calendar account.
+    """
+    if not calendar_account_id:
+        return None
+
+    try:
+        calendar_obj_id = calendar_account_id if isinstance(calendar_account_id, ObjectId) else ObjectId(calendar_account_id)
+    except Exception:
+        return None
+
+    doc = calendar_accounts_collection.find_one({"_id": calendar_obj_id})
+    if not doc:
+        return None
+
+    return {
+        "id": str(doc['_id']),
+        "email": doc.get('email'),
+        "provider": doc.get('provider'),
+    }
+
 @router.post("/", response_model=AIAssistantResponse, status_code=status.HTTP_201_CREATED)
 async def create_assistant(assistant_data: AIAssistantCreate):
     """
@@ -200,6 +222,31 @@ async def create_assistant(assistant_data: AIAssistantCreate):
         if not call_greeting:
             call_greeting = DEFAULT_CALL_GREETING
 
+        # Validate calendar_account_id if provided
+        calendar_account_obj_id = None
+        calendar_account_email = None
+        if assistant_data.calendar_account_id:
+            try:
+                calendar_account_obj_id = ObjectId(assistant_data.calendar_account_id)
+                calendar_accounts_collection = db['calendar_accounts']
+                calendar_account = calendar_accounts_collection.find_one({
+                    "_id": calendar_account_obj_id,
+                    "user_id": user_obj_id
+                })
+                if not calendar_account:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Calendar account not found or does not belong to user"
+                    )
+                calendar_account_email = calendar_account.get("email")
+            except Exception as e:
+                if isinstance(e, HTTPException):
+                    raise
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Invalid calendar_account_id format"
+                )
+
         # Create assistant document
         now = datetime.utcnow()
         assistant_doc = {
@@ -209,6 +256,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             "voice": assistant_data.voice,
             "temperature": assistant_data.temperature,
             "call_greeting": call_greeting,
+            "calendar_account_id": calendar_account_obj_id,
             "created_at": now,
             "updated_at": now
         }
@@ -244,6 +292,8 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             api_key_provider=api_key_metadata["provider"] if api_key_metadata else ("openai" if encrypted_api_key else None),
             knowledge_base_files=[],  # New assistants start with no knowledge base
             has_knowledge_base=False,
+            calendar_account_id=str(calendar_account_obj_id) if calendar_account_obj_id else None,
+            calendar_account_email=calendar_account_email,
             created_at=now.isoformat() + "Z",
             updated_at=now.isoformat() + "Z"
         )
@@ -294,7 +344,9 @@ async def get_user_assistants(user_id: str):
         # Find all assistants for this user
         assistants_cursor = assistants_collection.find({"user_id": user_obj_id})
         api_keys_collection = db['api_keys']
+        calendar_accounts_collection = db['calendar_accounts']
         api_key_cache: Dict[str, Optional[Dict[str, str]]] = {}
+        calendar_cache: Dict[str, Optional[Dict[str, str]]] = {}
         assistants = []
 
         for assistant in assistants_cursor:
@@ -329,6 +381,15 @@ async def get_user_assistants(user_id: str):
             if not call_greeting:
                 call_greeting = DEFAULT_CALL_GREETING
 
+            # Resolve calendar account metadata
+            calendar_metadata = None
+            calendar_id = assistant.get('calendar_account_id')
+            if calendar_id:
+                cache_key = str(calendar_id)
+                if cache_key not in calendar_cache:
+                    calendar_cache[cache_key] = resolve_calendar_account_metadata(calendar_accounts_collection, calendar_id)
+                calendar_metadata = calendar_cache.get(cache_key)
+
             assistants.append(AIAssistantResponse(
                 id=str(assistant['_id']),
                 user_id=str(assistant['user_id']),
@@ -343,6 +404,8 @@ async def get_user_assistants(user_id: str):
                 api_key_provider=api_key_metadata.get("provider") if api_key_metadata else None,
                 knowledge_base_files=kb_files,
                 has_knowledge_base=len(kb_files) > 0,
+                calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
+                calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
                 created_at=assistant['created_at'].isoformat() + "Z",
                 updated_at=assistant['updated_at'].isoformat() + "Z"
             ))
@@ -429,6 +492,15 @@ async def get_assistant(assistant_id: str):
         if not call_greeting:
             call_greeting = DEFAULT_CALL_GREETING
 
+        # Resolve calendar account metadata
+        calendar_metadata = None
+        calendar_accounts_collection = db['calendar_accounts']
+        if assistant.get('calendar_account_id'):
+            calendar_metadata = resolve_calendar_account_metadata(
+                calendar_accounts_collection,
+                assistant.get('calendar_account_id')
+            )
+
         return AIAssistantResponse(
             id=str(assistant['_id']),
             user_id=str(assistant['user_id']),
@@ -443,6 +515,8 @@ async def get_assistant(assistant_id: str):
             api_key_provider=api_key_metadata.get("provider") if api_key_metadata else None,
             knowledge_base_files=kb_files,
             has_knowledge_base=len(kb_files) > 0,
+            calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
+            calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
             created_at=assistant['created_at'].isoformat() + "Z",
             updated_at=assistant['updated_at'].isoformat() + "Z"
         )
@@ -540,6 +614,30 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             update_doc["openai_api_key"] = encryption_service.encrypt(update_data.openai_api_key)
             update_doc["api_key_id"] = None
 
+        # Handle calendar_account_id update
+        if update_data.calendar_account_id is not None:
+            if update_data.calendar_account_id == "":
+                update_doc["calendar_account_id"] = None
+            else:
+                try:
+                    calendar_account_obj_id = ObjectId(update_data.calendar_account_id)
+                except Exception:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="Invalid calendar_account_id format"
+                    )
+                calendar_accounts_collection = db['calendar_accounts']
+                calendar_account = calendar_accounts_collection.find_one({
+                    "_id": calendar_account_obj_id,
+                    "user_id": assistant['user_id']
+                })
+                if not calendar_account:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Calendar account not found or does not belong to user"
+                    )
+                update_doc["calendar_account_id"] = calendar_account_obj_id
+
         # Update the assistant
         assistants_collection.update_one(
             {"_id": assistant_obj_id},
@@ -578,6 +676,15 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
         if not call_greeting:
             call_greeting = DEFAULT_CALL_GREETING
 
+        # Resolve calendar account metadata
+        calendar_metadata = None
+        calendar_accounts_collection = db['calendar_accounts']
+        if updated_assistant.get('calendar_account_id'):
+            calendar_metadata = resolve_calendar_account_metadata(
+                calendar_accounts_collection,
+                updated_assistant.get('calendar_account_id')
+            )
+
         return AIAssistantResponse(
             id=str(updated_assistant['_id']),
             user_id=str(updated_assistant['user_id']),
@@ -592,6 +699,8 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             api_key_provider=api_key_metadata.get("provider") if api_key_metadata else None,
             knowledge_base_files=kb_files,
             has_knowledge_base=len(kb_files) > 0,
+            calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
+            calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
             created_at=updated_assistant['created_at'].isoformat() + "Z",
             updated_at=updated_assistant['updated_at'].isoformat() + "Z"
         )

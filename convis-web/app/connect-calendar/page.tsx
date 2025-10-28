@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
@@ -68,7 +68,7 @@ const formatDateTime = (value?: string | null) => {
   }
 };
 
-export default function ConnectCalendarPage() {
+function ConnectCalendarContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -578,5 +578,17 @@ export default function ConnectCalendarPage() {
         <div className="fixed inset-0 bg-black/50 z-30 lg:hidden" onClick={() => setIsMobileMenuOpen(false)}></div>
       )}
     </div>
+  );
+}
+
+export default function ConnectCalendarPage() {
+  return (
+    <Suspense fallback={
+      <div className="min-h-screen flex items-center justify-center bg-neutral-light dark:bg-gray-900">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    }>
+      <ConnectCalendarContent />
+    </Suspense>
   );
 }

@@ -4,7 +4,7 @@ Used by realtime call handlers to detect when a meeting should be scheduled.
 """
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import httpx
@@ -58,8 +58,20 @@ class CalendarIntentService:
         ]
         conversation_snippet = "\n".join(conversation_lines)
 
+        # Get current date/time for context
+        from datetime import datetime
+        now = datetime.utcnow()
+        current_date_str = now.strftime("%Y-%m-%d")
+        current_datetime_str = now.strftime("%Y-%m-%d %H:%M:%S UTC")
+
         prompt = f"""You are assisting an AI voice agent that schedules calendar events.
 Review the recent call transcript and determine whether the caller has confirmed a meeting or appointment.
+
+IMPORTANT CONTEXT:
+- Current date and time: {current_datetime_str}
+- Today's date: {current_date_str}
+- When the caller says "tomorrow", use {(now + timedelta(days=1)).strftime("%Y-%m-%d")}
+- When interpreting relative dates (tomorrow, next week, etc.), calculate from TODAY ({current_date_str})
 
 Provide a JSON object with the following structure:
 {{
@@ -80,10 +92,15 @@ Provide a JSON object with the following structure:
 Rules:
 - Return "should_schedule": false if any essential detail (date, time) is missing or ambiguous.
 - Infer duration only if stated; otherwise default to 30 minutes.
-- For timezone, prefer the provided hint "{timezone}" if details are unclear. Otherwise infer from dialogue.
+- For timezone:
+  * If the person explicitly mentions their timezone in the conversation (e.g., "I'm in India", "IST", "Indian Standard Time", "Asia/Kolkata"), use that timezone
+  * If they mention a city/location (e.g., "I'm in Mumbai", "New York time"), infer the IANA timezone (e.g., "Asia/Kolkata", "America/New_York")
+  * Otherwise, use the provided hint "{timezone}"
 - Never fabricate impossible dates (e.g., February 30).
 - start_iso and end_iso must be ISO 8601 (no timezone offset, separate timezone field).
 - When should_schedule is false, set appointment to null.
+- ALWAYS use the current date context provided above when interpreting relative dates.
+- Pay close attention to timezone mentions in the conversation and prioritize them over the default hint.
 
 CONVERSATION:
 {conversation_snippet}

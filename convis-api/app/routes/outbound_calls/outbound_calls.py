@@ -681,6 +681,14 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                 system_message = f"{system_message}\n\n---\nCampaign Instructions:\n{override.strip()}"
 
         calendar_accounts_collection = db["calendar_accounts"]
+        calendar_account_id_for_booking = None
+
+        logger.info(f"[OUTBOUND_CALENDAR_CHECK] Assistant calendar_account_id: {assistant.get('calendar_account_id')}")
+        logger.info(f"[OUTBOUND_CALENDAR_CHECK] Campaign: {campaign is not None}, Lead ID: {lead_id}, Campaign ID: {campaign_id}")
+
+        # Priority order for calendar account:
+        # 1. Campaign calendar_account_id (if calendar_enabled on campaign)
+        # 2. Assistant calendar_account_id (fallback)
         if campaign and campaign.get("calendar_enabled") and lead_id and campaign_id:
             calendar_enabled = True
             calendar_service = CalendarService()
@@ -692,14 +700,44 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             account_doc = None
             if calendar_account_id:
                 account_doc = calendar_accounts_collection.find_one({"_id": calendar_account_id})
-            elif assistant_user_id:
-                account_doc = calendar_accounts_collection.find_one({"user_id": assistant_user_id})
+                if account_doc:
+                    calendar_account_id_for_booking = calendar_account_id
+                    logger.info(f"[OUTBOUND] Using campaign calendar account: {account_doc.get('email')}")
+
+            # Fallback to assistant's calendar if campaign doesn't have one
+            if not account_doc:
+                assistant_calendar_id = assistant.get('calendar_account_id')
+                if assistant_calendar_id:
+                    account_doc = calendar_accounts_collection.find_one({"_id": assistant_calendar_id})
+                    if account_doc:
+                        calendar_account_id_for_booking = assistant_calendar_id
+                        logger.info(f"[OUTBOUND] Using assistant calendar account (fallback): {account_doc.get('email')}")
+                elif assistant_user_id:
+                    account_doc = calendar_accounts_collection.find_one({"user_id": assistant_user_id})
+                    if account_doc:
+                        logger.info(f"[OUTBOUND] Using user's first calendar account (legacy fallback): {account_doc.get('email')}")
+
             if account_doc:
                 default_calendar_provider = account_doc.get("provider", "google")
+        elif assistant.get('calendar_account_id'):
+            # Calendar enabled via assistant (for non-campaign outbound calls)
+            logger.info(f"[OUTBOUND_CALENDAR_CHECK] Entering assistant calendar check block")
+            assistant_calendar_id = assistant.get('calendar_account_id')
+            account_doc = calendar_accounts_collection.find_one({"_id": assistant_calendar_id})
+            if account_doc:
+                calendar_enabled = True
+                calendar_account_id_for_booking = assistant_calendar_id
+                calendar_service = CalendarService()
+                calendar_intent_service = CalendarIntentService()
+                default_calendar_provider = account_doc.get("provider", "google")
+                logger.info(f"[OUTBOUND] ✓ Calendar enabled via assistant: {account_doc.get('email')}")
+            else:
+                logger.error(f"[OUTBOUND] ❌ Calendar account not found for ID: {assistant_calendar_id}")
 
         # Add calendar scheduling instructions if calendar is enabled
+        logger.info(f"[OUTBOUND_CALENDAR_CHECK] Final calendar_enabled status: {calendar_enabled}")
         if calendar_enabled:
-            calendar_instructions = """
+            calendar_instructions = f"""
 
 ---
 Calendar Scheduling Instructions:
@@ -708,32 +746,49 @@ You can schedule meetings and appointments during this call. When the person req
 1. Ask for the preferred date and time
 2. Confirm the meeting title/purpose
 3. Confirm the duration (default to 30 minutes if not specified)
-4. Let them know you'll schedule it
+4. **IMPORTANT: Confirm their timezone** - Ask "What timezone are you in?" or "Just to confirm, you're in [timezone], correct?"
+5. Let them know you'll schedule it
+
+Default timezone (if they don't specify): {timezone_hint}
 
 Example conversation:
 Person: "Can we schedule a follow-up meeting?"
 You: "Of course! When would you like to schedule the meeting? What date and time works best for you?"
 Person: "How about next Tuesday at 2 PM?"
-You: "Perfect! I'll schedule a follow-up meeting for next Tuesday at 2 PM. It will be for 30 minutes. Is that correct?"
+You: "Perfect! And just to confirm, what timezone are you in?"
+Person: "I'm in India, IST timezone."
+You: "Great! So I'll schedule a follow-up meeting for next Tuesday at 2 PM Indian Standard Time. It will be for 30 minutes. Is that correct?"
 Person: "Yes, that works."
-You: "Great! I've noted that down and the meeting will be added to your calendar."
+You: "Excellent! I've scheduled your meeting and it will be added to your calendar."
 
-IMPORTANT: Be natural and conversational. Don't mention "the system" or technical details. Simply confirm the appointment details with the person and let them know it will be scheduled."""
+IMPORTANT:
+- Always confirm the timezone before finalizing the appointment
+- Be natural and conversational
+- Don't mention "the system" or technical details
+- If they mention a timezone, use it; otherwise use {timezone_hint}"""
             system_message = f"{system_message}{calendar_instructions}"
 
         async def maybe_schedule_from_conversation(trigger: str = "") -> None:
             """Analyze recent conversation context and book a calendar event if appropriate."""
             nonlocal scheduling_task, appointment_scheduled, appointment_metadata, call_sid
 
+            logger.debug(f"[CALENDAR_SCHEDULE_CHECK] Trigger: {trigger}, calendar_enabled={calendar_enabled}, campaign_id={campaign_id}, lead_id={lead_id}")
+
             if (
                 not calendar_enabled
                 or calendar_intent_service is None
                 or calendar_service is None
                 or appointment_scheduled
-                or not campaign_id
-                or not lead_id
             ):
+                logger.debug(f"[CALENDAR_SCHEDULE_CHECK] Early return - calendar_enabled={calendar_enabled}, appointment_scheduled={appointment_scheduled}")
                 return
+
+            # For campaign calls, require campaign_id and lead_id
+            # For non-campaign calls, calendar scheduling should still work
+            is_campaign_call = campaign_id and lead_id
+
+            if not is_campaign_call:
+                logger.debug("[CALENDAR_SCHEDULE_CHECK] Non-campaign call - calendar scheduling enabled without lead tracking")
 
             if scheduling_task and not scheduling_task.done():
                 return
@@ -748,34 +803,56 @@ IMPORTANT: Be natural and conversational. Don't mention "the system" or technica
             async def _run_analysis() -> None:
                 nonlocal appointment_scheduled, appointment_metadata
                 try:
+                    logger.info(f"[CALENDAR_ANALYSIS] Extracting intent from conversation with {len(conversation_history)} messages")
                     result = await calendar_intent_service.extract_from_conversation(
                         conversation_history,
                         openai_api_key,
                         timezone_hint,
                     )
+                    logger.info(f"[CALENDAR_ANALYSIS] Intent result: should_schedule={result.get('should_schedule') if result else None}")
+
                     if not result or not result.get("should_schedule"):
+                        logger.info("[CALENDAR_ANALYSIS] No scheduling intent detected")
                         return
 
                     appointment = result.get("appointment") or {}
                     start_iso = appointment.get("start_iso")
                     end_iso = appointment.get("end_iso")
                     if not start_iso or not end_iso:
-                        logger.debug(
-                            "Appointment payload missing start/end. Payload: %s",
+                        logger.warning(
+                            "[CALENDAR_ANALYSIS] Appointment payload missing start/end. Payload: %s",
                             appointment,
                         )
                         return
+
+                    logger.info(f"[CALENDAR_ANALYSIS] ✓ Valid appointment: {appointment.get('title')} at {start_iso}")
 
                     appointment.setdefault("timezone", timezone_hint)
                     appointment.setdefault("notes", result.get("reason"))
                     provider = appointment.get("provider") or default_calendar_provider
 
-                    event_id = await calendar_service.book_appointment(
-                        lead_id=lead_id,
-                        campaign_id=campaign_id,
-                        appointment_data=appointment,
-                        provider=provider,
-                    )
+                    # For campaign calls, use book_appointment (requires lead_id and campaign_id)
+                    # For non-campaign calls, use book_inbound_appointment
+                    if is_campaign_call:
+                        logger.info(f"[CALENDAR_BOOKING] Campaign call - using book_appointment")
+                        event_id = await calendar_service.book_appointment(
+                            lead_id=lead_id,
+                            campaign_id=campaign_id,
+                            appointment_data=appointment,
+                            provider=provider,
+                            calendar_account_id_override=str(calendar_account_id_for_booking) if calendar_account_id_for_booking else None,
+                        )
+                    else:
+                        logger.info(f"[CALENDAR_BOOKING] Non-campaign call - using book_inbound_appointment")
+                        event_id = await calendar_service.book_inbound_appointment(
+                            call_sid=call_sid,
+                            user_id=str(assistant_user_id),
+                            assistant_id=assistant_id,
+                            appointment=appointment,
+                            provider=provider,
+                            calendar_account_id=str(calendar_account_id_for_booking) if calendar_account_id_for_booking else None,
+                        )
+
                     if not event_id:
                         logger.warning("Calendar booking returned no event ID; check calendar configuration")
                         return
@@ -955,6 +1032,62 @@ IMPORTANT: Be natural and conversational. Don't mention "the system" or technica
                     else:
                         logger.warning("Cannot end outbound call automatically - missing Twilio client or call SID")
 
+                    # CRITICAL FIX: Trigger next call IMMEDIATELY when call ends
+                    # This runs right when the call finishes, ensuring instant sequential dialing
+                    if campaign_id and lead_id:
+                        logger.info(f"[FINALIZE_CALL] Call ended - triggering next call for campaign {campaign_id}")
+
+                        def trigger_next_call_immediate():
+                            try:
+                                from app.services.campaign_dialer import CampaignDialer
+                                dialer = CampaignDialer()
+
+                                # Mark current lead as completed
+                                db = Database.get_db()
+                                leads_collection = db["leads"]
+                                campaigns_collection = db["campaigns"]
+
+                                lead = leads_collection.find_one({"_id": ObjectId(lead_id)})
+                                campaign = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
+
+                                if lead and campaign:
+                                    # Update lead status to completed
+                                    leads_collection.update_one(
+                                        {"_id": ObjectId(lead_id)},
+                                        {
+                                            "$set": {
+                                                "status": "completed",
+                                                "last_outcome": "completed",
+                                                "updated_at": datetime.utcnow()
+                                            }
+                                        }
+                                    )
+                                    logger.info(f"[FINALIZE_CALL] Marked lead {lead_id} as completed")
+
+                                    # Only trigger next call if campaign is still running
+                                    if campaign.get("status") == "running":
+                                        next_lead = dialer.get_next_lead(campaign_id, ignore_window=False)
+                                        if next_lead:
+                                            logger.info(f"[FINALIZE_CALL] Found next lead: {next_lead.get('name')} ({next_lead.get('e164')})")
+                                            next_call_sid = dialer.place_call(campaign_id, str(next_lead["_id"]))
+                                            if next_call_sid:
+                                                logger.info(f"[FINALIZE_CALL] Next call placed successfully: {next_call_sid}")
+                                            else:
+                                                logger.warning(f"[FINALIZE_CALL] Failed to place next call: {dialer.last_error}")
+                                        else:
+                                            logger.info(f"[FINALIZE_CALL] No more leads available for campaign {campaign_id}")
+                                    else:
+                                        logger.info(f"[FINALIZE_CALL] Campaign {campaign_id} is not running, skipping next call")
+                            except Exception as next_error:
+                                logger.error(f"[FINALIZE_CALL] Error triggering next call: {next_error}")
+                                import traceback
+                                logger.error(traceback.format_exc())
+
+                        # Run in background thread
+                        import threading
+                        threading.Thread(target=trigger_next_call_immediate, daemon=True).start()
+                        logger.info(f"[FINALIZE_CALL] Background thread started for next call")
+
                     try:
                         if openai_ws.state.name == 'OPEN':
                             await openai_ws.close()
@@ -1132,6 +1265,7 @@ IMPORTANT: Be natural and conversational. Don't mention "the system" or technica
     finally:
         # Ensure cleanup happens
         logger.info(f"Cleaning up outbound call resources for assistant: {assistant_id}")
+        # Note: Instant dial trigger now happens in finalize_call() for better timing
         # WebSocket and OpenAI connections will be closed by context managers
 
 # Helper functions

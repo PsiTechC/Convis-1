@@ -1,0 +1,188 @@
+nginx uses an image, skipping
+Building api
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.04kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.11-slim
+#2 ...
+
+#3 [auth] library/python:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/python:3.11-slim
+#2 DONE 3.0s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 614B 0.0s done
+#4 DONE 0.0s
+
+#5 [1/7] FROM docker.io/library/python:3.11-slim@sha256:8eb5fc663972b871c528fef04be4eaa9ab8ab4539a5316c4b8c133771214a617
+#5 resolve docker.io/library/python:3.11-slim@sha256:8eb5fc663972b871c528fef04be4eaa9ab8ab4539a5316c4b8c133771214a617 0.0s done
+#5 DONE 0.0s
+
+#6 [internal] load build context
+#6 transferring context: 16.27kB 0.0s done
+#6 DONE 0.0s
+
+#7 [4/7] COPY requirements.txt .
+#7 CACHED
+
+#8 [5/7] RUN pip install --no-cache-dir --upgrade pip &&     pip install --no-cache-dir -r requirements.txt
+#8 CACHED
+
+#9 [2/7] WORKDIR /app
+#9 CACHED
+
+#10 [3/7] RUN apt-get update && apt-get install -y     build-essential     curl     tesseract-ocr     tesseract-ocr-eng     libgl1     libglib2.0-0     && rm -rf /var/lib/apt/lists/*
+#10 CACHED
+
+#11 [6/7] COPY . .
+#11 CACHED
+
+#12 [7/7] RUN mkdir -p uploads/knowledge_base &&     mkdir -p chroma_db
+#12 CACHED
+
+#13 exporting to image
+#13 exporting layers done
+#13 exporting manifest sha256:0163fa371a75151d6b56e26e6d235069deb7bb3469927995ad2d3aedc8d820c9 done
+#13 exporting config sha256:ef20ea6ddfcd0d5549f7c401ac6d753aa6a386ae0d8537f848937d573d9be7f5
+#13 exporting config sha256:ef20ea6ddfcd0d5549f7c401ac6d753aa6a386ae0d8537f848937d573d9be7f5 done
+#13 exporting attestation manifest sha256:56bda58299b88f0bfd495ab0d3a6603ec4512df3619b87ffe6742cd11f4a34a8 0.0s done
+#13 exporting manifest list sha256:80ed9e0adf6aeaff51a5806fd15caa1f1f66daf521001f38b528fbb840778e2d done
+#13 naming to docker.io/library/convis-main_api:latest done
+#13 unpacking to docker.io/library/convis-main_api:latest done
+#13 DONE 0.1s
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/ob5b9y634nh615ac0dj8s0x1w
+Building web
+#0 building with "desktop-linux" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 1.11kB done
+#1 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:18-alpine
+#2 ...
+
+#3 [auth] library/node:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#2 [internal] load metadata for docker.io/library/node:18-alpine
+#2 DONE 2.6s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 458B done
+#4 DONE 0.0s
+
+#5 [base 1/1] FROM docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e
+#5 resolve docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e 0.0s done
+#5 DONE 0.0s
+
+#6 [runner 2/6] RUN addgroup --system --gid 1001 nodejs
+#6 CACHED
+
+#7 [builder 1/4] WORKDIR /app
+#7 CACHED
+
+#8 [runner 3/6] RUN adduser --system --uid 1001 nextjs
+#8 CACHED
+
+#9 [internal] load build context
+#9 transferring context: 2.23kB done
+#9 DONE 0.0s
+
+#10 [deps 2/4] WORKDIR /app
+#10 CACHED
+
+#11 [deps 1/4] RUN apk add --no-cache libc6-compat
+#11 CACHED
+
+#12 [deps 3/4] COPY package.json ./
+#12 CACHED
+
+#13 [deps 4/4] RUN npm install --legacy-peer-deps
+#13 941.7 
+#13 941.7 added 366 packages in 16m
+#13 941.7 
+#13 941.7 137 packages are looking for funding
+#13 941.7   run `npm fund` for details
+#13 941.7 npm notice
+#13 941.7 npm notice New major version of npm available! 10.8.2 -> 11.6.2
+#13 941.7 npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.6.2
+#13 941.7 npm notice To update run: npm install -g npm@11.6.2
+#13 941.7 npm notice
+#13 DONE 941.9s
+
+#14 [builder 2/4] COPY --from=deps /app/node_modules ./node_modules
+#14 DONE 3.9s
+
+#15 [builder 3/4] COPY . .
+#15 DONE 0.2s
+
+#16 [builder 4/4] RUN npm run build
+#16 0.540 
+#16 0.540 > convis-web@0.1.0 build
+#16 0.540 > next build --turbopack
+#16 0.540 
+#16 1.412 Attention: Next.js now collects completely anonymous telemetry regarding usage.
+#16 1.412 This information is used to shape Next.js' roadmap and prioritize features.
+#16 1.412 You can learn more, including how to opt-out if you'd not like to participate in this anonymous program, by visiting the following URL:
+#16 1.412 https://nextjs.org/telemetry
+#16 1.412 
+#16 1.471    ▲ Next.js 15.5.4 (Turbopack)
+#16 1.471 
+#16 1.549    Creating an optimized production build ...
+#16 10.92  ✓ Finished writing to disk in 31ms
+#16 10.94  ✓ Compiled successfully in 8.8s
+#16 10.95    Skipping validation of types
+#16 10.95    Skipping linting
+#16 11.19    Collecting page data ...
+#16 12.19    Generating static pages (0/15) ...
+#16 12.84  ⨯ useSearchParams() should be wrapped in a suspense boundary at page "/verify-email". Read more: https://nextjs.org/docs/messages/missing-suspense-with-csr-bailout
+#16 12.84     at g (/app/.next/server/chunks/ssr/node_modules_next_dist_042de4b7._.js:4:5016)
+#16 12.84     at m (/app/.next/server/chunks/ssr/node_modules_next_dist_042de4b7._.js:4:6650)
+#16 12.84     at f (/app/.next/server/chunks/ssr/[root-of-the-server]__d6fdcdb4._.js:1:5038)
+#16 12.84     at n3 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:82831)
+#16 12.84     at n6 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:84601)
+#16 12.84     at n5 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:104801)
+#16 12.84     at n7 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:102219)
+#16 12.84     at n8 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:83183)
+#16 12.84     at n6 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:84647)
+#16 12.84     at n6 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:101560)
+#16 12.84 Error occurred prerendering page "/verify-email". Read more: https://nextjs.org/docs/messages/prerender-error
+#16 12.84 Export encountered an error on /verify-email/page: /verify-email, exiting the build.
+#16 12.88  ⨯ Next.js build worker exited with code: 1 and signal: null
+#16 12.94 npm notice
+#16 12.94 npm notice New major version of npm available! 10.8.2 -> 11.6.2
+#16 12.94 npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.6.2
+#16 12.94 npm notice To update run: npm install -g npm@11.6.2
+#16 12.94 npm notice
+#16 ERROR: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+------
+ > [builder 4/4] RUN npm run build:
+12.84     at n6 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:84647)
+12.84     at n6 (/app/node_modules/next/dist/compiled/next-server/app-page-turbo.runtime.prod.js:2:101560)
+12.84 Error occurred prerendering page "/verify-email". Read more: https://nextjs.org/docs/messages/prerender-error
+12.84 Export encountered an error on /verify-email/page: /verify-email, exiting the build.
+12.88  ⨯ Next.js build worker exited with code: 1 and signal: null
+12.94 npm notice
+12.94 npm notice New major version of npm available! 10.8.2 -> 11.6.2
+12.94 npm notice Changelog: https://github.com/npm/cli/releases/tag/v11.6.2
+12.94 npm notice To update run: npm install -g npm@11.6.2
+12.94 npm notice
+------
+Dockerfile:20
+--------------------
+  18 |     
+  19 |     # Build the application
+  20 | >>> RUN npm run build
+  21 |     
+  22 |     # Production image, copy all the files and run next
+--------------------
+ERROR: failed to build: failed to solve: process "/bin/sh -c npm run build" did not complete successfully: exit code: 1
+
+View build details: docker-desktop://dashboard/build/desktop-linux/desktop-linux/cdwtu4xd3e941y96sqf9jzhct
+Service 'web' failed to build : Build failed
