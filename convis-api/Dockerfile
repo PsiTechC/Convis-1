@@ -1,11 +1,15 @@
-# Dockerfile for FastAPI Backend
-FROM python:3.11-slim
+# Multi-stage build for FastAPI Backend
+FROM python:3.11-slim as base
 
-# Set working directory
-WORKDIR /app
+# Set environment variables
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies including Tesseract OCR for PDF processing
-RUN apt-get update && apt-get install -y \
+# Install system dependencies
+FROM base as builder
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     tesseract-ocr \
@@ -14,19 +18,41 @@ RUN apt-get update && apt-get install -y \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (for better Docker layer caching)
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better layer caching
 COPY requirements.txt .
 
 # Install Python dependencies
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Production stage
+FROM base as production
+
+# Install only runtime dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    tesseract-ocr \
+    tesseract-ocr-eng \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy installed packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
 # Copy application code
 COPY . .
 
-# Create necessary directories
-RUN mkdir -p uploads/knowledge_base && \
-    mkdir -p chroma_db
+# Create necessary directories with proper permissions
+RUN mkdir -p uploads/knowledge_base chroma_db logs && \
+    chmod -R 755 uploads chroma_db logs
 
 # Expose port
 EXPOSE 8000

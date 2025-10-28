@@ -581,7 +581,7 @@ function ConnectCalendarContent() {
   );
 }
 
-export default function ConnectCalendarPage() {
+function ConnectCalendarPageContent() {
   return (
     <Suspense fallback={
       <div className="min-h-screen flex items-center justify-center bg-neutral-light dark:bg-gray-900">
@@ -591,4 +591,8 @@ export default function ConnectCalendarPage() {
       <ConnectCalendarContent />
     </Suspense>
   );
+}
+
+export default function ConnectCalendarPage() {
+  return <ConnectCalendarPageContent />;
 }

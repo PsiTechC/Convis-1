@@ -1,44 +1,54 @@
 # Dependencies
-node_modules
+node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
-package-lock.json
-yarn.lock
 
 # Next.js
-.next
-out
-build
-
-# Environment variables
-.env
-.env.local
-.env.production
-.env*.local
+.next/
+out/
+dist/
 
 # Testing
-coverage
-.nyc_output
+coverage/
+.nyc_output/
 
 # IDE
 .vscode
 .idea
 *.swp
 *.swo
-*~
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Documentation
+*.md
+
+# Git
+.git
+.gitignore
+.gitattributes
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Git
-.git
-.gitignore
-README.md
+# Logs
+*.log
 
-# Vercel
-.vercel
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Build cache
+.turbo/
 
 # TypeScript
 *.tsbuildinfo
+
+# Scripts
+*.sh
