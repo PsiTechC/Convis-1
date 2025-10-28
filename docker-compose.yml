@@ -1,6 +1,23 @@
 version: '3.8'
 
 services:
+  # Redis for campaign system (optional but recommended)
+  redis:
+    image: redis:7-alpine
+    container_name: convis-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    networks:
+      - convis-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # FastAPI Backend
   api:
     build:
@@ -11,18 +28,74 @@ services:
     ports:
       - "8000:8000"
     environment:
+      # MongoDB Configuration
       - MONGODB_URI=${MONGODB_URI}
+      - DATABASE_NAME=${DATABASE_NAME}
+
+      # Security
       - JWT_SECRET=${JWT_SECRET}
       - ENCRYPTION_KEY=${ENCRYPTION_KEY}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Email Configuration
+      - EMAIL_USER=${EMAIL_USER}
+      - EMAIL_PASS=${EMAIL_PASS}
+      - SMTP_HOST=${SMTP_HOST}
+      - SMTP_PORT=${SMTP_PORT}
+      - SMTP_USE_SSL=${SMTP_USE_SSL}
+
+      # URLs
+      - FRONTEND_URL=${FRONTEND_URL}
       - API_BASE_URL=${API_BASE_URL}
+      - BASE_URL=${BASE_URL}
+
+      # Redis
+      - REDIS_URL=redis://redis:6379
+
+      # Twilio
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN}
+
+      # OpenAI
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+
+      # Google Calendar
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
+      - GOOGLE_REDIRECT_URI=${GOOGLE_REDIRECT_URI}
+
+      # Microsoft Calendar
+      - MICROSOFT_CLIENT_ID=${MICROSOFT_CLIENT_ID}
+      - MICROSOFT_CLIENT_SECRET=${MICROSOFT_CLIENT_SECRET}
+      - MICROSOFT_TENANT_ID=${MICROSOFT_TENANT_ID}
+      - MICROSOFT_REDIRECT_URI=${MICROSOFT_REDIRECT_URI}
+
+      # Campaign Settings
+      - DEFAULT_TIMEZONE=${DEFAULT_TIMEZONE:-Asia/Kolkata}
+      - DEFAULT_MAX_ATTEMPTS=${DEFAULT_MAX_ATTEMPTS:-3}
+      - DEFAULT_RETRY_DELAYS=${DEFAULT_RETRY_DELAYS:-15,60,1440}
+
+      # Feature Flags
+      - ENABLE_CALENDAR_BOOKING=${ENABLE_CALENDAR_BOOKING:-true}
+      - ENABLE_POST_CALL_AI=${ENABLE_POST_CALL_AI:-true}
+      - ENABLE_AUTO_RETRY=${ENABLE_AUTO_RETRY:-true}
+      - CAMPAIGN_DISPATCH_INTERVAL_SECONDS=${CAMPAIGN_DISPATCH_INTERVAL_SECONDS:-1}
+
+      # Celery
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+
+      - ENVIRONMENT=production
       - PORT=8000
       - HOST=0.0.0.0
     volumes:
       - api-uploads:/app/uploads
       - api-chroma:/app/chroma_db
+      - api-logs:/app/logs
     networks:
       - convis-network
+    depends_on:
+      redis:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -47,8 +120,14 @@ services:
         condition: service_healthy
     networks:
       - convis-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
 
-  # Nginx Reverse Proxy
+  # Nginx Reverse Proxy (optional)
   nginx:
     image: nginx:alpine
     container_name: convis-nginx
@@ -65,12 +144,21 @@ services:
       - web
     networks:
       - convis-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
 
 # Persistent volumes for data
 volumes:
+  redis-data:
+    driver: local
   api-uploads:
     driver: local
   api-chroma:
+    driver: local
+  api-logs:
     driver: local
   nginx-logs:
     driver: local
