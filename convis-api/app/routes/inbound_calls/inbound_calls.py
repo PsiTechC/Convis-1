@@ -275,17 +275,24 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
         scheduling_task: Optional[asyncio.Task] = None
         appointment_scheduled = False
         appointment_metadata: Dict[str, Any] = {}
+        calendar_account_id_for_booking = None
 
-        # Add calendar scheduling instructions if user has calendar accounts
-        if assistant_user_id:
+        # Check if assistant has a calendar account assigned
+        assistant_calendar_id = assistant.get('calendar_account_id')
+        if assistant_calendar_id and assistant_user_id:
             calendar_accounts_collection = db["calendar_accounts"]
-            has_calendar = calendar_accounts_collection.find_one({"user_id": assistant_user_id})
-            if has_calendar:
+            calendar_account = calendar_accounts_collection.find_one({
+                "_id": assistant_calendar_id,
+                "user_id": assistant_user_id
+            })
+            if calendar_account:
                 calendar_enabled = True
-                default_calendar_provider = has_calendar.get("provider", "google")
+                calendar_account_id_for_booking = assistant_calendar_id
+                default_calendar_provider = calendar_account.get("provider", "google")
                 calendar_service = CalendarService()
                 calendar_intent_service = CalendarIntentService()
-                calendar_instructions = """
+                logger.info(f"[INBOUND] Calendar enabled for assistant {assistant_id} using account {calendar_account.get('email')}")
+                calendar_instructions = f"""
 
 ---
 Calendar Scheduling Instructions:
@@ -294,17 +301,26 @@ You can schedule meetings and appointments during this call. When the person req
 1. Ask for the preferred date and time
 2. Confirm the meeting title/purpose
 3. Confirm the duration (default to 30 minutes if not specified)
-4. Let them know you'll schedule it
+4. **IMPORTANT: Confirm their timezone** - Ask "What timezone are you in?" or "Just to confirm, you're in [timezone], correct?"
+5. Let them know you'll schedule it
+
+Default timezone (if they don't specify): {timezone_hint}
 
 Example conversation:
 Person: "Can we schedule a follow-up meeting?"
 You: "Of course! When would you like to schedule the meeting? What date and time works best for you?"
 Person: "How about next Tuesday at 2 PM?"
-You: "Perfect! I'll schedule a follow-up meeting for next Tuesday at 2 PM. It will be for 30 minutes. Is that correct?"
+You: "Perfect! And just to confirm, what timezone are you in?"
+Person: "I'm in India, IST timezone."
+You: "Great! So I'll schedule a follow-up meeting for next Tuesday at 2 PM Indian Standard Time. It will be for 30 minutes. Is that correct?"
 Person: "Yes, that works."
-You: "Great! I've noted that down and the meeting will be added to your calendar."
+You: "Excellent! I've scheduled your meeting and it will be added to your calendar."
 
-IMPORTANT: Be natural and conversational. Don't mention "the system" or technical details. Simply confirm the appointment details with the person and let them know it will be scheduled."""
+IMPORTANT:
+- Always confirm the timezone before finalizing the appointment
+- Be natural and conversational
+- Don't mention "the system" or technical details
+- If they mention a timezone, use it; otherwise use {timezone_hint}"""
                 system_message = f"{system_message}{calendar_instructions}"
 
         async def maybe_schedule_from_conversation(trigger: str = "") -> None:
@@ -314,44 +330,57 @@ IMPORTANT: Be natural and conversational. Don't mention "the system" or technica
             """
             nonlocal scheduling_task, appointment_scheduled, appointment_metadata, call_sid
 
+            logger.debug(f"[CALENDAR_CHECK] Trigger: {trigger}, Calendar enabled: {calendar_enabled}")
+
             if (
                 not calendar_enabled
                 or calendar_intent_service is None
                 or calendar_service is None
                 or appointment_scheduled
             ):
+                logger.debug(f"[CALENDAR_CHECK] Early return - calendar_enabled={calendar_enabled}, appointment_scheduled={appointment_scheduled}")
                 return
 
             if scheduling_task and not scheduling_task.done():
+                logger.debug("[CALENDAR_CHECK] Scheduling task already running")
                 return
 
             if not conversation_history or not assistant_user_id or not openai_api_key:
+                logger.debug(f"[CALENDAR_CHECK] Missing requirements - history={len(conversation_history) if conversation_history else 0}, user_id={assistant_user_id is not None}, api_key={openai_api_key is not None}")
                 return
 
             if not call_sid:
-                logger.debug("Call SID unavailable; delaying calendar analysis")
+                logger.debug("[CALENDAR_CHECK] Call SID unavailable; delaying calendar analysis")
                 return
+
+            logger.info(f"[CALENDAR_CHECK] ✓ Starting calendar intent analysis with {len(conversation_history)} messages")
 
             async def _run_analysis() -> None:
                 nonlocal appointment_scheduled, appointment_metadata
                 try:
+                    logger.info("[CALENDAR_ANALYSIS] Extracting calendar intent from conversation...")
                     result = await calendar_intent_service.extract_from_conversation(
                         conversation_history,
                         openai_api_key,
                         timezone_hint,
                     )
+                    logger.info(f"[CALENDAR_ANALYSIS] Intent result: {result}")
+
                     if not result or not result.get("should_schedule"):
+                        logger.info("[CALENDAR_ANALYSIS] No scheduling intent detected")
                         return
 
                     appointment = result.get("appointment") or {}
                     start_iso = appointment.get("start_iso")
                     end_iso = appointment.get("end_iso")
                     if not start_iso or not end_iso:
-                        logger.debug(
-                            "Appointment payload missing start/end. Payload: %s",
+                        logger.warning(
+                            "[CALENDAR_ANALYSIS] Appointment payload missing start/end. Payload: %s",
                             appointment,
                         )
                         return
+
+                    logger.info(f"[CALENDAR_ANALYSIS] ✓ Valid appointment detected: {appointment.get('title')} at {start_iso}")
 
                     appointment.setdefault("timezone", timezone_hint)
                     appointment.setdefault("notes", result.get("reason"))
@@ -363,6 +392,7 @@ IMPORTANT: Be natural and conversational. Don't mention "the system" or technica
                         assistant_id=assistant_id,
                         appointment=appointment,
                         provider=provider,
+                        calendar_account_id=str(calendar_account_id_for_booking) if calendar_account_id_for_booking else None,
                     )
                     if not event_id:
                         logger.warning("Calendar booking returned no event ID; check calendar configuration")

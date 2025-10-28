@@ -46,6 +46,8 @@ interface AIAssistant {
   knowledge_base_files: KnowledgeBaseFile[];
   has_knowledge_base: boolean;
   database_config?: DatabaseConfig | null;
+  calendar_account_id?: string | null;
+  calendar_account_email?: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -213,6 +215,8 @@ export default function AIAgentPage() {
   const [apiKeys, setApiKeys] = useState<StoredApiKey[]>([]);
   const [isLoadingKeys, setIsLoadingKeys] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
+  const [calendarAccounts, setCalendarAccounts] = useState<Array<{id: string, email: string, provider: string}>>([]);
+  const [isLoadingCalendars, setIsLoadingCalendars] = useState(false);
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
   const [formData, setFormData] = useState({
@@ -222,6 +226,7 @@ export default function AIAgentPage() {
     temperature: 0.5,
     api_key_id: '',
     call_greeting: DEFAULT_CALL_GREETING,
+    calendar_account_id: '',
   });
   const [databaseConfig, setDatabaseConfig] = useState({
     enabled: false,
@@ -254,6 +259,7 @@ export default function AIAgentPage() {
       if (resolvedUserId) {
         fetchAssistants(resolvedUserId, token);
         fetchApiKeyOptions(resolvedUserId, token);
+        fetchCalendarAccounts(resolvedUserId, token);
       }
     }
 
@@ -304,6 +310,35 @@ export default function AIAgentPage() {
       setApiKeys([]);
     } finally {
       setIsLoadingKeys(false);
+    }
+  };
+
+  const fetchCalendarAccounts = async (userId: string, token: string) => {
+    try {
+      setIsLoadingCalendars(true);
+      const response = await fetch(`${API_URL}/api/calendar/accounts/${userId}`, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.detail || 'Failed to retrieve calendar accounts');
+      }
+
+      setCalendarAccounts(Array.isArray(data.accounts) ? data.accounts.map((acc: any) => ({
+        id: acc.id,
+        email: acc.email || 'Unknown',
+        provider: acc.provider || 'google',
+      })) : []);
+    } catch (err) {
+      console.error('Error loading calendar accounts:', err);
+      setCalendarAccounts([]);
+    } finally {
+      setIsLoadingCalendars(false);
     }
   };
 
@@ -374,6 +409,7 @@ export default function AIAgentPage() {
             temperature: formData.temperature,
             api_key_id: formData.api_key_id,
             call_greeting: formData.call_greeting,
+            calendar_account_id: formData.calendar_account_id || null,
           }),
         });
 
@@ -415,6 +451,7 @@ export default function AIAgentPage() {
             temperature: formData.temperature,
             api_key_id: formData.api_key_id,
             call_greeting: formData.call_greeting,
+            calendar_account_id: formData.calendar_account_id || null,
           }),
         });
 
@@ -755,6 +792,7 @@ export default function AIAgentPage() {
       temperature: 0.8,
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
+      calendar_account_id: '',
     });
   };
 
@@ -766,6 +804,7 @@ export default function AIAgentPage() {
       temperature: assistant.temperature,
       api_key_id: assistant.api_key_id || '',
       call_greeting: assistant.call_greeting || DEFAULT_CALL_GREETING,
+      calendar_account_id: assistant.calendar_account_id || '',
     });
     setKnowledgeBaseFiles(dedupeKnowledgeBaseFiles(assistant.knowledge_base_files || []));
 
@@ -809,6 +848,7 @@ export default function AIAgentPage() {
       temperature: template.temperature,
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
+      calendar_account_id: '',
     });
     setModalStep('form');
   };
@@ -1551,6 +1591,35 @@ export default function AIAgentPage() {
                 </p>
               </div>
 
+              {/* Calendar Account for Scheduling */}
+              <div>
+                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
+                  Calendar for Scheduling (Optional)
+                </label>
+                <select
+                  name="calendar_account_id"
+                  value={formData.calendar_account_id}
+                  onChange={handleFormChange}
+                  className={`w-full px-4 py-3 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-neutral-mid/20 text-neutral-dark'} focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all`}
+                  disabled={isLoadingCalendars}
+                >
+                  <option value="">No calendar (scheduling disabled)</option>
+                  {calendarAccounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.email} ({account.provider})
+                    </option>
+                  ))}
+                </select>
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-2`}>
+                  Enable calendar scheduling during calls. The AI can book meetings to this calendar when users request appointments.
+                  {calendarAccounts.length === 0 && (
+                    <span className="block mt-1 text-amber-500">
+                      No calendars connected. Visit Connect Calendar page to add one.
+                    </span>
+                  )}
+                </p>
+              </div>
+
               {/* Knowledge Base */}
               {isEditMode && (
                 <div className={`rounded-xl border ${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200'} p-6`}>
@@ -2050,6 +2119,39 @@ export default function AIAgentPage() {
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
                         </svg>
                         <span className={`font-semibold text-red-500`}>
+                          Not Configured
+                        </span>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Calendar Integration */}
+                <div>
+                  <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
+                    Calendar Integration
+                  </label>
+                  <div className={`flex items-center gap-3 p-4 rounded-xl ${isDarkMode ? 'bg-gray-900' : 'bg-neutral-light'}`}>
+                    {viewingAssistant.calendar_account_email ? (
+                      <>
+                        <svg className="w-5 h-5 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                        </svg>
+                        <div className="flex flex-col">
+                          <span className={`font-semibold text-blue-500`}>
+                            Enabled
+                          </span>
+                          <span className={`${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} text-xs mt-0.5`}>
+                            {viewingAssistant.calendar_account_email}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-5 h-5 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                        <span className={`font-semibold ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                           Not Configured
                         </span>
                       </>

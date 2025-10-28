@@ -75,6 +75,25 @@ class CalendarService:
             logger.error(f"Error getting calendar account: {e}")
             return None
 
+    async def get_calendar_account_by_id(self, calendar_account_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get calendar account by ID.
+
+        Args:
+            calendar_account_id: Calendar account ID (ObjectId string)
+
+        Returns:
+            Calendar account document or None
+        """
+        try:
+            account = self.calendar_accounts_collection.find_one({
+                "_id": ObjectId(calendar_account_id)
+            })
+            return account
+        except Exception as e:
+            logger.error(f"Error getting calendar account by ID: {e}")
+            return None
+
     async def refresh_access_token(self, account: Dict[str, Any]) -> Optional[str]:
         """
         Refresh OAuth access token.
@@ -235,14 +254,27 @@ class CalendarService:
                     },
                     timeout=30.0
                 )
-                response.raise_for_status()
+                if response.status_code != 200:
+                    error_detail = response.text
+                    logger.error(f"Google Calendar API error: {response.status_code} - {error_detail}")
+                    logger.error(f"Event data sent: {event_data}")
+                    return None
+
                 result = response.json()
                 event_id = result.get("id")
-                logger.info(f"Google event created: {event_id}")
+                logger.info(f"Google event created successfully: {event_id}")
+                logger.info(f"Event details - Title: {event_data.get('title')}, Start: {event_data.get('start_iso')}, End: {event_data.get('end_iso')}")
                 return event_id
 
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP error creating Google event: {e.response.status_code} - {e.response.text}")
+            logger.error(f"Event data that failed: {event_data}")
+            return None
         except Exception as e:
             logger.error(f"Error creating Google event: {e}")
+            logger.error(f"Event data: {event_data}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
 
     async def create_microsoft_event(self, access_token: str, event_data: Dict[str, Any]) -> Optional[str]:
@@ -436,7 +468,7 @@ class CalendarService:
             logger.error(f"Error fetching upcoming events: {exc}")
             return []
 
-    async def book_appointment(self, lead_id: str, campaign_id: str, appointment_data: Dict[str, Any], provider: str = "google") -> Optional[str]:
+    async def book_appointment(self, lead_id: str, campaign_id: str, appointment_data: Dict[str, Any], provider: str = "google", calendar_account_id_override: Optional[str] = None) -> Optional[str]:
         """
         Book an appointment for a lead using the campaign's assigned calendar account.
 
@@ -445,6 +477,7 @@ class CalendarService:
             campaign_id: Campaign ID
             appointment_data: Appointment details from AI analysis
             provider: "google" or "microsoft" (deprecated - uses campaign's assigned calendar)
+            calendar_account_id_override: Override calendar account ID (optional, takes priority)
 
         Returns:
             Provider event ID if created, otherwise None.
@@ -458,16 +491,19 @@ class CalendarService:
                 return
 
             user_id = str(campaign["user_id"])
-            calendar_account_id = campaign.get("calendar_account_id")
 
-            # Get the calendar account assigned to the campaign
+            # Priority: override > campaign calendar > fallback to user's first calendar
+            calendar_account_id = calendar_account_id_override or campaign.get("calendar_account_id")
+
+            # Get the calendar account
             if calendar_account_id:
-                account = self.calendar_accounts_collection.find_one({"_id": calendar_account_id})
+                account = self.calendar_accounts_collection.find_one({"_id": ObjectId(calendar_account_id) if isinstance(calendar_account_id, str) else calendar_account_id})
                 if not account:
-                    logger.error(f"Calendar account {calendar_account_id} not found for campaign {campaign_id}")
+                    logger.error(f"Calendar account {calendar_account_id} not found")
                     return
                 provider = account.get("provider", "google")
-                logger.info(f"Using assigned calendar account {calendar_account_id} ({provider}) for campaign {campaign_id}")
+                source = "override" if calendar_account_id_override else "campaign"
+                logger.info(f"Using {source} calendar account {calendar_account_id} ({provider}) for campaign {campaign_id}")
             else:
                 # Fallback to first available calendar account for the user
                 logger.warning(f"No calendar account assigned to campaign {campaign_id}, using first available for user {user_id}")
@@ -524,7 +560,7 @@ class CalendarService:
             logger.error(traceback.format_exc())
             return None
 
-    async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google") -> Optional[str]:
+    async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google", calendar_account_id: Optional[str] = None) -> Optional[str]:
         """
         Book an appointment for an inbound call.
 
@@ -534,24 +570,40 @@ class CalendarService:
             assistant_id: AI assistant ID
             appointment: Appointment details from AI analysis
             provider: "google" or "microsoft"
+            calendar_account_id: Specific calendar account ID to use (optional)
 
         Returns:
             Provider event ID if created, otherwise None.
         """
         try:
-            # Get calendar account
-            account = await self.get_calendar_account(user_id, provider)
-            if not account:
-                logger.warning(f"No {provider} calendar account for user {user_id}")
-                return
+            logger.info(f"[BOOK_INBOUND] Starting appointment booking for call {call_sid}")
+            logger.info(f"[BOOK_INBOUND] Appointment data: {appointment}")
+            logger.info(f"[BOOK_INBOUND] Calendar account ID: {calendar_account_id}, Provider: {provider}")
+
+            # Get calendar account - prioritize specific calendar_account_id if provided
+            if calendar_account_id:
+                account = await self.get_calendar_account_by_id(calendar_account_id)
+                if not account:
+                    logger.error(f"[BOOK_INBOUND] No calendar account found with ID {calendar_account_id}")
+                    return
+                # Update provider from the actual account
+                provider = account.get("provider", provider)
+                logger.info(f"[BOOK_INBOUND] Using specific calendar account: {account.get('email')} ({provider})")
+            else:
+                account = await self.get_calendar_account(user_id, provider)
+                if not account:
+                    logger.error(f"[BOOK_INBOUND] No {provider} calendar account for user {user_id}")
+                    return
+                logger.info(f"[BOOK_INBOUND] Using user's calendar account: {account.get('email')} ({provider})")
 
             # Get access token (refresh if needed) - use ensure_access_token for decryption and refresh
             access_token = await self.ensure_access_token(account)
             if not access_token:
-                logger.error("Failed to get valid access token")
+                logger.error("[BOOK_INBOUND] Failed to get valid access token")
                 return
 
             # Create calendar event
+            logger.info(f"[BOOK_INBOUND] Creating {provider} calendar event...")
             event_id = None
             if provider == "google":
                 event_id = await self.create_google_event(access_token, appointment)
@@ -559,7 +611,7 @@ class CalendarService:
                 event_id = await self.create_microsoft_event(access_token, appointment)
 
             if not event_id:
-                logger.error("Failed to create calendar event")
+                logger.error("[BOOK_INBOUND] Failed to create calendar event - no event ID returned")
                 return
 
             # Save appointment record (for inbound calls, we don't have lead_id or campaign_id)
@@ -577,7 +629,8 @@ class CalendarService:
                 "created_at": datetime.utcnow()
             }
 
-            self.appointments_collection.insert_one(appointment_doc)
+            result = self.appointments_collection.insert_one(appointment_doc)
+            logger.info(f"[BOOK_INBOUND] Appointment record saved to database with ID: {result.inserted_id}")
 
             # Update call log to mark appointment booked
             call_logs = self.db["call_logs"]
@@ -586,7 +639,7 @@ class CalendarService:
                 {"$set": {"appointment_booked": True, "updated_at": datetime.utcnow()}}
             )
 
-            logger.info(f"Inbound appointment booked for call {call_sid}: {event_id}")
+            logger.info(f"[BOOK_INBOUND] ✓ Appointment booked successfully for call {call_sid}: event_id={event_id}")
             return event_id
 
         except Exception as e:

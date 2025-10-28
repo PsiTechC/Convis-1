@@ -25,11 +25,34 @@ class PhoneService:
             Tuple of (is_valid, e164_format, detected_region, timezones)
         """
         try:
+            # Clean the number first
+            cleaned = raw_number.strip()
+
+            # If number doesn't start with +, try adding it
+            # This handles cases like "918850501889" (India) or "14155551234" (US)
+            if not cleaned.startswith('+'):
+                cleaned_with_plus = '+' + cleaned
+
+                # Try parsing with + prefix first (for international format without +)
+                try:
+                    parsed = phonenumbers.parse(cleaned_with_plus, None)
+                    if phonenumbers.is_valid_number(parsed):
+                        # Get E.164 format
+                        e164 = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+                        # Get region code
+                        region = phonenumbers.region_code_for_number(parsed)
+                        # Get possible timezones
+                        timezones = pn_timezone.time_zones_for_number(parsed)
+                        return True, e164, region, list(timezones) if timezones else []
+                except NumberParseException:
+                    # If that didn't work, continue to try other methods
+                    pass
+
             # Try parsing with region hint
             try:
                 parsed = phonenumbers.parse(raw_number, default_region)
             except NumberParseException:
-                # Try parsing without region
+                # Try parsing without region (for numbers with + already)
                 parsed = phonenumbers.parse(raw_number, None)
 
             # Validate the number

@@ -296,6 +296,60 @@ class CampaignDialer:
                 {"$set": {"last_call_sid": call.sid}}
             )
 
+            # CRITICAL FIX: Start background monitor to trigger next call when this one ends
+            def monitor_and_trigger_next():
+                """Monitor call completion and instantly trigger next call"""
+                import time
+                time.sleep(10)  # Wait for call to start
+
+                for _ in range(90):  # Monitor for up to 3 minutes
+                    time.sleep(2)  # Check every 2 seconds
+
+                    # Check if call has ended
+                    attempt = call_attempts_collection.find_one({"call_sid": call.sid})
+                    if attempt and attempt.get("status") in ["completed", "busy", "no-answer", "failed", "canceled"]:
+                        logger.info(f"[MONITOR] Call {call.sid} ended with status: {attempt.get('status')}")
+
+                        # Update lead status
+                        leads_collection.update_one(
+                            {"_id": ObjectId(lead_id)},
+                            {
+                                "$set": {
+                                    "status": attempt.get("status", "completed"),
+                                    "last_outcome": attempt.get("status", "completed"),
+                                    "updated_at": datetime.utcnow()
+                                }
+                            }
+                        )
+                        logger.info(f"[MONITOR] Lead {lead_id} marked as {attempt.get('status')}")
+
+                        # Check if campaign is still running
+                        campaign_check = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
+                        if campaign_check and campaign_check.get("status") == "running":
+                            logger.info(f"[MONITOR] Campaign still running - triggering next call")
+
+                            # Get next lead
+                            next_lead = self.get_next_lead(campaign_id, ignore_window=False)
+                            if next_lead:
+                                logger.info(f"[MONITOR] Found next lead: {next_lead.get('name')} ({next_lead.get('e164')})")
+
+                                # Place next call
+                                next_call_sid = self.place_call(campaign_id, str(next_lead["_id"]))
+                                if next_call_sid:
+                                    logger.info(f"[MONITOR] SUCCESS! Next call placed instantly: {next_call_sid}")
+                                else:
+                                    logger.warning(f"[MONITOR] Failed to place next call: {self.last_error}")
+                            else:
+                                logger.info(f"[MONITOR] No more leads available - campaign complete")
+                        else:
+                            logger.info(f"[MONITOR] Campaign not running - skipping next call")
+
+                        break  # Exit monitoring loop
+
+            # Start monitor in background thread
+            threading.Thread(target=monitor_and_trigger_next, daemon=True).start()
+            logger.info(f"[MONITOR] Started background monitor for call {call.sid}")
+
             self.last_error = None
             return call.sid
 
@@ -562,7 +616,8 @@ class CampaignDialer:
                 {"$set": update_doc}
             )
 
-            # Update campaign's last_call_ended_at to enforce 10-second delay between calls
+            # REMOVED 10-SECOND DELAY - Instant sequential dialing for maximum speed
+            # The scheduler will immediately pick up the next lead
             campaigns_collection.update_one(
                 {"_id": ObjectId(campaign_id)},
                 {"$set": {"last_call_ended_at": now}}
@@ -571,7 +626,32 @@ class CampaignDialer:
             logger.info(
                 f"Call completed for lead {lead_id}: status={call_status} → {update_doc.get('status')}, next_retry={update_doc.get('next_retry_at')}"
             )
-            logger.info(f"Campaign {campaign_id} will automatically pick up next lead via scheduler after 10-second delay")
+            logger.info(f"Campaign {campaign_id} ready for next call - scheduler will pick immediately")
+
+            # CRITICAL FIX: Trigger next call immediately in background thread
+            # Don't wait for scheduler - dial next lead instantly for maximum throughput
+            if should_continue:
+                def trigger_next_call():
+                    try:
+                        logger.info(f"[INSTANT_DIAL] Triggering next call for campaign {campaign_id}")
+                        next_lead = self.get_next_lead(campaign_id, ignore_window=False)
+                        if next_lead:
+                            logger.info(f"[INSTANT_DIAL] Found next lead: {next_lead.get('name')} ({next_lead.get('e164')})")
+                            next_call_sid = self.place_call(campaign_id, str(next_lead["_id"]))
+                            if next_call_sid:
+                                logger.info(f"[INSTANT_DIAL] Next call placed successfully: {next_call_sid}")
+                            else:
+                                logger.warning(f"[INSTANT_DIAL] Failed to place next call: {self.last_error}")
+                        else:
+                            logger.info(f"[INSTANT_DIAL] No more leads available for campaign {campaign_id}")
+                    except Exception as next_error:
+                        logger.error(f"[INSTANT_DIAL] Error triggering next call: {next_error}")
+                        import traceback
+                        logger.error(traceback.format_exc())
+
+                # Run in background thread to not block webhook response
+                threading.Thread(target=trigger_next_call, daemon=True).start()
+                logger.info(f"[INSTANT_DIAL] Background thread started for next call")
 
         except Exception as e:
             logger.error(f"Error handling call completion for lead {lead_id}: {e}")

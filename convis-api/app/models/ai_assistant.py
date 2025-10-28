@@ -13,6 +13,7 @@ class AIAssistantCreate(BaseModel):
     api_key_id: Optional[str] = None  # Reference to stored API key
     openai_api_key: Optional[str] = None  # Legacy direct key support
     call_greeting: Optional[str] = Field(default=None)
+    calendar_account_id: Optional[str] = None  # Reference to calendar account for scheduling
 
 class AIAssistantUpdate(BaseModel):
     name: Optional[str] = None
@@ -22,6 +23,7 @@ class AIAssistantUpdate(BaseModel):
     api_key_id: Optional[str] = None  # Update to a stored API key
     openai_api_key: Optional[str] = None  # Legacy direct key update
     call_greeting: Optional[str] = Field(default=None)
+    calendar_account_id: Optional[str] = None  # Update calendar account reference
 
 class KnowledgeBaseFile(BaseModel):
     filename: str
@@ -56,6 +58,8 @@ class AIAssistantResponse(BaseModel):
     knowledge_base_files: List[KnowledgeBaseFile] = []
     has_knowledge_base: bool = False
     database_config: Optional[DatabaseConfig] = None
+    calendar_account_id: Optional[str] = None  # Linked calendar account for scheduling
+    calendar_account_email: Optional[str] = None  # Email of linked calendar for display
     created_at: str
     updated_at: str
 
