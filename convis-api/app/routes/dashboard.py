@@ -53,6 +53,16 @@ def should_include_call(
 
     reference_time = start_time or created_at
     if cutoff and reference_time:
+        # Handle timezone-aware vs timezone-naive datetime comparison
+        if reference_time.tzinfo is not None and cutoff.tzinfo is None:
+            # Make cutoff timezone-aware (UTC)
+            from datetime import timezone
+            cutoff = cutoff.replace(tzinfo=timezone.utc)
+        elif reference_time.tzinfo is None and cutoff.tzinfo is not None:
+            # Make reference_time timezone-aware (UTC)
+            from datetime import timezone
+            reference_time = reference_time.replace(tzinfo=timezone.utc)
+
         return reference_time >= cutoff
 
     return cutoff is None
