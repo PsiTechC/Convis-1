@@ -26,6 +26,9 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 
+# Enable DEBUG logging for campaign_scheduler to troubleshoot dispatcher issues
+logging.getLogger('app.services.campaign_scheduler').setLevel(logging.DEBUG)
+
 # Create FastAPI app
 app = FastAPI(
     title="Convis Labs Registration API",
