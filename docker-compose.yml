@@ -7,7 +7,7 @@ services:
     container_name: convis-redis
     restart: unless-stopped
     ports:
-      - "6379:6379"
+      - "6380:6379"
     volumes:
       - redis-data:/data
     networks:
@@ -17,6 +17,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+  # Ngrok tunnel for webhooks
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: convis-ngrok
+    restart: unless-stopped
+    command:
+      - "http"
+      - "api:8000"
+    ports:
+      - "4040:4040"  # Ngrok web interface
+    environment:
+      - NGROK_AUTHTOKEN=${NGROK_AUTHTOKEN}
+    networks:
+      - convis-network
+    depends_on:
+      - api
 
   # FastAPI Backend
   api:
