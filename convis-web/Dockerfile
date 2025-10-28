@@ -22,7 +22,7 @@ ENV NODE_ENV=production
 ENV SKIP_ENV_VALIDATION=1
 
 # Build the application
-RUN NEXT_PUBLIC_API_URL=http://api:8000 npm run build
+RUN NEXT_PUBLIC_API_URL=http://localhost:8000 npm run build
 
 # Production image, copy all the files and run next
 FROM base AS runner
