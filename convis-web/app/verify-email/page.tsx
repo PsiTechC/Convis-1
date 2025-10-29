@@ -40,7 +40,8 @@ function VerifyEmailContent() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/register/verify-email', {
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const response = await fetch(`${API_URL}/api/register/verify-email`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
