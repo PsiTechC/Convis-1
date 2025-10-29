@@ -64,6 +64,7 @@ services:
       - FRONTEND_URL=${FRONTEND_URL}
       - API_BASE_URL=${API_BASE_URL}
       - BASE_URL=${BASE_URL}
+      - CORS_ORIGINS=${CORS_ORIGINS}
 
       # Redis
       - REDIS_URL=redis://redis:6379
