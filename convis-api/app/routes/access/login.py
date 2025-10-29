@@ -77,11 +77,13 @@ async def login(login_data: Login, response: Response):
         logger.info(f"Token generated for user: {login_data.email}")
 
         # Set cookie in response
+        # Use secure cookies in production (when using HTTPS)
+        is_production = settings.environment == "production"
         response.set_cookie(
             key="token",
             value=token,
             httponly=True,
-            secure=False,  # Set to True in production with HTTPS
+            secure=is_production,  # True in production with HTTPS
             max_age=60 * 60 * 24,  # 1 day
             samesite="lax",
             path="/"

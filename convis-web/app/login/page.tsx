@@ -5,6 +5,11 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL
+
+
+
+
 export default function LoginPage() {
   const router = useRouter();
   const [formData, setFormData] = useState({
@@ -44,8 +49,8 @@ export default function LoginPage() {
     setIsLoading(true);
 
     try {
-      const response = await fetch('http://localhost:8000/api/access/login', {
-        method: 'POST',
+      const response = await fetch(`${API_URL}/api/access/login`, {
+        method: 'POST',   
         headers: {
           'Content-Type': 'application/json',
         },

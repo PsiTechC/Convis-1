@@ -1,3 +1,5 @@
+import os
+import logging
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.routes.register import registration_router, verify_email_router, check_user_router
@@ -17,8 +19,8 @@ from app.routes.twilio_webhooks import router as twilio_webhooks_router
 from app.routes.campaign_twilio_callbacks import router as campaign_twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.config.database import Database
+from app.config.settings import settings
 from app.services.campaign_scheduler import campaign_scheduler
-import logging
 
 # Configure logging
 logging.basicConfig(
@@ -37,9 +39,28 @@ app = FastAPI(
 )
 
 # Configure CORS
+# Build list of allowed origins from environment
+allowed_origins = []
+
+# Add frontend URL from settings
+if settings.frontend_url:
+    allowed_origins.append(settings.frontend_url)
+
+# Add any additional origins from CORS_ORIGINS env var (comma-separated)
+cors_origins_env = os.getenv("CORS_ORIGINS", "")
+if cors_origins_env:
+    additional_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
+    allowed_origins.extend(additional_origins)
+
+# Fallback to localhost for development if no origins configured
+if not allowed_origins:
+    allowed_origins = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"]
+
+logging.info(f"CORS allowed origins: {allowed_origins}")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],  # Add your frontend URLs
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
