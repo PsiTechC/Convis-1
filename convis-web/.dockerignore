@@ -19,10 +19,6 @@ coverage/
 *.swp
 *.swo
 
-# Environment
-.env
-.env.*
-!.env.example
 
 # Documentation
 *.md
