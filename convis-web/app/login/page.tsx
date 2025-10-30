@@ -50,7 +50,7 @@ export default function LoginPage() {
 
     try {
       const response = await fetch(`${API_URL}/api/access/login`, {
-        method: 'POST',   
+        method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
