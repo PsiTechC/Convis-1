@@ -52,9 +52,9 @@ if cors_origins_env:
     additional_origins = [origin.strip() for origin in cors_origins_env.split(",") if origin.strip()]
     allowed_origins.extend(additional_origins)
 
-# Fallback to localhost for development if no origins configured
+# Fallback to production URLs if no origins configured
 if not allowed_origins:
-    allowed_origins = ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"]
+    allowed_origins = ["https://webapp.convis.ai", "https://api.convis.ai"]
 
 logging.info(f"CORS allowed origins: {allowed_origins}")
 

@@ -7,7 +7,7 @@ import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
 import { TopBar } from '../components/TopBar';
 import { MonthlyCalendar } from '../components/MonthlyCalendar';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
 
 type Provider = 'google' | 'microsoft';
 

@@ -11,6 +11,7 @@ from bson import ObjectId
 import logging
 
 from app.config.database import Database
+from app.config.settings import settings
 from app.services.call_status_processor import process_call_status
 from twilio.twiml.voice_response import VoiceResponse, Connect
 from twilio.twiml.messaging_response import MessagingResponse
@@ -108,15 +109,22 @@ async def voice_webhook(
         response.pause(length=1)
 
         # Connect to the media stream WebSocket for this specific assistant
-        # Extract hostname from request
-        host = request.url.hostname
-        if request.url.port and request.url.port not in [80, 443]:
-            host = f"{host}:{request.url.port}"
+        # Use API_BASE_URL from settings for production, otherwise detect from request
+        if settings.api_base_url:
+            # Convert https:// to wss:// for WebSocket
+            base_url = settings.api_base_url.replace('https://', '').replace('http://', '')
+            websocket_url = f'wss://{base_url}/api/inbound-calls/media-stream/{assistant_id}'
+        else:
+            # Fallback to request hostname detection
+            host = request.url.hostname
+            if request.url.port and request.url.port not in [80, 443]:
+                host = f"{host}:{request.url.port}"
+            websocket_url = f'wss://{host}/api/inbound-calls/media-stream/{assistant_id}'
 
-        logger.info(f"Routing call to assistant {assistant_id} via wss://{host}/api/inbound-calls/media-stream/{assistant_id}")
+        logger.info(f"Routing call to assistant {assistant_id} via {websocket_url}")
 
         connect = Connect()
-        connect.stream(url=f'wss://{host}/api/inbound-calls/media-stream/{assistant_id}')
+        connect.stream(url=websocket_url)
         response.append(connect)
 
         return HTMLResponse(content=str(response), media_type="application/xml")
@@ -395,14 +403,21 @@ async def outbound_call_webhook(
             return HTMLResponse(content=str(response), media_type="application/xml")
 
         # Connect to AI assistant via WebSocket
-        host = request.url.hostname
-        if request.url.port and request.url.port not in [80, 443]:
-            host = f"{host}:{request.url.port}"
+        # Use API_BASE_URL from settings for production, otherwise detect from request
+        if settings.api_base_url:
+            # Convert https:// to wss:// for WebSocket
+            base_url = settings.api_base_url.replace('https://', '').replace('http://', '')
+            stream_url = f'wss://{base_url}/api/outbound-calls/media-stream/{assistantId}'
+        else:
+            # Fallback to request hostname detection
+            host = request.url.hostname
+            if request.url.port and request.url.port not in [80, 443]:
+                host = f"{host}:{request.url.port}"
+            stream_url = f'wss://{host}/api/outbound-calls/media-stream/{assistantId}'
 
-        logger.info(f"Connecting campaign call to assistant {assistantId}")
+        logger.info(f"Connecting campaign call to assistant {assistantId} via {stream_url}")
 
         connect = Connect()
-        stream_url = f'wss://{host}/api/outbound-calls/media-stream/{assistantId}'
         query_params = []
         if campaignId:
             query_params.append(f"campaignId={campaignId}")

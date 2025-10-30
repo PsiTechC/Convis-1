@@ -33,7 +33,7 @@ interface DashboardAssistantSummary {
   assistants: AssistantSummaryItem[];
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
 
 export default function DashboardPage() {
   const router = useRouter();

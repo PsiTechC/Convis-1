@@ -54,12 +54,12 @@ COPY . .
 RUN mkdir -p uploads/knowledge_base chroma_db logs && \
     chmod -R 755 uploads chroma_db logs
 
-# Expose port
-EXPOSE 8010
+# Expose port (internal container port)
+EXPOSE 8000
 
-# Health check
+# Health check (use internal port, HTTP not HTTPS for internal check)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
-    CMD curl -f https://api.convis.ai/health || exit 1
+    CMD curl -f http://localhost:8000/health || exit 1
 
-# Run the application with uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8010", "--workers", "4"]
+# Run the application with uvicorn (internal port 8000)
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]

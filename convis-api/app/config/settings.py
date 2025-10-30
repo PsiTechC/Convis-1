@@ -23,7 +23,7 @@ class Settings(BaseSettings):
     smtp_use_ssl: bool = True
 
     # Application Configuration
-    frontend_url: str = "http://localhost:3000"
+    frontend_url: str = "https://webapp.convis.ai"
     jwt_secret: str = "default_secret_change_in_production"
 
     # OpenAI Configuration
@@ -92,7 +92,7 @@ class Settings(BaseSettings):
             if not self.api_base_url:
                 errors.append("API_BASE_URL is required for production (webhook URLs)")
 
-            if self.frontend_url == "http://localhost:3000":
+            if "localhost" in self.frontend_url:
                 logger.warning("FRONTEND_URL still set to localhost - update for production")
 
             if errors:

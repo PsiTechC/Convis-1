@@ -28,8 +28,8 @@ def _get_api_origin() -> str:
     explicit = settings.api_base_url or settings.base_url or os.getenv("API_BASE_URL")
     if explicit:
         return explicit.rstrip("/")
-    host = os.getenv("API_HOSTNAME", "localhost")
-    return f"http://{host}:{settings.api_port}".rstrip("/")
+    # Fallback to production URL
+    return "https://api.convis.ai"
 
 
 def _encode_state(user_id: str, provider: str) -> str:

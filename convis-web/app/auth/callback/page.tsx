@@ -40,7 +40,7 @@ function AuthCallbackPageContent() {
       setMessage('Connecting to ' + provider + '...');
 
       // Send the authorization code to our backend
-      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+      const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
       const response = await fetch(`${API_URL}/api/phone-numbers/connect`, {
         method: 'POST',
         headers: {

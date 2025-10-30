@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, ChangeEvent } from 'react';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
 
 const COUNTRIES = [
   { code: 'US', name: 'United States' },
@@ -499,7 +499,7 @@ export default function CreateCampaignModal({
       const isCreate = !isEditMode;
 
       const requestUrl = isCreate
-        ? `${API_URL}/api/campaigns`
+        ? `${API_URL}/api/campaigns/`
         : `${API_URL}/api/campaigns/${campaignId}`;
 
       if (!isCreate && !campaignId) {
