@@ -241,7 +241,7 @@ export default function AIAgentPage() {
   });
   const [testingConnection, setTestingConnection] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
-  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
+  const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -437,7 +437,7 @@ export default function AIAgentPage() {
         }
       } else {
         // Create new assistant
-        const response = await fetch(`${API_URL}/api/ai-assistants`, {
+        const response = await fetch(`${API_URL}/api/ai-assistants/`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
@@ -531,7 +531,7 @@ export default function AIAgentPage() {
       const demoText = "Hello! This is a sample of my voice. I'm here to assist you with your conversations.";
 
       // Call backend API to generate audio
-      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/ai-assistants/voice-demo`, {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai'}/api/ai-assistants/voice-demo`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
