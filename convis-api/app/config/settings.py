@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     twilio_account_sid: Optional[str] = None
     twilio_auth_token: Optional[str] = None
 
+    # FreJun Configuration
+    frejun_api_key: Optional[str] = None
+
     # Redis Configuration
     redis_url: str = "redis://localhost:6379"
 

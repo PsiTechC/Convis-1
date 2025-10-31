@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
 import { TopBar } from '../components/TopBar';
+import { DialPad } from '../components/DialPad';
 
 interface PhoneNumber {
   id: string;
@@ -55,6 +56,7 @@ interface CallLog {
   transcription_url?: string;
   assistant_id?: string;
   assistant_name?: string;
+  platform?: 'twilio' | 'frejun';
 }
 
 interface ServiceProvider {
@@ -105,6 +107,9 @@ function PhoneNumbersPageContent() {
   const [isInitiatingCall, setIsInitiatingCall] = useState(false);
   const [verifiedCallerIds, setVerifiedCallerIds] = useState<any[]>([]);
   const [isLoadingCallerIds, setIsLoadingCallerIds] = useState(false);
+  const [activeCallNumbers, setActiveCallNumbers] = useState<Set<string>>(new Set());
+  const [isDialPadOpen, setIsDialPadOpen] = useState(false);
+  const [providerFilter, setProviderFilter] = useState<'all' | 'twilio' | 'frejun'>('all');
 
   // Active call tracking
   const [activeCallSid, setActiveCallSid] = useState<string | null>(null);
@@ -179,6 +184,32 @@ function PhoneNumbersPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab]);
+
+  // Poll for active calls every 3 seconds when on phone numbers tab
+  useEffect(() => {
+    if (activeTab === 'numbers' && user) {
+      const pollActiveCalls = async () => {
+        try {
+          const token = localStorage.getItem('token');
+          const response = await fetch(`${API_URL}/api/phone-numbers/active-calls/${user._id}`, {
+            headers: {
+              'Authorization': `Bearer ${token}`,
+            },
+          });
+          if (response.ok) {
+            const data = await response.json();
+            setActiveCallNumbers(new Set(data.active_numbers || []));
+          }
+        } catch (error) {
+          console.error('Error polling active calls:', error);
+        }
+      };
+
+      pollActiveCalls();
+      const interval = setInterval(pollActiveCalls, 3000);
+      return () => clearInterval(interval);
+    }
+  }, [activeTab, user]);
 
   const checkProviderConnection = async (userId: string, token: string) => {
     try {
@@ -300,6 +331,77 @@ function PhoneNumbersPageContent() {
       console.error('Error fetching call logs:', error);
     } finally {
       setIsLoadingCalls(false);
+    }
+  };
+
+  const handleMakeCall = async (fromNumber: string, toNumber: string) => {
+    try {
+      const token = localStorage.getItem('token');
+      const userId = user?.id || user?._id || user?.clientId;
+
+      if (!userId) {
+        throw new Error('User ID not found');
+      }
+
+      // Find the phone number to determine which provider to use
+      const phoneNumber = phoneNumbers.find(pn => pn.phone_number === fromNumber);
+      if (!phoneNumber) {
+        throw new Error('Phone number not found');
+      }
+
+      // Check if assistant is assigned
+      if (!phoneNumber.assigned_assistant_id) {
+        throw new Error('Please assign an AI assistant to this number first');
+      }
+
+      const provider = phoneNumber.provider.toLowerCase();
+      let endpoint = '';
+      let requestBody: any = {};
+
+      if (provider === 'twilio') {
+        endpoint = `${API_URL}/api/twilio-webhooks/make-call`;
+        requestBody = {
+          user_id: userId,
+          from_number: fromNumber,
+          to_number: toNumber,
+        };
+      } else if (provider === 'frejun') {
+        endpoint = `${API_URL}/api/frejun/initiate-call`;
+        requestBody = {
+          from_number: fromNumber,
+          to_number: toNumber,
+          assistant_id: phoneNumber.assigned_assistant_id,
+          user_id: userId,
+        };
+      } else {
+        throw new Error(`Unsupported provider: ${provider}`);
+      }
+
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(requestBody),
+      });
+
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to initiate call');
+      }
+
+      const result = await response.json();
+      alert(`Call initiated successfully! Call SID: ${result.call_sid || result.call_id}`);
+
+      // Refresh call logs after a short delay
+      setTimeout(() => {
+        fetchCallLogs();
+      }, 2000);
+    } catch (error: any) {
+      console.error('Error making call:', error);
+      alert(error.message || 'Failed to initiate call');
+      throw error;
     }
   };
 
@@ -632,7 +734,7 @@ function PhoneNumbersPageContent() {
     }
   };
 
-  const handleMakeCall = async () => {
+  const handleMakeCallFromModal = async () => {
     if (!selectedPhoneForCall || !callToNumber.trim()) {
       alert('Please enter a phone number to call');
       return;
@@ -735,7 +837,7 @@ function PhoneNumbersPageContent() {
           phone_number: selectedNumber,
           friendly_name: `Auto-purchased ${new Date().toLocaleDateString()}`,
           use_twiml_app: true,
-          assistant_id: selectedAssistant
+          assistant_id: selectedAssistant || ''
         }),
       });
 
@@ -1028,23 +1130,58 @@ function PhoneNumbersPageContent() {
               <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
             </div>
           ) : phoneNumbers.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {phoneNumbers.map((phone) => (
+            <>
+              {/* Dial Pad Button */}
+              <div className="mb-6 flex justify-end">
+                <button
+                  onClick={() => setIsDialPadOpen(true)}
+                  className="px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-200 flex items-center gap-2 font-semibold"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                  </svg>
+                  Open Dial Pad
+                </button>
+              </div>
+
+              {/* Provider-Categorized Phone Numbers */}
+              {['twilio', 'frejun'].map(provider => {
+                const providerNumbers = phoneNumbers.filter(p => p.provider.toLowerCase() === provider);
+                if (providerNumbers.length === 0) return null;
+
+                return (
+                  <div key={provider} className="mb-8">
+                    <h3 className={`text-lg font-bold mb-4 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      {provider.charAt(0).toUpperCase() + provider.slice(1)} Numbers ({providerNumbers.length})
+                    </h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                      {providerNumbers.map((phone) => (
                 <div
                   key={phone.id}
                   className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-neutral-mid/10'} border rounded-2xl p-6 hover:shadow-lg transition-all duration-200`}
                 >
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center gap-3">
-                      <div className="w-12 h-12 bg-gradient-to-br from-primary to-primary/80 rounded-xl flex items-center justify-center">
+                      <div className="w-12 h-12 bg-gradient-to-br from-primary to-primary/80 rounded-xl flex items-center justify-center relative">
                         <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
                         </svg>
+                        {/* Active Call Indicator */}
+                        {activeCallNumbers.has(phone.phone_number) && (
+                          <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
+                        )}
                       </div>
                       <div>
-                        <h3 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
-                          {phone.phone_number}
-                        </h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            {phone.phone_number}
+                          </h3>
+                          {activeCallNumbers.has(phone.phone_number) && (
+                            <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 animate-pulse">
+                              Live Call
+                            </span>
+                          )}
+                        </div>
                         <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                           {phone.provider}
                         </p>
@@ -1158,7 +1295,11 @@ function PhoneNumbersPageContent() {
                   </div>
                 </div>
               ))}
-            </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </>
           ) : (
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl p-12 text-center`}>
               <div className="w-20 h-20 bg-gradient-to-br from-primary/20 to-primary/10 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -1203,6 +1344,20 @@ function PhoneNumbersPageContent() {
                       </p>
                     </div>
                     <div className="flex items-center gap-3">
+                      {/* Provider Filter */}
+                      <select
+                        value={providerFilter}
+                        onChange={(e) => setProviderFilter(e.target.value as 'all' | 'twilio' | 'frejun')}
+                        className={`px-4 py-2 rounded-xl text-sm font-semibold transition-colors ${
+                          isDarkMode
+                            ? 'bg-gray-700 text-white border border-gray-600'
+                            : 'bg-neutral-light text-neutral-dark border border-neutral-mid/20'
+                        }`}
+                      >
+                        <option value="all">All Providers</option>
+                        <option value="twilio">Twilio Only</option>
+                        <option value="frejun">FreJun Only</option>
+                      </select>
                       <button
                         onClick={() => fetchCallLogs()}
                         disabled={isLoadingCalls}
@@ -1235,6 +1390,9 @@ function PhoneNumbersPageContent() {
                             To
                           </th>
                           <th className={`px-6 py-4 text-left text-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
+                            Provider
+                          </th>
+                          <th className={`px-6 py-4 text-left text-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
                             Status
                           </th>
                           <th className={`px-6 py-4 text-left text-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
@@ -1258,7 +1416,13 @@ function PhoneNumbersPageContent() {
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-gray-700">
-                        {callLogs.map((call, index) => (
+                        {callLogs
+                          .filter(call => {
+                            if (providerFilter === 'all') return true;
+                            const callProvider = call.platform?.toLowerCase() || 'twilio';
+                            return callProvider === providerFilter;
+                          })
+                          .map((call, index) => (
                           <tr key={call.id || call.call_sid || `call-${index}`} className={`${isDarkMode ? 'hover:bg-gray-700/50' : 'hover:bg-neutral-light'} transition-colors`}>
                             <td className="px-6 py-4">
                               <div className="flex items-center gap-2">
@@ -1288,6 +1452,15 @@ function PhoneNumbersPageContent() {
                             </td>
                             <td className={`px-6 py-4 text-sm font-mono ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
                               {call.to}
+                            </td>
+                            <td className="px-6 py-4">
+                              <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                                call.platform?.toLowerCase() === 'frejun'
+                                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
+                                  : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                              }`}>
+                                {call.platform?.toUpperCase() || 'TWILIO'}
+                              </span>
                             </td>
                             <td className="px-6 py-4">
                               <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
@@ -2415,7 +2588,7 @@ function PhoneNumbersPageContent() {
                 Cancel
               </button>
               <button
-                onClick={handleMakeCall}
+                onClick={handleMakeCallFromModal}
                 disabled={isInitiatingCall || !callToNumber.trim()}
                 className={`flex-1 px-4 py-3 rounded-xl font-semibold transition-all duration-200 ${
                   isInitiatingCall || !callToNumber.trim()
@@ -2448,6 +2621,23 @@ function PhoneNumbersPageContent() {
           className="fixed inset-0 bg-black/50 z-30 lg:hidden"
           onClick={() => setIsMobileMenuOpen(false)}
         ></div>
+      )}
+
+      {/* Dial Pad - Inline Component (Bottom Right) */}
+      {isDialPadOpen && (
+        <div className="fixed bottom-6 right-6 z-50 shadow-2xl">
+          <DialPad
+            availableNumbers={phoneNumbers.filter(pn => pn.assigned_assistant_id).map(pn => ({
+              phone_number: pn.phone_number,
+              provider: pn.provider,
+              friendly_name: pn.friendly_name
+            }))}
+            onCall={handleMakeCall}
+            isDarkMode={isDarkMode}
+            onClose={() => setIsDialPadOpen(false)}
+            isVisible={isDialPadOpen}
+          />
+        </div>
       )}
     </div>
   );

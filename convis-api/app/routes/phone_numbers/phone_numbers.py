@@ -16,10 +16,12 @@ from app.config.database import Database
 from app.config.settings import settings
 from app.utils.encryption import encryption_service
 from app.utils.twilio_helpers import decrypt_twilio_credentials
+from app.utils.frejun_helpers import decrypt_frejun_credentials
 from bson import ObjectId
 from datetime import datetime
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
+import httpx
 import logging
 
 logger = logging.getLogger(__name__)
@@ -446,6 +448,260 @@ async def sync_phone_numbers(user_id: str):
         )
 
 
+@router.post("/sync-frejun/{user_id}", response_model=ConnectProviderResponse, status_code=status.HTTP_200_OK)
+async def sync_frejun_phone_numbers(user_id: str):
+    """
+    Sync FreJun phone numbers using existing provider connection
+    (No need to re-enter credentials)
+
+    Args:
+        user_id: User ID
+
+    Returns:
+        ConnectProviderResponse: List of synced phone numbers
+
+    Raises:
+        HTTPException: If no provider connection found or sync fails
+    """
+    try:
+        db = Database.get_db()
+        users_collection = db['users']
+        phone_numbers_collection = db['phone_numbers']
+        provider_connections_collection = db['provider_connections']
+
+        logger.info(f"Syncing FreJun phone numbers for user: {user_id}")
+
+        # Verify user exists
+        try:
+            user_obj_id = ObjectId(user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        user = users_collection.find_one({"_id": user_obj_id})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Get existing FreJun connection
+        frejun_connection = provider_connections_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "frejun"
+        })
+
+        if not frejun_connection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No FreJun connection found. Please connect FreJun first."
+            )
+
+        phone_numbers = []
+
+        try:
+            # Initialize FreJun API client with stored credentials
+            api_key, api_secret = decrypt_frejun_credentials(frejun_connection)
+            if not api_key:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Stored FreJun credentials are missing or invalid. Please reconnect your provider."
+                )
+
+            # FreJun API base URL (based on common patterns for Teler API)
+            # This may need adjustment based on actual FreJun API documentation
+            base_url = frejun_connection.get("base_url", "https://api.frejun.com/v1")
+
+            logger.info(f"Attempting to fetch FreJun numbers from API: {base_url}")
+
+            # Try to fetch phone numbers from FreJun API
+            # Common REST patterns: GET /numbers, GET /phone-numbers, GET /virtual-numbers
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json"
+                }
+
+                # If api_secret is provided, include it in headers
+                if api_secret:
+                    headers["X-API-Secret"] = api_secret
+
+                # Try multiple common endpoint patterns
+                endpoints_to_try = [
+                    f"{base_url}/numbers",
+                    f"{base_url}/phone-numbers",
+                    f"{base_url}/virtual-numbers",
+                    f"{base_url}/my-numbers"
+                ]
+
+                response_data = None
+                successful_endpoint = None
+
+                for endpoint in endpoints_to_try:
+                    try:
+                        logger.info(f"Trying endpoint: {endpoint}")
+                        response = await client.get(endpoint, headers=headers)
+
+                        if response.status_code == 200:
+                            response_data = response.json()
+                            successful_endpoint = endpoint
+                            logger.info(f"Successfully fetched data from: {endpoint}")
+                            break
+                        elif response.status_code == 404:
+                            continue
+                        else:
+                            logger.warning(f"Endpoint {endpoint} returned status {response.status_code}")
+                    except Exception as e:
+                        logger.warning(f"Failed to connect to {endpoint}: {str(e)}")
+                        continue
+
+                if not response_data:
+                    # If no endpoint worked, provide helpful error message
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=(
+                            "Unable to fetch phone numbers from FreJun API. "
+                            "Please ensure your API credentials are correct and contact FreJun support "
+                            "to confirm the correct API endpoint for listing virtual numbers. "
+                            "You can manually add numbers using the 'Add FreJun Number' option."
+                        )
+                    )
+
+                # Parse response - handle different possible response formats
+                numbers_list = []
+                if isinstance(response_data, list):
+                    numbers_list = response_data
+                elif isinstance(response_data, dict):
+                    # Try common key names for the numbers array
+                    for key in ['numbers', 'phone_numbers', 'data', 'results', 'virtual_numbers']:
+                        if key in response_data:
+                            numbers_list = response_data[key]
+                            break
+
+                if not numbers_list:
+                    logger.warning(f"No phone numbers found in API response: {response_data}")
+                    return ConnectProviderResponse(
+                        message="No phone numbers found in your FreJun account",
+                        phone_numbers=[],
+                        provider="frejun"
+                    )
+
+                logger.info(f"Found {len(numbers_list)} phone numbers from FreJun API")
+
+                # Store phone numbers
+                now = datetime.utcnow()
+                for record in numbers_list:
+                    # Handle different response formats
+                    phone_number = None
+                    number_id = None
+
+                    if isinstance(record, str):
+                        # Simple string format
+                        phone_number = record
+                        number_id = record
+                    elif isinstance(record, dict):
+                        # Try common field names
+                        for field in ['phone_number', 'number', 'phoneNumber', 'e164']:
+                            if field in record:
+                                phone_number = record[field]
+                                break
+
+                        # Try to get unique ID
+                        for field in ['id', 'number_id', 'sid', 'uuid']:
+                            if field in record:
+                                number_id = record[field]
+                                break
+
+                    if not phone_number:
+                        logger.warning(f"Could not extract phone number from record: {record}")
+                        continue
+
+                    # Use phone_number as ID if no unique ID found
+                    if not number_id:
+                        number_id = phone_number
+
+                    # Ensure E.164 format
+                    if not phone_number.startswith("+"):
+                        logger.warning(f"Phone number not in E.164 format: {phone_number}")
+                        phone_number = f"+{phone_number}"
+
+                    phone_doc = {
+                        "user_id": user_obj_id,
+                        "phone_number": phone_number,
+                        "provider": "frejun",
+                        "provider_sid": str(number_id),
+                        "friendly_name": record.get("friendly_name", phone_number) if isinstance(record, dict) else phone_number,
+                        "capabilities": {
+                            "voice": True,
+                            "sms": False,
+                            "mms": False
+                        },
+                        "status": record.get("status", "active") if isinstance(record, dict) else "active",
+                        "updated_at": now
+                    }
+
+                    # Upsert phone number (preserve existing assignments)
+                    result = phone_numbers_collection.update_one(
+                        {"user_id": user_obj_id, "provider_sid": str(number_id)},
+                        {"$set": phone_doc, "$setOnInsert": {"created_at": now}},
+                        upsert=True
+                    )
+
+                    # Get the document
+                    doc = phone_numbers_collection.find_one({"user_id": user_obj_id, "provider_sid": str(number_id)})
+
+                    phone_numbers.append(PhoneNumberResponse(
+                        id=str(doc["_id"]),
+                        phone_number=phone_number,
+                        provider="frejun",
+                        friendly_name=phone_doc["friendly_name"],
+                        capabilities=PhoneNumberCapabilities(voice=True, sms=False, mms=False),
+                        status=phone_doc["status"],
+                        created_at=doc.get("created_at", now).isoformat() + "Z",
+                        assigned_assistant_id=str(doc["assigned_assistant_id"]) if doc.get("assigned_assistant_id") else None,
+                        assigned_assistant_name=doc.get("assigned_assistant_name"),
+                        webhook_url=doc.get("webhook_url")
+                    ))
+
+                logger.info(f"Successfully synced {len(phone_numbers)} FreJun phone numbers")
+
+                return ConnectProviderResponse(
+                    message=f"Successfully synced {len(phone_numbers)} phone numbers from FreJun",
+                    phone_numbers=phone_numbers,
+                    provider="frejun"
+                )
+
+        except HTTPException:
+            raise
+        except httpx.HTTPError as e:
+            logger.error(f"FreJun API HTTP error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Failed to connect to FreJun API: {str(e)}"
+            )
+        except Exception as e:
+            logger.error(f"Error syncing FreJun phone numbers: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Error syncing phone numbers: {str(e)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Unexpected error in sync_frejun_phone_numbers: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )
+
+
 @router.get("/user/{user_id}", response_model=PhoneNumberListResponse)
 async def get_user_phone_numbers(user_id: str):
     """
@@ -504,6 +760,52 @@ async def get_user_phone_numbers(user_id: str):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching phone numbers: {str(e)}"
         )
+
+
+@router.get("/active-calls/{user_id}", status_code=status.HTTP_200_OK)
+async def get_active_calls(user_id: str):
+    """
+    Get phone numbers with active calls for real-time indicators
+
+    Args:
+        user_id: User ID
+
+    Returns:
+        List of phone numbers with active calls
+    """
+    try:
+        db = Database.get_db()
+        call_logs_collection = db['call_logs']
+
+        # Validate user_id
+        try:
+            user_obj_id = ObjectId(user_id)
+        except Exception:
+            return {"active_numbers": []}
+
+        # Find calls in active status (in-progress, ringing, queued, initiated)
+        active_calls = list(call_logs_collection.find({
+            "user_id": user_obj_id,
+            "call_status": {"$in": ["in-progress", "ringing", "queued", "initiated"]}
+        }))
+
+        # Extract unique phone numbers from both incoming and outgoing
+        active_numbers = set()
+        for call in active_calls:
+            # Add the number being called (to_number for outbound, from user's perspective)
+            if call.get("to_number"):
+                active_numbers.add(call["to_number"])
+            # For inbound calls, the user's number is the 'to' number
+            # For outbound, it's the 'from_number'
+            if call.get("from_number") and call.get("call_type") == "outbound":
+                active_numbers.add(call["from_number"])
+
+        logger.info(f"Found {len(active_numbers)} numbers with active calls for user {user_id}")
+        return {"active_numbers": list(active_numbers)}
+
+    except Exception as e:
+        logger.error(f"Error fetching active calls: {e}")
+        return {"active_numbers": []}
 
 
 @router.get("/call-logs/user/{user_id}", response_model=CallLogListResponse)
@@ -976,4 +1278,229 @@ async def unassign_assistant_from_phone_number(phone_number_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error unassigning assistant: {str(e)}"
+        )
+
+
+# ==================== FreJun Provider Integration ====================
+
+@router.post("/connect-frejun/{user_id}", response_model=ConnectProviderResponse, status_code=status.HTTP_200_OK)
+async def connect_frejun_provider(user_id: str, credentials: ProviderCredentials):
+    """
+    Connect FreJun provider and sync phone numbers
+
+    Args:
+        user_id: User ID
+        credentials: FreJun API credentials
+
+    Returns:
+        ConnectProviderResponse: List of synced FreJun phone numbers
+    """
+    try:
+        db = Database.get_db()
+        users_collection = db['users']
+        phone_numbers_collection = db['phone_numbers']
+        provider_connections_collection = db['provider_connections']
+
+        logger.info(f"Connecting FreJun provider for user: {user_id}")
+
+        # Validate user_id
+        try:
+            user_obj_id = ObjectId(user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        user = users_collection.find_one({"_id": user_obj_id})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Validate FreJun API key
+        frejun_api_key = credentials.api_key
+        frejun_api_secret = credentials.api_secret  # Optional
+        base_url = credentials.base_url or "https://api.frejun.com/v1"
+
+        if not frejun_api_key:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="FreJun API key is required"
+            )
+
+        try:
+            # Store the connection first
+            now = datetime.utcnow()
+
+            # Encrypt credentials before storing
+            encrypted_api_key = encryption_service.encrypt(frejun_api_key)
+            encrypted_api_secret = None
+            if frejun_api_secret:
+                encrypted_api_secret = encryption_service.encrypt(frejun_api_secret)
+
+            connection_doc = {
+                "user_id": user_obj_id,
+                "provider": "frejun",
+                "api_key": encrypted_api_key,
+                "api_secret": encrypted_api_secret,
+                "base_url": base_url,
+                "status": "active",
+                "created_at": now,
+                "updated_at": now
+            }
+
+            # Upsert connection
+            provider_connections_collection.update_one(
+                {"user_id": user_obj_id, "provider": "frejun"},
+                {"$set": connection_doc},
+                upsert=True
+            )
+
+            logger.info(f"Successfully stored FreJun connection for user {user_id}")
+
+            # Now try to sync phone numbers using the sync endpoint
+            try:
+                sync_result = await sync_frejun_phone_numbers(user_id)
+                return sync_result
+            except HTTPException as sync_error:
+                # If sync fails, still return success for connection but with explanation
+                if sync_error.status_code == 503:
+                    # API endpoint not found
+                    return ConnectProviderResponse(
+                        message="FreJun connected successfully. Unable to automatically sync numbers - please add them manually or contact FreJun support for API documentation.",
+                        phone_numbers=[],
+                        provider="frejun"
+                    )
+                else:
+                    # Other sync errors - re-raise
+                    raise
+
+        except Exception as e:
+            logger.error(f"FreJun API error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail=f"Invalid FreJun API key or connection error: {str(e)}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error connecting FreJun: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error connecting FreJun: {str(e)}"
+        )
+
+
+@router.post("/add-frejun-number/{user_id}", response_model=PhoneNumberResponse, status_code=status.HTTP_201_CREATED)
+async def add_frejun_phone_number(user_id: str, phone_number: str):
+    """
+    Manually add a FreJun phone number to the database
+
+    Args:
+        user_id: User ID
+        phone_number: FreJun phone number in E.164 format (e.g., +1234567890)
+
+    Returns:
+        PhoneNumberResponse: Added phone number details
+    """
+    try:
+        db = Database.get_db()
+        users_collection = db['users']
+        phone_numbers_collection = db['phone_numbers']
+        provider_connections_collection = db['provider_connections']
+
+        logger.info(f"Adding FreJun number {phone_number} for user: {user_id}")
+
+        # Validate user_id
+        try:
+            user_obj_id = ObjectId(user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        user = users_collection.find_one({"_id": user_obj_id})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Check if FreJun is connected
+        frejun_connection = provider_connections_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "frejun"
+        })
+
+        if not frejun_connection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="FreJun not connected. Please connect FreJun first."
+            )
+
+        # Validate phone number format
+        if not phone_number.startswith("+"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number must be in E.164 format (e.g., +1234567890)"
+            )
+
+        # Check if number already exists
+        existing = phone_numbers_collection.find_one({
+            "user_id": user_obj_id,
+            "phone_number": phone_number
+        })
+
+        if existing:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Phone number already exists"
+            )
+
+        # Add phone number
+        now = datetime.utcnow()
+        phone_doc = {
+            "user_id": user_obj_id,
+            "phone_number": phone_number,
+            "provider": "frejun",
+            "friendly_name": phone_number,
+            "capabilities": {
+                "voice": True,
+                "sms": False,
+                "mms": False
+            },
+            "status": "active",
+            "created_at": now,
+            "updated_at": now
+        }
+
+        result = phone_numbers_collection.insert_one(phone_doc)
+        phone_doc["_id"] = result.inserted_id
+
+        logger.info(f"Successfully added FreJun number {phone_number}")
+
+        return PhoneNumberResponse(
+            id=str(result.inserted_id),
+            phone_number=phone_number,
+            provider="frejun",
+            friendly_name=phone_number,
+            capabilities=PhoneNumberCapabilities(voice=True, sms=False, mms=False),
+            status="active",
+            created_at=now.isoformat() + "Z",
+            assigned_assistant_id=None,
+            assigned_assistant_name=None,
+            webhook_url=None
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error adding FreJun number: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error adding FreJun number: {str(e)}"
         )
