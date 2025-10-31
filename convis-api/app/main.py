@@ -18,6 +18,7 @@ from app.routes.campaigns import router as campaigns_router
 from app.routes.twilio_webhooks import router as twilio_webhooks_router
 from app.routes.campaign_twilio_callbacks import router as campaign_twilio_router
 from app.routes.dashboard import router as dashboard_router
+from app.routes.frejun import router as frejun_router
 from app.config.database import Database
 from app.config.settings import settings
 from app.services.campaign_scheduler import campaign_scheduler
@@ -108,6 +109,9 @@ app.include_router(calendar_router, prefix="/api/calendar", tags=["Calendar"])
 # Twilio Webhooks (dynamic routing)
 app.include_router(twilio_webhooks_router, prefix="/api/twilio-webhooks", tags=["Twilio Webhooks"])
 app.include_router(campaign_twilio_router, tags=["Campaign Webhooks"])
+
+# FreJun Integration
+app.include_router(frejun_router, prefix="/api/frejun", tags=["FreJun Calls"])
 
 @app.on_event("startup")
 async def startup_event():

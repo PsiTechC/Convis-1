@@ -10,9 +10,14 @@ class PhoneNumberCapabilities(BaseModel):
 
 
 class ProviderCredentials(BaseModel):
-    provider: str = Field(..., description="Provider name (twilio, vonage, plivo, etc.)")
-    account_sid: str = Field(..., description="Provider account SID/API key")
-    auth_token: str = Field(..., description="Provider auth token/secret")
+    provider: str = Field(..., description="Provider name (twilio, frejun, vonage, plivo, etc.)")
+    # Twilio/traditional providers
+    account_sid: Optional[str] = Field(None, description="Provider account SID (Twilio, etc.)")
+    auth_token: Optional[str] = Field(None, description="Provider auth token (Twilio, etc.)")
+    # FreJun/API key based providers
+    api_key: Optional[str] = Field(None, description="API key (FreJun, etc.)")
+    api_secret: Optional[str] = Field(None, description="API secret (optional)")
+    base_url: Optional[str] = Field(None, description="Base API URL (optional, for FreJun)")
     user_id: str = Field(..., description="User ID")
 
 

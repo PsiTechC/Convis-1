@@ -14,6 +14,7 @@ streamlit>=1.29.0
 requests>=2.31.0
 websockets>=12.0
 twilio>=8.10.0
+teler>=0.2.0
 # Document processing
 PyPDF2>=3.0.0
 openpyxl>=3.1.0
@@ -26,9 +27,8 @@ Pillow>=10.0.0
 openai>=1.0.0
 numpy>=1.24.0
 scikit-learn>=1.3.0
-# Vector database for fast similarity search
+# Vector database for fast similarity search (uses OpenAI embeddings API)
 chromadb>=0.4.0
-sentence-transformers>=2.2.0
 
 # Database connectors for RAG integration
 psycopg2-binary>=2.9.9  # PostgreSQL
