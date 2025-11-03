@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
-import { AreaChart, Area, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
 import { TopBar } from '../components/TopBar';
 
@@ -33,16 +32,36 @@ interface DashboardAssistantSummary {
   assistants: AssistantSummaryItem[];
 }
 
+type StoredUser = {
+  id?: string;
+  _id?: string;
+  clientId?: string;
+  name?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  email?: string;
+  [key: string]: unknown;
+};
+
+interface CallLog {
+  direction?: string | null;
+  duration?: number | null;
+  status?: string | null;
+  price?: string | number | null;
+  [key: string]: unknown;
+}
+
 const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<StoredUser | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [activeNav, setActiveNav] = useState('Dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [callLogs, setCallLogs] = useState<any[]>([]);
   const [isLoadingStats, setIsLoadingStats] = useState(true);
   const [stats, setStats] = useState({
     totalCalls: 0,
@@ -80,7 +99,7 @@ export default function DashboardPage() {
     }
 
     if (userStr) {
-      const parsedUser = JSON.parse(userStr);
+      const parsedUser: StoredUser = JSON.parse(userStr);
       setUser(parsedUser);
       const resolvedUserId = parsedUser.id || parsedUser._id || parsedUser.clientId;
       if (resolvedUserId) {
@@ -148,17 +167,26 @@ export default function DashboardPage() {
 
       if (response.ok) {
         const data = await response.json();
-        const logs = data.call_logs || [];
-        setCallLogs(logs);
+        const logs: CallLog[] = Array.isArray(data.call_logs) ? data.call_logs : [];
 
         // Calculate stats
         const totalCalls = logs.length;
-        const inboundCalls = logs.filter((log: any) => log.direction === 'inbound').length;
-        const outboundCalls = logs.filter((log: any) => log.direction.includes('outbound')).length;
-        const completedCalls = logs.filter((log: any) => log.status === 'completed').length;
-        const totalDuration = logs.reduce((sum: number, log: any) => sum + (log.duration || 0), 0);
+        const inboundCalls = logs.filter((log) => log.direction === 'inbound').length;
+        const outboundCalls = logs.filter((log) => typeof log.direction === 'string' && log.direction.includes('outbound')).length;
+        const completedCalls = logs.filter((log) => log.status === 'completed').length;
+        const totalDuration = logs.reduce((sum, log) => sum + (typeof log.duration === 'number' ? log.duration : 0), 0);
         const avgDuration = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
-        const totalCost = logs.reduce((sum: number, log: any) => sum + Math.abs(parseFloat(log.price || '0')), 0);
+        const totalCost = logs.reduce((sum, log) => {
+          const rawPrice = log.price;
+          const numericPrice =
+            typeof rawPrice === 'number'
+              ? rawPrice
+              : typeof rawPrice === 'string'
+                ? Number.parseFloat(rawPrice)
+                : 0;
+          const safePrice = Number.isFinite(numericPrice) ? numericPrice : 0;
+          return sum + Math.abs(safePrice);
+        }, 0);
         const answeredRate = totalCalls > 0 ? Math.round((completedCalls / totalCalls) * 100) : 0;
 
         setStats({

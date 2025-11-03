@@ -258,29 +258,86 @@ async def preview_document_content(assistant_id: str, filename: str):
                 import PyPDF2
                 with open(file_path, 'rb') as file:
                     pdf_reader = PyPDF2.PdfReader(file)
-                    for page in pdf_reader.pages:
-                        extracted_text += page.extract_text() + "\n\n"
+                    num_pages = len(pdf_reader.pages)
+
+                    # Try to extract text from each page
+                    for page_num, page in enumerate(pdf_reader.pages, 1):
+                        page_text = page.extract_text()
+                        if page_text and page_text.strip():
+                            extracted_text += f"--- Page {page_num} ---\n{page_text}\n\n"
+
+                    # If no text was extracted, this might be a scanned/image-based PDF
+                    if not extracted_text.strip():
+                        extracted_text = f"""📄 PDF Document Information:
+
+Filename: {filename}
+Total Pages: {num_pages}
+File Size: {file_info['file_size'] / 1024:.2f} KB
+
+⚠️ Note: This PDF appears to be image-based or scanned. No text could be extracted directly.
+
+The document has been processed and stored in the knowledge base. During conversations, the AI assistant will be able to access the embedded content from this document.
+
+To view the actual content, please:
+1. Open the PDF file directly
+2. Or convert it to a text-searchable PDF using OCR software
+
+The AI can still reference information from this document during conversations, as it was processed during upload."""
 
             elif file_ext in ['.docx', '.doc']:
                 from docx import Document
                 doc = Document(file_path)
                 for paragraph in doc.paragraphs:
-                    extracted_text += paragraph.text + "\n"
+                    if paragraph.text.strip():
+                        extracted_text += paragraph.text + "\n"
+
+                if not extracted_text.strip():
+                    extracted_text = f"""📄 Word Document Information:
+
+Filename: {filename}
+File Size: {file_info['file_size'] / 1024:.2f} KB
+
+⚠️ Note: This document appears to be empty or contains only non-text elements (images, tables, etc.).
+
+The document has been processed and stored in the knowledge base."""
 
             elif file_ext in ['.xlsx', '.xls']:
                 from openpyxl import load_workbook
                 wb = load_workbook(file_path)
                 for sheet_name in wb.sheetnames:
                     sheet = wb[sheet_name]
-                    extracted_text += f"Sheet: {sheet_name}\n"
+                    extracted_text += f"--- Sheet: {sheet_name} ---\n"
+                    row_count = 0
                     for row in sheet.iter_rows(values_only=True):
-                        row_text = "\t".join([str(cell) if cell is not None else "" for cell in row])
-                        extracted_text += row_text + "\n"
-                    extracted_text += "\n"
+                        if any(cell is not None for cell in row):
+                            row_text = "\t".join([str(cell) if cell is not None else "" for cell in row])
+                            extracted_text += row_text + "\n"
+                            row_count += 1
+                    extracted_text += f"\n({row_count} rows)\n\n"
+
+                if not extracted_text.strip():
+                    extracted_text = f"""📊 Excel Document Information:
+
+Filename: {filename}
+File Size: {file_info['file_size'] / 1024:.2f} KB
+
+⚠️ Note: This spreadsheet appears to be empty.
+
+The document has been processed and stored in the knowledge base."""
 
             elif file_ext == '.txt':
                 with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
                     extracted_text = file.read()
+
+                if not extracted_text.strip():
+                    extracted_text = f"""📝 Text Document Information:
+
+Filename: {filename}
+File Size: {file_info['file_size'] / 1024:.2f} KB
+
+⚠️ Note: This text file appears to be empty.
+
+The document has been processed and stored in the knowledge base."""
 
             else:
                 raise HTTPException(
@@ -288,18 +345,47 @@ async def preview_document_content(assistant_id: str, filename: str):
                     detail="Unsupported file type"
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error extracting text from {filename}: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to extract text from document: {str(e)}"
-            )
+            # Instead of raising an error, return helpful information
+            extracted_text = f"""📄 Document Information:
+
+Filename: {filename}
+File Type: {file_ext.replace('.', '').upper()}
+File Size: {file_info['file_size'] / 1024:.2f} KB
+
+⚠️ Error extracting text content: {str(e)}
+
+The document has been uploaded and stored in the knowledge base. The AI assistant may still be able to access embedded information from this document during conversations.
+
+If you need to view the content, please try:
+1. Opening the file directly
+2. Converting it to a different format
+3. Re-uploading the file"""
+
+        # Ensure we always return something useful
+        final_text = extracted_text.strip() if extracted_text and extracted_text.strip() else f"""📄 Document Information:
+
+Filename: {filename}
+File Type: {file_ext.replace('.', '').upper()}
+File Size: {file_info['file_size'] / 1024:.2f} KB
+
+⚠️ No text content could be extracted from this document.
+
+This may happen if:
+- The document is image-based or scanned
+- The document is empty
+- The document format is not fully supported
+
+The document has been stored in the knowledge base and the AI assistant may still be able to reference it during conversations."""
 
         return {
             "filename": filename,
             "file_type": file_ext.replace('.', ''),
             "file_size": file_info['file_size'],
-            "extracted_text": extracted_text.strip() if extracted_text else "No text content found in document"
+            "extracted_text": final_text
         }
 
     except HTTPException:

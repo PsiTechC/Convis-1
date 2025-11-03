@@ -73,6 +73,9 @@ IMPORTANT CONTEXT:
 - When the caller says "tomorrow", use {(now + timedelta(days=1)).strftime("%Y-%m-%d")}
 - When interpreting relative dates (tomorrow, next week, etc.), calculate from TODAY ({current_date_str})
 
+CRITICAL SCHEDULING RULE:
+Before confirming any appointment, the system will automatically check if the requested time slot is available across all calendars. If there's a conflict, the AI agent will inform the caller and ask for an alternative time. Only proceed with should_schedule: true when the caller has provided complete details and confirmed their preference.
+
 Provide a JSON object with the following structure:
 {{
   "should_schedule": true | false,

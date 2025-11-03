@@ -560,6 +560,152 @@ class CalendarService:
             logger.error(traceback.format_exc())
             return None
 
+    async def check_availability_across_calendars(
+        self,
+        calendar_account_ids: List[str],
+        start_time: datetime,
+        end_time: datetime
+    ) -> Dict[str, Any]:
+        """
+        Check availability across multiple calendars.
+
+        Args:
+            calendar_account_ids: List of calendar account IDs to check
+            start_time: Start time of the requested slot
+            end_time: End time of the requested slot
+
+        Returns:
+            Dict with:
+                - is_available: bool - True if ALL calendars are free
+                - conflicts: List of calendars with conflicts
+        """
+        try:
+            conflicts = []
+
+            # Convert times to ISO format for API calls
+            time_min = start_time.isoformat() + "Z"
+            time_max = end_time.isoformat() + "Z"
+
+            for cal_id in calendar_account_ids:
+                account = await self.get_calendar_account_by_id(cal_id)
+                if not account:
+                    logger.warning(f"Calendar account {cal_id} not found, skipping")
+                    continue
+
+                # Skip invalid accounts
+                if account.get("oauth", {}).get("is_valid") is False:
+                    logger.warning(f"Calendar account {cal_id} is invalid, skipping")
+                    continue
+
+                token = await self.ensure_access_token(account)
+                if not token:
+                    logger.warning(f"No valid token for calendar {cal_id}, skipping")
+                    continue
+
+                # Fetch events in the requested time range
+                provider = account.get("provider")
+                events = []
+
+                if provider == "google":
+                    events = await self.fetch_google_events(token, max_events=50, account=account, time_min=time_min, time_max=time_max)
+                elif provider == "microsoft":
+                    events = await self.fetch_microsoft_events(token, max_events=50, account=account, time_min=time_min, time_max=time_max)
+
+                # Check if any events overlap with requested time
+                conflicting_events = []
+                for event in events:
+                    event_start = datetime.fromisoformat(event.get("start", "").replace("Z", "+00:00"))
+                    event_end = datetime.fromisoformat(event.get("end", "").replace("Z", "+00:00"))
+
+                    # Check for overlap
+                    if not (event_end <= start_time or event_start >= end_time):
+                        conflicting_events.append({
+                            "title": event.get("title"),
+                            "start": event.get("start"),
+                            "end": event.get("end")
+                        })
+
+                if conflicting_events:
+                    conflicts.append({
+                        "calendar_id": cal_id,
+                        "calendar_email": account.get("email"),
+                        "provider": provider,
+                        "conflicting_events": conflicting_events
+                    })
+
+            return {
+                "is_available": len(conflicts) == 0,
+                "conflicts": conflicts
+            }
+
+        except Exception as e:
+            logger.error(f"Error checking availability across calendars: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "is_available": False,
+                "conflicts": [],
+                "error": str(e)
+            }
+
+    async def get_next_available_calendar_round_robin(
+        self,
+        assistant: Dict[str, Any],
+        start_time: datetime,
+        end_time: datetime
+    ) -> Optional[str]:
+        """
+        Get next available calendar using round-robin scheduling.
+
+        Args:
+            assistant: Assistant document with calendar_account_ids and last_calendar_used_index
+            start_time: Appointment start time
+            end_time: Appointment end time
+
+        Returns:
+            calendar_account_id of available calendar or None if all busy
+        """
+        try:
+            calendar_ids = assistant.get("calendar_account_ids", [])
+            if not calendar_ids:
+                logger.warning("No calendar accounts configured for assistant")
+                return None
+
+            last_used_index = assistant.get("last_calendar_used_index", -1)
+            num_calendars = len(calendar_ids)
+
+            # Try each calendar starting from the next one in round-robin order
+            for i in range(num_calendars):
+                # Calculate round-robin index
+                current_index = (last_used_index + 1 + i) % num_calendars
+                calendar_id = calendar_ids[current_index]
+
+                # Check if this calendar is available
+                availability = await self.check_availability_across_calendars(
+                    [calendar_id],
+                    start_time,
+                    end_time
+                )
+
+                if availability.get("is_available"):
+                    # Update the assistant's last_used_index
+                    assistants_collection = self.db["assistants"]
+                    assistants_collection.update_one(
+                        {"_id": assistant["_id"]},
+                        {"$set": {"last_calendar_used_index": current_index}}
+                    )
+                    logger.info(f"Selected calendar {calendar_id} (index {current_index}) via round-robin")
+                    return calendar_id
+
+            logger.warning("All calendars are busy for the requested time slot")
+            return None
+
+        except Exception as e:
+            logger.error(f"Error in round-robin calendar selection: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return None
+
     async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google", calendar_account_id: Optional[str] = None) -> Optional[str]:
         """
         Book an appointment for an inbound call.

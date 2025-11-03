@@ -2,7 +2,6 @@
 
 import { useState } from 'react';
 import Link from 'next/link';
-import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 
 export default function WhatsAppComingSoonPage() {
   const [email, setEmail] = useState('');
@@ -64,7 +63,7 @@ export default function WhatsAppComingSoonPage() {
 
             {/* Description */}
             <p className="text-lg lg:text-xl text-neutral-mid max-w-2xl mx-auto mb-8 leading-relaxed">
-              We're working on bringing powerful WhatsApp integration to Convis AI. Soon you'll be able to manage automated conversations, send messages, and engage with your customers directly through WhatsApp.
+              We&apos;re working on bringing powerful WhatsApp integration to Convis AI. Soon you&apos;ll be able to manage automated conversations, send messages, and engage with your customers directly through WhatsApp.
             </p>
 
             {/* Features Preview */}
@@ -140,10 +139,10 @@ export default function WhatsAppComingSoonPage() {
                   <svg className="w-6 h-6 text-green-500" fill="currentColor" viewBox="0 0 20 20">
                     <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
                   </svg>
-                  <p className="text-green-700 font-semibold">You're on the list!</p>
+                  <p className="text-green-700 font-semibold">You&apos;re on the list!</p>
                 </div>
                 <p className="text-sm text-green-600">
-                  We'll notify you as soon as WhatsApp integration is ready.
+                  We&apos;ll notify you as soon as WhatsApp integration is ready.
                 </p>
               </div>
             )}

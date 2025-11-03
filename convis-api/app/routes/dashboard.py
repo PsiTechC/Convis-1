@@ -221,9 +221,9 @@ async def get_assistant_summary(
                 except (ValueError, TypeError):
                     pass
 
-            status = db_call.get("status", "unknown")
-            summary_entry.status_counts[status] = summary_entry.status_counts.get(status, 0) + 1
-            update_sentiment_counts(summary_entry.sentiment, status)
+            call_status = db_call.get("status", "unknown")
+            summary_entry.status_counts[call_status] = summary_entry.status_counts.get(call_status, 0) + 1
+            update_sentiment_counts(summary_entry.sentiment, call_status)
 
             call_sid = db_call.get("call_sid")
             if call_sid:
@@ -279,9 +279,9 @@ async def get_assistant_summary(
                         except (ValueError, TypeError):
                             pass
 
-                    status = call.status or "unknown"
-                    summary_entry.status_counts[status] = summary_entry.status_counts.get(status, 0) + 1
-                    update_sentiment_counts(summary_entry.sentiment, status)
+                    call_status = call.status or "unknown"
+                    summary_entry.status_counts[call_status] = summary_entry.status_counts.get(call_status, 0) + 1
+                    update_sentiment_counts(summary_entry.sentiment, call_status)
 
                     processed_sids.add(call.sid)
 

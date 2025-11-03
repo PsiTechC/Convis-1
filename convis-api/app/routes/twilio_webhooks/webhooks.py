@@ -101,12 +101,8 @@ async def voice_webhook(
             response.say("Sorry, configuration error. Please contact support.")
             return HTMLResponse(content=str(response), media_type="application/xml")
 
-        # Create TwiML response - route to the assigned assistant
+        # Create TwiML response - connect directly to AI without artificial greetings
         response = VoiceResponse()
-        response.say("Please wait while we connect your call to the AI voice assistant.")
-        response.pause(length=1)
-        response.say("You can start talking in a moment.")
-        response.pause(length=1)
 
         # Connect to the media stream WebSocket for this specific assistant
         # Use API_BASE_URL from settings for production, otherwise detect from request

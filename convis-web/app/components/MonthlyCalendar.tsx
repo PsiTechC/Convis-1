@@ -65,7 +65,7 @@ export function MonthlyCalendar({ events, isDarkMode, onDateClick, onMonthChange
           map.set(dateKey, []);
         }
         map.get(dateKey)!.push(event);
-      } catch (error) {
+      } catch {
         console.error('Invalid event date:', event.start);
       }
     });

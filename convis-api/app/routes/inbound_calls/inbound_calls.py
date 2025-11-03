@@ -147,13 +147,8 @@ async def handle_incoming_call(assistant_id: str, request: Request):
                 detail="AI assistant not found"
             )
 
-        # Create TwiML response with initial greeting
-        # Note: User requested to keep these greeting messages
+        # Create TwiML response - connect directly to AI without artificial greetings
         response = VoiceResponse()
-        response.say("Please wait while we connect your call to the AI voice assistant.")
-        response.pause(length=1)
-        response.say("You can start talking in a moment.")
-        response.pause(length=1)
 
         # Use API_BASE_URL from settings if available
         if settings.api_base_url:
@@ -276,22 +271,49 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
         appointment_scheduled = False
         appointment_metadata: Dict[str, Any] = {}
         calendar_account_id_for_booking = None
+        calendar_account_ids_list = []
 
-        # Check if assistant has a calendar account assigned
-        assistant_calendar_id = assistant.get('calendar_account_id')
-        if assistant_calendar_id and assistant_user_id:
+        # Check if assistant has calendar accounts assigned (new multi-calendar support)
+        assistant_calendar_ids = assistant.get('calendar_account_ids', [])
+        assistant_calendar_enabled = assistant.get('calendar_enabled', False)
+
+        # NEW: Support multiple calendars
+        if assistant_calendar_ids and assistant_calendar_enabled and assistant_user_id:
             calendar_accounts_collection = db["calendar_accounts"]
-            calendar_account = calendar_accounts_collection.find_one({
-                "_id": assistant_calendar_id,
-                "user_id": assistant_user_id
-            })
-            if calendar_account:
+            # Verify all calendar accounts exist and belong to the user
+            valid_calendar_ids = []
+            for cal_id in assistant_calendar_ids:
+                calendar_account = calendar_accounts_collection.find_one({
+                    "_id": cal_id,
+                    "user_id": assistant_user_id
+                })
+                if calendar_account:
+                    valid_calendar_ids.append(str(cal_id))
+
+            if valid_calendar_ids:
                 calendar_enabled = True
-                calendar_account_id_for_booking = assistant_calendar_id
-                default_calendar_provider = calendar_account.get("provider", "google")
+                calendar_account_ids_list = valid_calendar_ids
                 calendar_service = CalendarService()
                 calendar_intent_service = CalendarIntentService()
-                logger.info(f"[INBOUND] Calendar enabled for assistant {assistant_id} using account {calendar_account.get('email')}")
+                logger.info(f"[INBOUND] Multi-calendar enabled for assistant {assistant_id} with {len(valid_calendar_ids)} calendar(s)")
+
+        # FALLBACK: Support legacy single calendar_account_id
+        elif not calendar_enabled:
+            assistant_calendar_id = assistant.get('calendar_account_id')
+            if assistant_calendar_id and assistant_user_id:
+                calendar_accounts_collection = db["calendar_accounts"]
+                calendar_account = calendar_accounts_collection.find_one({
+                    "_id": assistant_calendar_id,
+                    "user_id": assistant_user_id
+                })
+                if calendar_account:
+                    calendar_enabled = True
+                    calendar_account_id_for_booking = assistant_calendar_id
+                    calendar_account_ids_list = [str(assistant_calendar_id)]
+                    default_calendar_provider = calendar_account.get("provider", "google")
+                    calendar_service = CalendarService()
+                    calendar_intent_service = CalendarIntentService()
+                    logger.info(f"[INBOUND] Calendar enabled for assistant {assistant_id} using legacy single account {calendar_account.get('email')}")
                 calendar_instructions = f"""
 
 ---
@@ -386,6 +408,132 @@ IMPORTANT:
                     appointment.setdefault("notes", result.get("reason"))
                     provider = appointment.get("provider") or default_calendar_provider
 
+                    # Parse appointment times for availability checking
+                    try:
+                        start_time = datetime.fromisoformat(start_iso)
+                        end_time = datetime.fromisoformat(end_iso)
+                    except Exception as e:
+                        logger.error(f"[CALENDAR_ANALYSIS] Error parsing appointment times: {e}")
+                        return
+
+                    # MULTI-CALENDAR AVAILABILITY CHECKING
+                    if calendar_account_ids_list and len(calendar_account_ids_list) > 1:
+                        logger.info(f"[CALENDAR_ANALYSIS] Checking availability across {len(calendar_account_ids_list)} calendars...")
+
+                        # Check if ALL calendars are free
+                        availability_result = await calendar_service.check_availability_across_calendars(
+                            calendar_account_ids_list,
+                            start_time,
+                            end_time
+                        )
+
+                        if not availability_result.get("is_available"):
+                            # CONFLICT DETECTED - Inform the AI agent
+                            conflicts = availability_result.get("conflicts", [])
+                            conflict_details = []
+                            for conflict in conflicts:
+                                calendar_email = conflict.get("calendar_email", "Unknown")
+                                events = conflict.get("conflicting_events", [])
+                                for event in events:
+                                    conflict_details.append(f"{event.get('title')} at {event.get('start')}")
+
+                            conflict_message = (
+                                f"I'm sorry, but that time slot is already occupied in your calendar. "
+                                f"There's a conflict with: {', '.join(conflict_details[:2])}. "
+                                f"Could you please suggest an alternative time?"
+                            )
+
+                            logger.warning(f"[CALENDAR_ANALYSIS] Conflict detected: {conflict_message}")
+
+                            # Send conflict notification to AI agent
+                            await openai_ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "system",
+                                            "content": [
+                                                {
+                                                    "type": "input_text",
+                                                    "text": (
+                                                        f"CALENDAR CONFLICT: The requested time slot is not available. "
+                                                        f"Inform the caller: {conflict_message}"
+                                                    ),
+                                                }
+                                            ],
+                                        },
+                                    }
+                                )
+                            )
+                            await openai_ws.send(json.dumps({"type": "response.create"}))
+
+                            logger.info("[CALENDAR_ANALYSIS] Conflict notification sent to AI agent")
+                            return  # Don't book - wait for alternative time
+
+                        # ALL CALENDARS ARE FREE - Use round-robin to select which calendar to book
+                        logger.info("[CALENDAR_ANALYSIS] All calendars available - using round-robin selection")
+                        selected_calendar_id = await calendar_service.get_next_available_calendar_round_robin(
+                            assistant,
+                            start_time,
+                            end_time
+                        )
+
+                        if selected_calendar_id:
+                            calendar_account_id_for_booking = selected_calendar_id
+                            logger.info(f"[CALENDAR_ANALYSIS] Selected calendar {selected_calendar_id} via round-robin")
+                        else:
+                            logger.error("[CALENDAR_ANALYSIS] Round-robin selection failed")
+                            return
+
+                    # SINGLE CALENDAR - Just check if it's available
+                    elif calendar_account_ids_list and len(calendar_account_ids_list) == 1:
+                        logger.info(f"[CALENDAR_ANALYSIS] Checking availability for single calendar...")
+                        availability_result = await calendar_service.check_availability_across_calendars(
+                            calendar_account_ids_list,
+                            start_time,
+                            end_time
+                        )
+
+                        if not availability_result.get("is_available"):
+                            conflicts = availability_result.get("conflicts", [])
+                            conflict_message = (
+                                "I'm sorry, but that time slot is already occupied in your calendar. "
+                                "Could you please suggest an alternative time?"
+                            )
+
+                            logger.warning(f"[CALENDAR_ANALYSIS] Conflict detected in single calendar")
+
+                            # Send conflict notification to AI agent
+                            await openai_ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "system",
+                                            "content": [
+                                                {
+                                                    "type": "input_text",
+                                                    "text": (
+                                                        f"CALENDAR CONFLICT: The requested time slot is not available. "
+                                                        f"Inform the caller: {conflict_message}"
+                                                    ),
+                                                }
+                                            ],
+                                        },
+                                    }
+                                )
+                            )
+                            await openai_ws.send(json.dumps({"type": "response.create"}))
+
+                            logger.info("[CALENDAR_ANALYSIS] Conflict notification sent to AI agent")
+                            return  # Don't book - wait for alternative time
+
+                        calendar_account_id_for_booking = calendar_account_ids_list[0]
+                        logger.info(f"[CALENDAR_ANALYSIS] Single calendar {calendar_account_id_for_booking} is available")
+
+                    # Book the appointment
                     event_id = await calendar_service.book_inbound_appointment(
                         call_sid=call_sid,
                         user_id=str(assistant_user_id),
@@ -456,6 +604,82 @@ IMPORTANT:
 
             scheduling_task.add_done_callback(_clear_task)
 
+        # Determine if we should use OpenAI Realtime API or custom providers
+        asr_provider = assistant.get('asr_provider', 'openai')
+        tts_provider = assistant.get('tts_provider', 'openai')
+        llm_provider = assistant.get('llm_provider', 'openai')
+
+        # Check if using all OpenAI providers (eligible for Realtime API)
+        # Accept both 'openai' and 'openai-realtime' as valid OpenAI Realtime providers
+        use_openai_realtime = (
+            asr_provider == 'openai' and
+            tts_provider == 'openai' and
+            (llm_provider == 'openai' or llm_provider == 'openai-realtime')
+        )
+
+        logger.info(f"[INBOUND] Provider Configuration: ASR={asr_provider}, TTS={tts_provider}, LLM={llm_provider}")
+        logger.info(f"[INBOUND] Using OpenAI Realtime API: {use_openai_realtime}")
+
+        # If using custom providers, delegate to custom provider handler
+        if not use_openai_realtime:
+            logger.info(f"[INBOUND] Routing to custom provider handler for assistant {assistant_id}")
+            from app.routes.frejun.custom_provider_stream import CustomProviderStreamHandler
+            from app.utils.assistant_keys import resolve_provider_keys
+
+            # Resolve all necessary API keys
+            provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+
+            # Get the primary API key for LLM
+            primary_api_key = provider_keys.get(llm_provider)
+            if not primary_api_key:
+                logger.error(f"No API key found for LLM provider: {llm_provider}")
+                await websocket.close(code=1008, reason=f"No API key configured for {llm_provider}")
+                return
+
+            # Create assistant config for custom provider handler
+            assistant_config = {
+                'system_message': system_message,
+                'voice': voice,
+                'temperature': temperature,
+                'greeting': call_greeting,
+                'asr_provider': asr_provider,
+                'tts_provider': tts_provider,
+                'llm_provider': llm_provider,
+                'asr_language': assistant.get('asr_language', 'en'),
+                'asr_model': assistant.get('asr_model'),
+                'asr_keywords': assistant.get('asr_keywords', []),
+                'tts_model': assistant.get('tts_model'),
+                'tts_speed': assistant.get('tts_speed', 1.0),
+                'tts_voice': assistant.get('tts_voice'),
+                'llm_model': assistant.get('llm_model'),
+                'llm_max_tokens': assistant.get('llm_max_tokens', 150),
+                'enable_precise_transcript': assistant.get('enable_precise_transcript', False),
+                'interruption_threshold': assistant.get('interruption_threshold', 2),
+                'response_rate': assistant.get('response_rate', 'balanced'),
+                'check_user_online': assistant.get('check_user_online', True),
+                'audio_buffer_size': assistant.get('audio_buffer_size', 200),
+                'provider_keys': provider_keys
+            }
+
+            # Use custom provider stream handler
+            handler = CustomProviderStreamHandler(
+                websocket=websocket,
+                assistant_config=assistant_config,
+                openai_api_key=primary_api_key,
+                call_id="twilio_inbound_custom_provider"
+            )
+
+            try:
+                await handler.handle_stream()
+            except Exception as e:
+                logger.error(f"Error in custom provider handler: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            finally:
+                await websocket.close()
+            return
+
+        # OpenAI Realtime API path (existing code)
         # OpenAI Realtime API requires temperature >= 0.6
         if temperature < 0.6:
             logger.warning(f"Temperature {temperature} is below OpenAI minimum. Adjusting to 0.6")
@@ -469,12 +693,14 @@ IMPORTANT:
             await websocket.close(code=1008, reason=exc.detail)
             return
 
-        logger.info(f"Using configuration - Voice: {voice}, Temperature: {temperature}")
+        # Get the LLM model to use for OpenAI Realtime API
+        llm_model = assistant.get('llm_model', 'gpt-4o-mini-realtime-preview')
+        logger.info(f"[INBOUND] Using OpenAI Realtime API - Model: {llm_model}, Voice: {voice}, Temperature: {temperature}")
 
-        # Connect to OpenAI WebSocket using the assistant's API key (exact URL from original)
+        # Connect to OpenAI WebSocket using the assistant's API key and selected model
         # Increased timeout to handle connection delays
         async with websockets.connect(
-            f"wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&temperature={temperature}",
+            f"wss://api.openai.com/v1/realtime?model={llm_model}&temperature={temperature}",
             additional_headers={
                 "Authorization": f"Bearer {openai_api_key}",
                 "OpenAI-Beta": "realtime=v1"
@@ -527,7 +753,51 @@ IMPORTANT:
                             start_info = data['start']
                             stream_sid = start_info.get('streamSid')
                             call_sid = start_info.get('callSid') or start_info.get('call_sid') or call_sid
-                            logger.info(f"Incoming stream has started {stream_sid}")
+
+                            # Extract caller and recipient information
+                            caller_number = start_info.get('customParameters', {}).get('From') or start_info.get('from')
+                            to_number = start_info.get('customParameters', {}).get('To') or start_info.get('to')
+                            logger.info(f"Incoming stream started {stream_sid} from {caller_number} to {to_number}")
+
+                            # Look up caller name from database (leads or contacts)
+                            caller_name = None
+                            if caller_number and assistant_user_id:
+                                try:
+                                    # Check leads collection
+                                    lead = db['leads'].find_one({
+                                        "user_id": assistant_user_id,
+                                        "phone_number": caller_number
+                                    })
+                                    if lead:
+                                        caller_name = lead.get('name') or lead.get('first_name')
+                                        logger.info(f"Found caller in leads: {caller_name}")
+
+                                    # If not found, check contacts
+                                    if not caller_name:
+                                        contact = db['contacts'].find_one({
+                                            "user_id": assistant_user_id,
+                                            "phone": caller_number
+                                        })
+                                        if contact:
+                                            caller_name = contact.get('name')
+                                            logger.info(f"Found caller in contacts: {caller_name}")
+                                except Exception as e:
+                                    logger.error(f"Error looking up caller: {e}")
+
+                            # Update system message with caller info if available
+                            if caller_name:
+                                enhanced_system_message = f"{system_message}\n\nIMPORTANT: The caller is {caller_name}. Greet them by name and use their name naturally during the conversation."
+                                # Send updated session with caller context
+                                await send_session_update(
+                                    openai_ws,
+                                    enhanced_system_message,
+                                    voice,
+                                    temperature,
+                                    enable_interruptions=True,
+                                    greeting_text=f"Hello {caller_name}! {call_greeting.replace('Hello!', '').strip()}"
+                                )
+                                logger.info(f"Updated greeting for {caller_name}")
+
                             response_start_timestamp_twilio = None
                             latest_media_timestamp = 0
                             last_assistant_item = None
@@ -535,18 +805,36 @@ IMPORTANT:
                             # Create call log entry for this inbound call
                             if call_sid:
                                 try:
+                                    # Build voice configuration info
+                                    voice_config = {
+                                        "asr_provider": assistant.get('asr_provider', 'openai'),
+                                        "asr_model": assistant.get('asr_model'),
+                                        "asr_language": assistant.get('asr_language', 'en'),
+                                        "tts_provider": assistant.get('tts_provider', 'openai'),
+                                        "tts_model": assistant.get('tts_model'),
+                                        "tts_voice": assistant.get('tts_voice'),
+                                        "llm_provider": assistant.get('llm_provider', 'openai'),
+                                        "llm_model": assistant.get('llm_model'),
+                                        "llm_max_tokens": assistant.get('llm_max_tokens', 150)
+                                    }
+
                                     call_log_entry = {
                                         "call_sid": call_sid,
                                         "stream_sid": stream_sid,
                                         "assistant_id": assistant_id,
                                         "user_id": assistant_user_id,
+                                        "from_number": caller_number,
+                                        "to_number": to_number,
+                                        "direction": "inbound",
+                                        "status": "in-progress",
                                         "call_type": "inbound",
                                         "call_status": "in-progress",
+                                        "voice_config": voice_config,  # Add voice provider configuration
                                         "started_at": datetime.utcnow(),
                                         "created_at": datetime.utcnow()
                                     }
                                     db['call_logs'].insert_one(call_log_entry)
-                                    logger.info(f"Created call log for inbound call {call_sid}")
+                                    logger.info(f"Created call log for inbound call {call_sid} with voice config")
                                 except Exception as log_err:
                                     logger.error(f"Error creating call log: {log_err}")
                         elif data['event'] == 'mark':

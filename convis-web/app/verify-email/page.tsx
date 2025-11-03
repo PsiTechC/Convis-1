@@ -141,7 +141,7 @@ function VerifyEmailContent() {
                 </h1>
 
                 <p className="text-white/90 text-base lg:text-lg leading-relaxed max-w-md mb-8">
-                  We've sent a verification code to your email address.
+                  We&apos;ve sent a verification code to your email address.
                   Please check your inbox and enter the code below to complete your registration.
                 </p>
 
@@ -263,7 +263,7 @@ function VerifyEmailContent() {
                   {/* Resend OTP */}
                   <div className="text-center">
                     <p className="text-sm text-neutral-mid mb-2">
-                      Didn't receive the code?
+                      Didn&apos;t receive the code?
                     </p>
                     <button
                       type="button"

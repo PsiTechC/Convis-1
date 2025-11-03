@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
@@ -9,7 +9,7 @@ import { TopBar } from '../components/TopBar';
 type SupportedProvider = 'openai' | 'anthropic' | 'azure_openai' | 'google' | 'custom';
 
 const DEFAULT_CALL_GREETING =
-  "Greet the user with 'Hello there! I am an AI voice assistant that will help you with any questions you may have. Please ask me anything you want to know.'";
+  "Hello! Thanks for calling. How can I help you today?";
 
 interface KnowledgeBaseFile {
   filename: string;
@@ -48,6 +48,17 @@ interface AIAssistant {
   database_config?: DatabaseConfig | null;
   calendar_account_id?: string | null;
   calendar_account_email?: string | null;
+  calendar_account_ids?: string[];
+  calendar_enabled?: boolean;
+  last_calendar_used_index?: number;
+  frejun_flow_token: string;
+  frejun_flow_url: string;
+  asr_provider?: string;
+  tts_provider?: string;
+  tts_voice?: string;
+  llm_provider?: string;
+  llm_model?: string;
+  llm_max_tokens?: number;
   created_at: string;
   updated_at: string;
 }
@@ -74,6 +85,37 @@ interface StoredApiKey {
   provider: SupportedProvider;
 }
 
+type StoredUser = {
+  id?: string;
+  _id?: string;
+  clientId?: string;
+  name?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  email?: string;
+  [key: string]: unknown;
+};
+
+interface CalendarAccountSummary {
+  id: string;
+  email: string;
+  provider: string;
+}
+
+type ApiKeyResponseItem = {
+  id?: unknown;
+  label?: unknown;
+  provider?: unknown;
+};
+
+type CalendarAccountResponseItem = {
+  id?: unknown;
+  email?: unknown;
+  provider?: unknown;
+};
+
 const PROVIDER_LABELS: Record<SupportedProvider, string> = {
   openai: 'OpenAI',
   anthropic: 'Anthropic',
@@ -90,6 +132,9 @@ interface VoiceOption {
   description: string;
 }
 
+const isSupportedProvider = (value: unknown): value is SupportedProvider =>
+  typeof value === 'string' && value in PROVIDER_LABELS;
+
 const getKnowledgeBaseFileKey = (file: KnowledgeBaseFile) =>
   file.file_path || `${file.filename}-${file.uploaded_at}`;
 
@@ -105,6 +150,25 @@ const dedupeKnowledgeBaseFiles = (files: KnowledgeBaseFile[]) => {
   });
 };
 
+// Language options for bot responses
+const LANGUAGE_OPTIONS = [
+  { value: 'en', label: 'English', flag: '🇺🇸' },
+  { value: 'hi', label: 'Hindi (हिंदी)', flag: '🇮🇳' },
+  { value: 'es', label: 'Spanish (Español)', flag: '🇪🇸' },
+  { value: 'fr', label: 'French (Français)', flag: '🇫🇷' },
+  { value: 'de', label: 'German (Deutsch)', flag: '🇩🇪' },
+  { value: 'pt', label: 'Portuguese (Português)', flag: '🇵🇹' },
+  { value: 'it', label: 'Italian (Italiano)', flag: '🇮🇹' },
+  { value: 'ja', label: 'Japanese (日本語)', flag: '🇯🇵' },
+  { value: 'ko', label: 'Korean (한국어)', flag: '🇰🇷' },
+  { value: 'zh', label: 'Chinese (中文)', flag: '🇨🇳' },
+  { value: 'ar', label: 'Arabic (العربية)', flag: '🇸🇦' },
+  { value: 'ru', label: 'Russian (Русский)', flag: '🇷🇺' },
+  { value: 'nl', label: 'Dutch (Nederlands)', flag: '🇳🇱' },
+  { value: 'pl', label: 'Polish (Polski)', flag: '🇵🇱' },
+  { value: 'tr', label: 'Turkish (Türkçe)', flag: '🇹🇷' },
+];
+
 const VOICE_OPTIONS: VoiceOption[] = [
   { value: 'alloy', label: 'Alloy', gender: 'Neutral', accent: 'American', description: 'Balanced and versatile' },
   { value: 'ash', label: 'Ash', gender: 'Male', accent: 'British', description: 'Clear and articulate' },
@@ -119,6 +183,106 @@ const VOICE_OPTIONS: VoiceOption[] = [
   { value: 'sage', label: 'Sage', gender: 'Female', accent: 'American', description: 'Soft and reassuring' },
   { value: 'shimmer', label: 'Shimmer', gender: 'Female', accent: 'American', description: 'Cheerful and warm' },
   { value: 'verse', label: 'Verse', gender: 'Male', accent: 'American', description: 'Conversational and natural' },
+];
+
+// ASR Provider Models from convis-api/app/providers/asr.py
+const ASR_MODELS = {
+  deepgram: [
+    { value: 'nova-2', label: 'Nova-2', cost: 0.0043, latency: 75 }
+  ],
+  openai: [
+    { value: 'whisper-1', label: 'Whisper-1', cost: 0.006, latency: 250 }
+  ]
+  // groq: Coming soon - Ultra-fast Whisper with 50ms latency
+};
+
+// TTS Provider Voices and Models from convis-api/app/providers/tts.py
+const TTS_VOICES = {
+  cartesia: [
+    { value: 'sonic', label: 'Sonic - Fast, natural voice' },
+    { value: 'stella', label: 'Stella - Warm, friendly female' },
+    { value: 'marcus', label: 'Marcus - Professional male' }
+  ],
+  elevenlabs: [
+    { value: 'rachel', label: 'Rachel - Young female American' },
+    { value: 'domi', label: 'Domi - Strong female American' },
+    { value: 'bella', label: 'Bella - Soft young American female' },
+    { value: 'antoni', label: 'Antoni - Well-rounded male' },
+    { value: 'josh', label: 'Josh - Deep American male' },
+    { value: 'arnold', label: 'Arnold - Crisp American male' }
+  ],
+  openai: [
+    { value: 'alloy', label: 'Alloy - Neutral, balanced' },
+    { value: 'echo', label: 'Echo - Male voice' },
+    { value: 'fable', label: 'Fable - British male' },
+    { value: 'onyx', label: 'Onyx - Deep male' },
+    { value: 'nova', label: 'Nova - Female voice' },
+    { value: 'shimmer', label: 'Shimmer - Soft female' }
+  ]
+};
+
+const TTS_MODELS = {
+  cartesia: [
+    { value: 'sonic-english', label: 'Sonic English', cost: 0.005, latency: 100 }
+  ],
+  elevenlabs: [
+    { value: 'eleven_turbo_v2', label: 'Eleven Turbo V2', cost: 0.018, latency: 150 }
+  ],
+  openai: [
+    { value: 'tts-1', label: 'TTS-1 (Fast)', cost: 0.015, latency: 250 },
+    { value: 'tts-1-hd', label: 'TTS-1-HD (Quality)', cost: 0.030, latency: 300 }
+  ]
+};
+
+// LLM Provider Models
+const LLM_MODELS = {
+  openai: [
+    { value: 'gpt-4o', label: 'GPT-4O (Most Capable)', cost: 0.005, latency: 800 },
+    { value: 'gpt-4o-mini', label: 'GPT-4O Mini (Fast & Cheap)', cost: 0.00015, latency: 400 },
+    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo', cost: 0.01, latency: 1000 },
+    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (Fastest)', cost: 0.0005, latency: 300 }
+  ],
+  'openai-realtime': [
+    { value: 'gpt-4o-realtime-preview', label: 'GPT-4O Realtime Preview (Highest Quality, Fast)', cost: 0.006, latency: 320 },
+    { value: 'gpt-4o-realtime-preview-2025-10-06', label: 'GPT-4O Realtime 2025-10-06 (Preview)', cost: 0.006, latency: 320 },
+    { value: 'gpt-4o-realtime', label: 'GPT-4O Realtime (Very Good Balance, Very Fast)', cost: 0.004, latency: 280 },
+    { value: 'gpt-4o-mini-realtime-preview', label: 'GPT-4O Mini Realtime Preview (Good Quality, Ultra Fast, Lowest Cost)', cost: 0.0006, latency: 200 },
+    { value: 'gpt-4o-mini-realtime-preview-2025-06-03', label: 'GPT-4O Mini Realtime 2025-06-03 (Preview)', cost: 0.0006, latency: 200 },
+    { value: 'gpt-4o-mini-realtime', label: 'GPT-4O Mini Realtime (Stable Version, Ultra Fast, Lowest Cost)', cost: 0.0006, latency: 200 }
+  ],
+  anthropic: [
+    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Best)', cost: 0.003, latency: 900 },
+    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus', cost: 0.015, latency: 1200 },
+    { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet', cost: 0.003, latency: 800 },
+    { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast)', cost: 0.00025, latency: 500 }
+  ],
+  groq: [
+    { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Best)', cost: 0.00059, latency: 150 },
+    { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', cost: 0.00024, latency: 120 },
+    { value: 'llama-3.1-70b-versatile', label: 'Llama 3.1 70B', cost: 0.00059, latency: 150 }
+  ]
+};
+
+const ASR_LANGUAGES = [
+  { value: 'auto', label: 'Auto-detect (Multilingual)' },
+  { value: 'en', label: 'English' },
+  { value: 'hi', label: 'Hindi (हिंदी)' },
+  { value: 'te', label: 'Telugu (తెలుగు)' },
+  { value: 'ta', label: 'Tamil (தமிழ்)' },
+  { value: 'mr', label: 'Marathi (मराठी)' },
+  { value: 'bn', label: 'Bengali (বাংলা)' },
+  { value: 'gu', label: 'Gujarati (ગુજરાતી)' },
+  { value: 'kn', label: 'Kannada (ಕನ್ನಡ)' },
+  { value: 'ml', label: 'Malayalam (മലയാളം)' },
+  { value: 'pa', label: 'Punjabi (ਪੰਜਾਬੀ)' },
+  { value: 'es', label: 'Spanish' },
+  { value: 'fr', label: 'French' },
+  { value: 'de', label: 'German' },
+  { value: 'it', label: 'Italian' },
+  { value: 'pt', label: 'Portuguese' },
+  { value: 'ja', label: 'Japanese' },
+  { value: 'ko', label: 'Korean' },
+  { value: 'zh', label: 'Chinese' }
 ];
 
 const ASSISTANT_TEMPLATES: AssistantTemplate[] = [
@@ -186,7 +350,7 @@ const ASSISTANT_TEMPLATES: AssistantTemplate[] = [
 
 export default function AIAgentPage() {
   const router = useRouter();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<StoredUser | null>(null);
   const [assistants, setAssistants] = useState<AIAssistant[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -205,9 +369,11 @@ export default function AIAgentPage() {
   const [isDeleting, setIsDeleting] = useState(false);
   const [isViewDetailsOpen, setIsViewDetailsOpen] = useState(false);
   const [viewingAssistant, setViewingAssistant] = useState<AIAssistant | null>(null);
+  const [copiedFrejunAssistantId, setCopiedFrejunAssistantId] = useState<string | null>(null);
   const [uploadingFile, setUploadingFile] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [knowledgeBaseFiles, setKnowledgeBaseFiles] = useState<KnowledgeBaseFile[]>([]);
+  const [pendingFiles, setPendingFiles] = useState<File[]>([]); // Store actual File objects for upload after creation
   const [isDocumentPreviewOpen, setIsDocumentPreviewOpen] = useState(false);
   const [previewingDocument, setPreviewingDocument] = useState<KnowledgeBaseFile | null>(null);
   const [documentContent, setDocumentContent] = useState<string>('');
@@ -215,10 +381,12 @@ export default function AIAgentPage() {
   const [apiKeys, setApiKeys] = useState<StoredApiKey[]>([]);
   const [isLoadingKeys, setIsLoadingKeys] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
-  const [calendarAccounts, setCalendarAccounts] = useState<Array<{id: string, email: string, provider: string}>>([]);
+  const [calendarAccounts, setCalendarAccounts] = useState<CalendarAccountSummary[]>([]);
   const [isLoadingCalendars, setIsLoadingCalendars] = useState(false);
   const [playingVoice, setPlayingVoice] = useState<string | null>(null);
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  const [voiceGenderFilter, setVoiceGenderFilter] = useState<'All' | 'Male' | 'Female' | 'Neutral'>('All');
+  const [voiceAccentFilter, setVoiceAccentFilter] = useState<string>('All');
   const [formData, setFormData] = useState({
     name: '',
     system_message: '',
@@ -227,7 +395,20 @@ export default function AIAgentPage() {
     api_key_id: '',
     call_greeting: DEFAULT_CALL_GREETING,
     calendar_account_id: '',
+    calendar_account_ids: [] as string[],
+    calendar_enabled: false,
+    asr_provider: 'openai',
+    tts_provider: 'openai',
+    asr_model: 'whisper-1',
+    asr_language: 'en',
+    tts_voice: 'alloy',
+    tts_model: 'tts-1',
+    llm_provider: 'openai',
+    llm_model: 'gpt-4o-mini',
+    llm_max_tokens: 150,
+    bot_language: 'en',
   });
+  const [providerMode, setProviderMode] = useState<'realtime' | 'custom'>('realtime');
   const [databaseConfig, setDatabaseConfig] = useState({
     enabled: false,
     type: 'postgresql',
@@ -243,47 +424,22 @@ export default function AIAgentPage() {
   const [connectionStatus, setConnectionStatus] = useState<string | null>(null);
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
 
-  useEffect(() => {
-    const token = localStorage.getItem('token');
-    const userStr = localStorage.getItem('user');
+  // Get unique accents for filter
+  const uniqueAccents = useMemo(() => {
+    const accents = new Set(VOICE_OPTIONS.map(v => v.accent));
+    return ['All', ...Array.from(accents)];
+  }, []);
 
-    if (!token) {
-      router.push('/login');
-      return;
-    }
+  // Filter voices based on selected filters
+  const filteredVoices = useMemo(() => {
+    return VOICE_OPTIONS.filter(voice => {
+      const matchesGender = voiceGenderFilter === 'All' || voice.gender === voiceGenderFilter;
+      const matchesAccent = voiceAccentFilter === 'All' || voice.accent === voiceAccentFilter;
+      return matchesGender && matchesAccent;
+    });
+  }, [voiceGenderFilter, voiceAccentFilter]);
 
-    if (userStr) {
-      const userData = JSON.parse(userStr);
-      setUser(userData);
-      const resolvedUserId = userData.clientId || userData._id || userData.id;
-      if (resolvedUserId) {
-        fetchAssistants(resolvedUserId, token);
-        fetchApiKeyOptions(resolvedUserId, token);
-        fetchCalendarAccounts(resolvedUserId, token);
-      }
-    }
-
-    const savedTheme = localStorage.getItem('theme');
-    if (savedTheme === 'dark') {
-      setIsDarkMode(true);
-    }
-  }, [router]);
-
-  useEffect(() => {
-    if (isEditMode || formData.api_key_id || apiKeys.length === 0) {
-      return;
-    }
-
-    const preferredKey = apiKeys.find((key) => key.provider === 'openai') || apiKeys[0];
-    if (preferredKey) {
-      setFormData((prev) => ({
-        ...prev,
-        api_key_id: preferredKey.id,
-      }));
-    }
-  }, [apiKeys, isEditMode, formData.api_key_id]);
-
-  const fetchApiKeyOptions = async (userId: string, token: string) => {
+  const fetchApiKeyOptions = useCallback(async (userId: string, token: string) => {
     try {
       setIsLoadingKeys(true);
       setKeysError(null);
@@ -295,25 +451,31 @@ export default function AIAgentPage() {
         },
       });
 
-      const data = await response.json().catch(() => ({}));
+      const data: { detail?: string; keys?: unknown } = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.detail || 'Failed to retrieve saved API keys');
       }
 
-      setApiKeys(Array.isArray(data.keys) ? data.keys.map((key: any) => ({
-        id: key.id,
-        label: key.label,
-        provider: key.provider,
-      })) : []);
+      const normalizedKeys: StoredApiKey[] = Array.isArray(data.keys)
+        ? (data.keys as unknown[])
+            .filter((key): key is ApiKeyResponseItem => typeof key === 'object' && key !== null && typeof (key as { id?: unknown }).id === 'string')
+            .map((key) => ({
+              id: key.id as string,
+              label: typeof key.label === 'string' && key.label.length > 0 ? key.label : 'Saved Key',
+              provider: isSupportedProvider(key.provider) ? key.provider : 'custom',
+            }))
+        : [];
+
+      setApiKeys(normalizedKeys);
     } catch (err) {
       setKeysError(err instanceof Error ? err.message : 'Failed to load saved API keys.');
       setApiKeys([]);
     } finally {
       setIsLoadingKeys(false);
     }
-  };
+  }, [API_URL]);
 
-  const fetchCalendarAccounts = async (userId: string, token: string) => {
+  const fetchCalendarAccounts = useCallback(async (userId: string, token: string) => {
     try {
       setIsLoadingCalendars(true);
       const response = await fetch(`${API_URL}/api/calendar/accounts/${userId}`, {
@@ -324,25 +486,31 @@ export default function AIAgentPage() {
         },
       });
 
-      const data = await response.json().catch(() => ({}));
+      const data: { detail?: string; accounts?: unknown } = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.detail || 'Failed to retrieve calendar accounts');
       }
 
-      setCalendarAccounts(Array.isArray(data.accounts) ? data.accounts.map((acc: any) => ({
-        id: acc.id,
-        email: acc.email || 'Unknown',
-        provider: acc.provider || 'google',
-      })) : []);
+      const normalizedAccounts: CalendarAccountSummary[] = Array.isArray(data.accounts)
+        ? (data.accounts as unknown[])
+            .filter((acc): acc is CalendarAccountResponseItem => typeof acc === 'object' && acc !== null && typeof (acc as { id?: unknown }).id === 'string')
+            .map((acc) => ({
+              id: acc.id as string,
+              email: typeof acc.email === 'string' && acc.email.length > 0 ? acc.email : 'Unknown',
+              provider: typeof acc.provider === 'string' && acc.provider.length > 0 ? acc.provider : 'google',
+            }))
+        : [];
+
+      setCalendarAccounts(normalizedAccounts);
     } catch (err) {
       console.error('Error loading calendar accounts:', err);
       setCalendarAccounts([]);
     } finally {
       setIsLoadingCalendars(false);
     }
-  };
+  }, [API_URL]);
 
-  const fetchAssistants = async (userId: string, token: string) => {
+  const fetchAssistants = useCallback(async (userId: string, token: string) => {
     try {
       setIsLoading(true);
       const response = await fetch(`${API_URL}/api/ai-assistants/user/${userId}`, {
@@ -364,7 +532,57 @@ export default function AIAgentPage() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [API_URL]);
+
+  useEffect(() => {
+    const token = localStorage.getItem('token');
+    const userStr = localStorage.getItem('user');
+
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+
+    if (userStr) {
+      const userData: StoredUser = JSON.parse(userStr);
+      setUser(userData);
+      const resolvedUserId = userData.clientId || userData._id || userData.id;
+      if (resolvedUserId) {
+        fetchAssistants(resolvedUserId, token);
+        fetchApiKeyOptions(resolvedUserId, token);
+        fetchCalendarAccounts(resolvedUserId, token);
+      }
+    }
+
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme === 'dark') {
+      setIsDarkMode(true);
+    }
+  }, [router, fetchAssistants, fetchApiKeyOptions, fetchCalendarAccounts]);
+
+  useEffect(() => {
+    if (!copiedFrejunAssistantId) {
+      return undefined;
+    }
+    const timer = setTimeout(() => setCopiedFrejunAssistantId(null), 2000);
+    return () => clearTimeout(timer);
+  }, [copiedFrejunAssistantId]);
+
+  useEffect(() => {
+    if (isEditMode || formData.api_key_id || apiKeys.length === 0) {
+      return;
+    }
+
+    const preferredKey = apiKeys.find((key) => key.provider === 'openai') || apiKeys[0];
+    if (preferredKey) {
+      setFormData((prev) => ({
+        ...prev,
+        api_key_id: preferredKey.id,
+      }));
+    }
+  }, [apiKeys, isEditMode, formData.api_key_id]);
+
+  
 
   const handleCreateAssistant = async () => {
     const token = localStorage.getItem('token');
@@ -410,6 +628,17 @@ export default function AIAgentPage() {
             api_key_id: formData.api_key_id,
             call_greeting: formData.call_greeting,
             calendar_account_id: formData.calendar_account_id || null,
+            calendar_account_ids: formData.calendar_account_ids,
+            calendar_enabled: formData.calendar_enabled,
+            asr_provider: formData.asr_provider,
+            asr_model: formData.asr_model,
+            asr_language: formData.asr_language,
+            tts_provider: formData.tts_provider,
+            tts_model: formData.tts_model,
+            tts_voice: formData.tts_voice,
+            llm_provider: formData.llm_provider,
+            llm_model: formData.llm_model,
+            llm_max_tokens: formData.llm_max_tokens,
           }),
         });
 
@@ -452,12 +681,54 @@ export default function AIAgentPage() {
             api_key_id: formData.api_key_id,
             call_greeting: formData.call_greeting,
             calendar_account_id: formData.calendar_account_id || null,
+            calendar_account_ids: formData.calendar_account_ids,
+            calendar_enabled: formData.calendar_enabled,
+            asr_provider: formData.asr_provider,
+            asr_model: formData.asr_model,
+            asr_language: formData.asr_language,
+            tts_provider: formData.tts_provider,
+            tts_model: formData.tts_model,
+            tts_voice: formData.tts_voice,
+            llm_provider: formData.llm_provider,
+            llm_model: formData.llm_model,
+            llm_max_tokens: formData.llm_max_tokens,
           }),
         });
 
         if (!response.ok) {
           const errorData = await response.json();
           throw new Error(errorData.detail || 'Failed to create assistant');
+        }
+
+        // Get the newly created assistant ID and upload pending files if any
+        const createdAssistant = await response.json();
+        const newAssistantId = createdAssistant.id;
+
+        // Upload pending knowledge base files if any were selected during creation
+        if (pendingFiles.length > 0 && newAssistantId) {
+          try {
+            for (const file of pendingFiles) {
+              const formData = new FormData();
+              formData.append('file', file);
+
+              const uploadResponse = await fetch(
+                `${API_URL}/api/ai-assistants/knowledge-base/${newAssistantId}/upload`,
+                {
+                  method: 'POST',
+                  body: formData,
+                }
+              );
+
+              if (!uploadResponse.ok) {
+                console.error(`Failed to upload ${file.name}`);
+              }
+            }
+            // Clear pending files after upload
+            setPendingFiles([]);
+          } catch (uploadErr) {
+            console.error('Failed to upload knowledge base files:', uploadErr);
+            // Don't fail the whole creation if file upload fails
+          }
         }
       }
 
@@ -469,10 +740,24 @@ export default function AIAgentPage() {
         temperature: 0.8,
         api_key_id: '',
         call_greeting: DEFAULT_CALL_GREETING,
+        calendar_account_id: '',
+        calendar_account_ids: [] as string[],
+        calendar_enabled: false,
+        asr_provider: 'openai',
+        tts_provider: 'openai',
+        asr_model: 'whisper-1',
+        asr_language: 'en',
+        tts_voice: 'alloy',
+        tts_model: 'tts-1',
+        llm_provider: 'openai',
+        llm_model: 'gpt-4o-mini',
+        llm_max_tokens: 150,
       });
       setIsCreateModalOpen(false);
       setIsEditMode(false);
       setEditingAssistantId(null);
+      setKnowledgeBaseFiles([]);
+      setPendingFiles([]);
 
       // Refresh the assistants list
       await fetchAssistants(userId, token);
@@ -485,10 +770,21 @@ export default function AIAgentPage() {
 
   const handleFormChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: name === 'temperature' ? parseFloat(value) : value,
-    }));
+    setFormData(prev => {
+      let nextValue: string | number = value;
+
+      if (name === 'temperature') {
+        nextValue = parseFloat(value);
+      } else if (name === 'llm_max_tokens') {
+        const parsed = parseInt(value, 10);
+        nextValue = Number.isNaN(parsed) ? prev.llm_max_tokens : parsed;
+      }
+
+      return {
+        ...prev,
+        [name]: nextValue,
+      };
+    });
   };
 
   const handleVoiceDemo = async (voiceId: string) => {
@@ -603,7 +899,18 @@ export default function AIAgentPage() {
     }
 
     if (!isEditMode || !editingAssistantId) {
-      setUploadError('Please save the assistant first before uploading files');
+      // During creation, just store the files to upload later
+      setPendingFiles(prev => [...prev, ...Array.from(files)]);
+      // Create metadata for display
+      const fileMetadata: KnowledgeBaseFile[] = Array.from(files).map(file => ({
+        filename: file.name,
+        file_type: file.name.split('.').pop() || '',
+        file_size: file.size,
+        uploaded_at: new Date().toISOString(),
+        file_path: ''
+      }));
+      setKnowledgeBaseFiles(prev => dedupeKnowledgeBaseFiles([...prev, ...fileMetadata]));
+      e.target.value = '';
       return;
     }
 
@@ -650,8 +957,8 @@ export default function AIAgentPage() {
           await fetchAssistants(resolvedUserId, token);
         }
       }
-    } catch (err: any) {
-      setUploadError(err.message || 'Failed to upload files');
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Failed to upload files');
     } finally {
       setUploadingFile(false);
     }
@@ -682,8 +989,9 @@ export default function AIAgentPage() {
       }
 
       setConnectionStatus('Success! Database connection established.');
-    } catch (err: any) {
-      setConnectionStatus(`Connection failed: ${err.message}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setConnectionStatus(`Connection failed: ${message}`);
     } finally {
       setTestingConnection(false);
     }
@@ -720,8 +1028,8 @@ export default function AIAgentPage() {
           await fetchAssistants(resolvedUserId, token);
         }
       }
-    } catch (err: any) {
-      setUploadError(err.message || 'Failed to delete file');
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Failed to delete file');
     }
   };
 
@@ -753,8 +1061,9 @@ export default function AIAgentPage() {
 
       const data = await response.json();
       setDocumentContent(data.extracted_text || 'No content available');
-    } catch (err: any) {
-      setDocumentContent('Error loading document content: ' + (err.message || 'Unknown error'));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : 'Unknown error';
+      setDocumentContent('Error loading document content: ' + message);
     } finally {
       setLoadingDocumentContent(false);
     }
@@ -785,6 +1094,7 @@ export default function AIAgentPage() {
     setIsEditMode(false);
     setEditingAssistantId(null);
     setKnowledgeBaseFiles([]);
+    setProviderMode('realtime');
     setFormData({
       name: '',
       system_message: '',
@@ -793,10 +1103,43 @@ export default function AIAgentPage() {
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
       calendar_account_id: '',
+      asr_provider: 'openai',
+      tts_provider: 'openai',
+      asr_model: 'whisper-1',
+      asr_language: 'en',
+      tts_voice: 'alloy',
+      tts_model: 'tts-1',
+      llm_provider: 'openai',
+      llm_model: 'gpt-4o-mini',
+      llm_max_tokens: 150,
     });
   };
 
   const openEditModal = async (assistant: AIAssistant) => {
+    const asr = assistant.asr_provider || 'openai';
+    const tts = assistant.tts_provider || 'openai';
+    const llmProvider = assistant.llm_provider || 'openai';
+    const llmModel =
+      assistant.llm_model ||
+      (LLM_MODELS[llmProvider as keyof typeof LLM_MODELS]?.[0]?.value || 'gpt-4o-mini');
+    const llmMaxTokens = assistant.llm_max_tokens ?? 150;
+
+    // Set provider mode based on current providers
+    if (asr === 'openai' && tts === 'openai') {
+      setProviderMode('realtime');
+    } else {
+      setProviderMode('custom');
+    }
+
+    // Set default models/voices based on provider
+    const defaultAsrModel = ASR_MODELS[asr as keyof typeof ASR_MODELS]?.[0]?.value || 'whisper-1';
+    const defaultTtsVoice = TTS_VOICES[tts as keyof typeof TTS_VOICES]?.[0]?.value || assistant.voice;
+    const defaultTtsModel = TTS_MODELS[tts as keyof typeof TTS_MODELS]?.[0]?.value || 'tts-1';
+    const asrModel = assistant.asr_model || defaultAsrModel;
+    const asrLanguage = assistant.asr_language || 'en';
+    const ttsVoice = assistant.tts_voice || defaultTtsVoice;
+    const ttsModel = assistant.tts_model || defaultTtsModel;
+
     setFormData({
       name: assistant.name,
       system_message: assistant.system_message,
@@ -805,6 +1148,17 @@ export default function AIAgentPage() {
       api_key_id: assistant.api_key_id || '',
       call_greeting: assistant.call_greeting || DEFAULT_CALL_GREETING,
       calendar_account_id: assistant.calendar_account_id || '',
+      calendar_account_ids: assistant.calendar_account_ids || [],
+      calendar_enabled: assistant.calendar_enabled || false,
+      asr_provider: asr,
+      tts_provider: tts,
+      asr_model: asrModel,
+      asr_language: asrLanguage,
+      tts_voice: ttsVoice,
+      tts_model: ttsModel,
+      llm_provider: llmProvider,
+      llm_model: llmModel,
+      llm_max_tokens: llmMaxTokens,
     });
     setKnowledgeBaseFiles(dedupeKnowledgeBaseFiles(assistant.knowledge_base_files || []));
 
@@ -849,6 +1203,15 @@ export default function AIAgentPage() {
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
       calendar_account_id: '',
+      asr_provider: 'openai',
+      tts_provider: 'openai',
+      asr_model: 'whisper-1',
+      asr_language: 'en',
+      tts_voice: 'alloy',
+      tts_model: 'tts-1',
+      llm_provider: 'openai',
+      llm_model: 'gpt-4o-mini',
+      llm_max_tokens: 150,
     });
     setModalStep('form');
   };
@@ -861,6 +1224,16 @@ export default function AIAgentPage() {
       temperature: 0.8,
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
+      calendar_account_id: '',
+      asr_provider: 'openai',
+      tts_provider: 'openai',
+      asr_model: 'whisper-1',
+      asr_language: 'en',
+      tts_voice: 'alloy',
+      tts_model: 'tts-1',
+      llm_provider: 'openai',
+      llm_model: 'gpt-4o-mini',
+      llm_max_tokens: 150,
     });
     setModalStep('form');
   };
@@ -928,6 +1301,18 @@ export default function AIAgentPage() {
   const closeViewDetails = () => {
     setViewingAssistant(null);
     setIsViewDetailsOpen(false);
+  };
+
+  const handleCopyFrejunUrl = async (url: string, assistantId: string) => {
+    if (!url) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopiedFrejunAssistantId(assistantId);
+    } catch (err) {
+      console.error('Failed to copy FreJun URL', err);
+    }
   };
 
   const handleLogout = () => {
@@ -1476,6 +1861,53 @@ export default function AIAgentPage() {
                 )}
               </div>
 
+              {/* Bot Language Selection */}
+              <div>
+                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-3`}>
+                  Bot Language
+                </label>
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-4`}>
+                  Select the primary language your bot will use for conversations
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                  {LANGUAGE_OPTIONS.map((language) => (
+                    <button
+                      key={language.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, bot_language: language.value })}
+                      className={`relative p-3 rounded-xl border-2 transition-all text-left ${
+                        formData.bot_language === language.value
+                          ? 'border-primary bg-primary/10'
+                          : isDarkMode
+                            ? 'border-gray-700 bg-gray-800 hover:border-gray-600'
+                            : 'border-neutral-light bg-white hover:border-neutral-mid/30'
+                      }`}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-2xl">{language.flag}</span>
+                        <div className="flex-1 min-w-0">
+                          <p className={`text-sm font-medium truncate ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            {language.label.split(' (')[0]}
+                          </p>
+                          {language.label.includes('(') && (
+                            <p className={`text-xs truncate ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                              {language.label.match(/\((.*?)\)/)?.[1]}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      {formData.bot_language === language.value && (
+                        <div className="absolute top-2 right-2">
+                          <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               {/* Voice Selection */}
               <div>
                 <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-3`}>
@@ -1484,12 +1916,90 @@ export default function AIAgentPage() {
                 <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-4`}>
                   Click on a voice to select it, and use the play button to hear a demo
                 </p>
+
+                {/* Voice Filters */}
+                <div className="mb-4 space-y-3">
+                  {/* Gender Filter */}
+                  <div>
+                    <label className={`block text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'} mb-2`}>
+                      Filter by Gender
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {(['All', 'Male', 'Female', 'Neutral'] as const).map((gender) => (
+                        <button
+                          key={gender}
+                          type="button"
+                          onClick={() => setVoiceGenderFilter(gender)}
+                          className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                            voiceGenderFilter === gender
+                              ? 'bg-primary text-white shadow-md'
+                              : isDarkMode
+                                ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                          }`}
+                        >
+                          {gender === 'All' ? 'All Genders' : gender}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Accent Filter */}
+                  <div>
+                    <label className={`block text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'} mb-2`}>
+                      Filter by Accent
+                    </label>
+                    <div className="flex flex-wrap gap-2">
+                      {uniqueAccents.map((accent) => (
+                        <button
+                          key={accent}
+                          type="button"
+                          onClick={() => setVoiceAccentFilter(accent)}
+                          className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                            voiceAccentFilter === accent
+                              ? 'bg-primary text-white shadow-md'
+                              : isDarkMode
+                                ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                          }`}
+                        >
+                          {accent === 'All' ? 'All Accents' : accent}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Results Count */}
+                  <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                    Showing {filteredVoices.length} of {VOICE_OPTIONS.length} voices
+                  </div>
+                </div>
+
                 <div className={`rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/30' : 'border-neutral-mid/20 bg-white'} max-h-[400px] overflow-y-auto`}>
-                  {VOICE_OPTIONS.map((voice, index) => (
+                  {filteredVoices.length === 0 ? (
+                    <div className={`p-8 text-center ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                      <p className="text-sm">No voices match the selected filters.</p>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setVoiceGenderFilter('All');
+                          setVoiceAccentFilter('All');
+                        }}
+                        className={`mt-3 text-xs px-3 py-1.5 rounded-lg ${
+                          isDarkMode
+                            ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                            : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                        }`}
+                      >
+                        Clear filters
+                      </button>
+                    </div>
+                  ) : (
+                    filteredVoices.map((voice, index) => (
                     <div
                       key={voice.value}
                       className={`flex items-center justify-between p-4 cursor-pointer transition-all ${
-                        index !== VOICE_OPTIONS.length - 1 ? (isDarkMode ? 'border-b border-gray-600' : 'border-b border-neutral-mid/10') : ''
+                        index !== filteredVoices.length - 1 ? (isDarkMode ? 'border-b border-gray-600' : 'border-b border-neutral-mid/10') : ''
                       } ${
                         formData.voice === voice.value
                           ? isDarkMode
@@ -1563,7 +2073,8 @@ export default function AIAgentPage() {
                         )}
                       </button>
                     </div>
-                  ))}
+                  ))
+                  )}
                 </div>
               </div>
 
@@ -1591,51 +2102,455 @@ export default function AIAgentPage() {
                 </p>
               </div>
 
-              {/* Calendar Account for Scheduling */}
+              {/* Calendar Accounts for Scheduling */}
               <div>
                 <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
-                  Calendar for Scheduling (Optional)
+                  Calendars for Scheduling (Optional)
                 </label>
-                <select
-                  name="calendar_account_id"
-                  value={formData.calendar_account_id}
-                  onChange={handleFormChange}
-                  className={`w-full px-4 py-3 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-neutral-mid/20 text-neutral-dark'} focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all`}
-                  disabled={isLoadingCalendars}
-                >
-                  <option value="">No calendar (scheduling disabled)</option>
-                  {calendarAccounts.map((account) => (
-                    <option key={account.id} value={account.id}>
-                      {account.email} ({account.provider})
-                    </option>
-                  ))}
-                </select>
-                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-2`}>
-                  Enable calendar scheduling during calls. The AI can book meetings to this calendar when users request appointments.
-                  {calendarAccounts.length === 0 && (
-                    <span className="block mt-1 text-amber-500">
-                      No calendars connected. Visit Connect Calendar page to add one.
-                    </span>
-                  )}
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-3`}>
+                  Select one or more calendars. The AI will check availability across all selected calendars and distribute appointments using round-robin scheduling.
                 </p>
+
+                {isLoadingCalendars ? (
+                  <div className="text-center py-4">
+                    <span className={isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}>Loading calendars...</span>
+                  </div>
+                ) : calendarAccounts.length === 0 ? (
+                  <div className={`p-4 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-amber-50 border-amber-200'}`}>
+                    <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-amber-700'}`}>
+                      No calendars connected. Visit the Calendar page to connect Google or Microsoft Calendar.
+                    </p>
+                  </div>
+                ) : (
+                  <div className={`space-y-2 p-4 rounded-xl border ${isDarkMode ? 'bg-gray-700 border-gray-600' : 'bg-white border-neutral-mid/20'}`}>
+                    {calendarAccounts.map((account) => (
+                      <label
+                        key={account.id}
+                        className={`flex items-center space-x-3 p-3 rounded-lg cursor-pointer transition-colors ${
+                          isDarkMode
+                            ? 'hover:bg-gray-600'
+                            : 'hover:bg-neutral-light/30'
+                        } ${
+                          formData.calendar_account_ids && formData.calendar_account_ids.includes(account.id)
+                            ? isDarkMode
+                              ? 'bg-gray-600'
+                              : 'bg-primary/5'
+                            : ''
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={formData.calendar_account_ids ? formData.calendar_account_ids.includes(account.id) : false}
+                          onChange={(e) => {
+                            const currentIds = formData.calendar_account_ids || [];
+                            const newIds = e.target.checked
+                              ? [...currentIds, account.id]
+                              : currentIds.filter(id => id !== account.id);
+                            setFormData({
+                              ...formData,
+                              calendar_account_ids: newIds,
+                              calendar_enabled: newIds.length > 0
+                            });
+                          }}
+                          className="w-4 h-4 text-primary bg-gray-100 border-gray-300 rounded focus:ring-primary focus:ring-2"
+                        />
+                        <div className="flex-1">
+                          <span className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                            {account.email}
+                          </span>
+                          <span className={`ml-2 text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                            ({account.provider})
+                          </span>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                )}
+
+                {formData.calendar_account_ids && formData.calendar_account_ids.length > 0 && (
+                  <p className={`text-xs ${isDarkMode ? 'text-green-400' : 'text-green-600'} mt-2`}>
+                    {formData.calendar_account_ids.length} calendar{formData.calendar_account_ids.length > 1 ? 's' : ''} selected.
+                    The AI will check all calendars for conflicts and distribute appointments evenly.
+                  </p>
+                )}
+              </div>
+
+              {/* Voice Provider Configuration */}
+              <div className={`rounded-xl border ${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-white border-gray-200'} p-6`}>
+                <h3 className={`text-base font-semibold ${isDarkMode ? 'text-white' : 'text-gray-900'} mb-2`}>
+                  Voice Provider Configuration
+                </h3>
+                <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-6`}>
+                  Choose between OpenAI Realtime API or custom ASR/TTS providers for better cost and performance.
+                </p>
+
+                {/* Two Option Cards */}
+                <div className="space-y-3 mb-6">
+                  {/* OpenAI Realtime API Option */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProviderMode('realtime');
+                      const defaultRealtimeModel = LLM_MODELS['openai-realtime'][0].value;
+                      setFormData({
+                        ...formData,
+                        asr_provider: 'openai',
+                        tts_provider: 'openai',
+                        llm_provider: 'openai-realtime',
+                        llm_model: defaultRealtimeModel,
+                      });
+                    }}
+                    className={`w-full p-4 rounded-lg border-2 transition-all ${
+                      providerMode === 'realtime'
+                        ? isDarkMode
+                          ? 'border-primary bg-primary/10'
+                          : 'border-primary bg-primary/5'
+                        : isDarkMode
+                        ? 'border-gray-600 bg-gray-800/30 hover:border-gray-500'
+                        : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="text-left">
+                      <h4 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                        OpenAI Realtime API
+                      </h4>
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Use OpenAI&apos;s all-in-one Realtime API (existing system)
+                      </p>
+                    </div>
+
+                    {/* Realtime Model Selection (only shown when selected) */}
+                    {providerMode === 'realtime' && (
+                      <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-200'}`} onClick={(e) => e.stopPropagation()}>
+                        <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-2 block`}>
+                          Realtime Model
+                        </label>
+                        <select
+                          name="llm_model"
+                          value={formData.llm_model}
+                          onChange={(e) => {
+                            setFormData({
+                              ...formData,
+                              llm_model: e.target.value
+                            });
+                          }}
+                          className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                        >
+                          {LLM_MODELS['openai-realtime'].map((model) => (
+                            <option key={model.value} value={model.value}>
+                              {model.label}
+                            </option>
+                          ))}
+                        </select>
+                        <div className="flex items-center gap-3 mt-2 text-xs">
+                          <span className={`flex items-center gap-1 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'}`}>
+                            Cost: ${LLM_MODELS['openai-realtime'].find(m => m.value === formData.llm_model)?.cost || '0.006'}/1k tokens
+                          </span>
+                          <span className={`flex items-center gap-1 ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                            Latency: {LLM_MODELS['openai-realtime'].find(m => m.value === formData.llm_model)?.latency || '320'}ms
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </button>
+
+                  {/* Custom Providers Option */}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setProviderMode('custom');
+                      // Set default custom providers if currently using realtime
+                      if (formData.asr_provider === 'openai' && formData.tts_provider === 'openai') {
+                        setFormData({
+                          ...formData,
+                          asr_provider: 'deepgram',
+                          asr_model: 'nova-2',
+                          asr_language: 'en',
+                          tts_provider: 'cartesia',
+                          tts_voice: 'sonic',
+                          tts_model: 'sonic-english'
+                        });
+                      }
+                    }}
+                    className={`w-full p-4 rounded-lg border-2 transition-all ${
+                      providerMode === 'custom'
+                        ? isDarkMode
+                          ? 'border-primary bg-primary/10'
+                          : 'border-primary bg-primary/5'
+                        : isDarkMode
+                        ? 'border-gray-600 bg-gray-800/30 hover:border-gray-500'
+                        : 'border-gray-200 bg-gray-50 hover:border-gray-300'
+                    }`}
+                  >
+                    <div className="text-left mb-3">
+                      <h4 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                        Custom Providers
+                      </h4>
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Choose separate ASR and TTS providers for better cost/performance
+                      </p>
+                    </div>
+
+                    {/* Custom Provider Details (only shown when selected) */}
+                    {providerMode === 'custom' && (
+                      <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-200'} space-y-4`} onClick={(e) => e.stopPropagation()}>
+                        {/* ASR Section */}
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
+                            </svg>
+                            <label className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                              Speech-to-Text (ASR)
+                            </label>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Provider
+                              </label>
+                              <select
+                                name="asr_provider"
+                                value={formData.asr_provider}
+                                onChange={(e) => {
+                                  const provider = e.target.value as 'deepgram' | 'openai';
+                                  const defaultModel = ASR_MODELS[provider][0].value;
+                                  setFormData({
+                                    ...formData,
+                                    asr_provider: provider,
+                                    asr_model: defaultModel
+                                  });
+                                }}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                <option value="deepgram">Deepgram Nova</option>
+                                <option value="openai">OpenAI Whisper</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Model
+                              </label>
+                              <select
+                                name="asr_model"
+                                value={formData.asr_model}
+                                onChange={handleFormChange}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                {ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.map((model) => (
+                                  <option key={model.value} value={model.value}>
+                                    {model.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Language
+                              </label>
+                              <select
+                                name="asr_language"
+                                value={formData.asr_language}
+                                onChange={handleFormChange}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                {ASR_LANGUAGES.map((lang) => (
+                                  <option key={lang.value} value={lang.value}>
+                                    {lang.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 mt-2 text-xs">
+                            <span className="flex items-center gap-1 text-yellow-600">
+                              ⚡ Cost: ${ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.[0]?.cost || '0.006'}/min
+                            </span>
+                            <span className="flex items-center gap-1 text-green-600">
+                              🚀 Latency: {ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.[0]?.latency || '250'}ms
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* TTS Section */}
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+                            </svg>
+                            <label className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                              Text-to-Speech (TTS)
+                            </label>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Provider
+                              </label>
+                              <select
+                                name="tts_provider"
+                                value={formData.tts_provider}
+                                onChange={(e) => {
+                                  const provider = e.target.value as 'cartesia' | 'elevenlabs' | 'openai';
+                                  const defaultVoice = TTS_VOICES[provider][0].value;
+                                  const defaultModel = TTS_MODELS[provider][0].value;
+                                  setFormData({
+                                    ...formData,
+                                    tts_provider: provider,
+                                    tts_voice: defaultVoice,
+                                    tts_model: defaultModel
+                                  });
+                                }}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                <option value="cartesia">Cartesia Sonic</option>
+                                <option value="elevenlabs">ElevenLabs</option>
+                                <option value="openai">OpenAI</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Voice
+                              </label>
+                              <select
+                                name="tts_voice"
+                                value={formData.tts_voice}
+                                onChange={handleFormChange}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                {TTS_VOICES[formData.tts_provider as keyof typeof TTS_VOICES]?.map((voice) => (
+                                  <option key={voice.value} value={voice.value}>
+                                    {voice.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Model
+                              </label>
+                              <select
+                                name="tts_model"
+                                value={formData.tts_model}
+                                onChange={handleFormChange}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                {TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.map((model) => (
+                                  <option key={model.value} value={model.value}>
+                                    {model.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 mt-2 text-xs">
+                            <span className="flex items-center gap-1 text-yellow-600">
+                              ⚡ Cost: ${TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.cost || '0.015'}/min
+                            </span>
+                            <span className="flex items-center gap-1 text-green-600">
+                              🚀 Latency: {TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.latency || '250'}ms
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* LLM Section */}
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <svg className="w-4 h-4 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                            </svg>
+                            <label className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                              Language Model (LLM)
+                            </label>
+                          </div>
+                          <div className="grid grid-cols-3 gap-3">
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Provider
+                              </label>
+                              <select
+                                name="llm_provider"
+                                value={formData.llm_provider}
+                                onChange={(e) => {
+                                  const provider = e.target.value as 'openai' | 'openai-realtime' | 'anthropic' | 'groq';
+                                  const defaultModel = LLM_MODELS[provider][0].value;
+                                  setFormData({
+                                    ...formData,
+                                    llm_provider: provider,
+                                    llm_model: defaultModel
+                                  });
+                                }}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                <option value="openai">OpenAI GPT</option>
+                                <option value="openai-realtime">OpenAI Realtime API (Voice Optimized)</option>
+                                <option value="anthropic">Anthropic Claude</option>
+                                <option value="groq">Groq (Ultra-Fast)</option>
+                              </select>
+                            </div>
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Model
+                              </label>
+                              <select
+                                name="llm_model"
+                                value={formData.llm_model}
+                                onChange={handleFormChange}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              >
+                                {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.map((model) => (
+                                  <option key={model.value} value={model.value}>
+                                    {model.label}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1 block`}>
+                                Max Tokens
+                              </label>
+                              <input
+                                type="number"
+                                name="llm_max_tokens"
+                                min={50}
+                                max={4000}
+                                step={50}
+                                value={formData.llm_max_tokens}
+                                onChange={handleFormChange}
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-3 mt-2 text-xs">
+                            <span className="flex items-center gap-1 text-yellow-600">
+                              ⚡ Cost: ${LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.cost || '0.001'}/1k tokens
+                            </span>
+                            <span className="flex items-center gap-1 text-green-600">
+                              🚀 Latency: {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.latency || '500'}ms
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+                  </button>
+                </div>
               </div>
 
               {/* Knowledge Base */}
-              {isEditMode && (
-                <div className={`rounded-xl border ${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200'} p-6`}>
-                  <div className="flex items-center gap-2 mb-4">
-                    <svg className="w-6 h-6 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
-                    </svg>
-                    <div>
-                      <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
-                        Knowledge Base
-                      </h3>
-                      <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                        Upload documents for the AI to reference during conversations
-                      </p>
-                    </div>
+              <div className={`rounded-xl border ${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gradient-to-br from-blue-50 to-purple-50 border-blue-200'} p-6`}>
+                <div className="flex items-center gap-2 mb-4">
+                  <svg className="w-6 h-6 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
+                  </svg>
+                  <div>
+                    <h3 className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Knowledge Base {!isEditMode && <span className={`text-xs font-normal ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>(Optional)</span>}
+                    </h3>
+                    <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                      {isEditMode ? 'Upload documents for the AI to reference during conversations' : 'Upload documents now - files will be uploaded when you create the assistant'}
+                    </p>
                   </div>
+                </div>
 
                   {uploadError && (
                     <div className={`${isDarkMode ? 'bg-red-900/20 border-red-800' : 'bg-red-50 border-red-200'} border rounded-xl p-3 mb-4`}>
@@ -1739,26 +2654,12 @@ export default function AIAgentPage() {
                     </div>
                   )}
 
-                  {knowledgeBaseFiles.length === 0 && (
-                    <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'} text-center py-4`}>
-                      No documents uploaded yet. The AI will use general knowledge.
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {!isEditMode && (
-                <div className={`rounded-xl border ${isDarkMode ? 'bg-blue-900/20 border-blue-800' : 'bg-blue-50 border-blue-200'} p-4`}>
-                  <div className="flex items-start gap-3">
-                    <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <p className={`text-sm ${isDarkMode ? 'text-blue-400' : 'text-blue-700'}`}>
-                      Knowledge Base files can be uploaded after creating the assistant
-                    </p>
-                  </div>
-                </div>
-              )}
+                {knowledgeBaseFiles.length === 0 && (
+                  <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'} text-center py-4`}>
+                    No documents uploaded yet. The AI will use general knowledge.
+                  </p>
+                )}
+              </div>
 
               {/* Database Integration */}
               {isEditMode && (
@@ -2228,6 +3129,42 @@ export default function AIAgentPage() {
                         minute: '2-digit'
                       })}
                     </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* FreJun Direct URL */}
+              <div>
+                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
+                  FreJun Incoming Call URL
+                </label>
+                <div className={`flex flex-col gap-2 p-4 rounded-xl ${isDarkMode ? 'bg-gray-900' : 'bg-neutral-light'}`}>
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                    <code className={`flex-1 text-sm font-mono break-all ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
+                      {viewingAssistant.frejun_flow_url}
+                    </code>
+                    <button
+                      onClick={() => handleCopyFrejunUrl(viewingAssistant.frejun_flow_url, viewingAssistant.id)}
+                      className={`inline-flex items-center justify-center px-4 py-2 rounded-lg text-sm font-semibold ${
+                        isDarkMode ? 'bg-primary/20 text-primary hover:bg-primary/30' : 'bg-primary/10 text-primary hover:bg-primary/20'
+                      } transition-colors`}
+                    >
+                      <svg className="w-4 h-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7V5a2 2 0 012-2h4a2 2 0 012 2v2m2 0a2 2 0 012 2v8a2 2 0 01-2 2H8a2 2 0 01-2-2V9a2 2 0 012-2h8z" />
+                      </svg>
+                      Copy URL
+                    </button>
+                  </div>
+                  <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 text-xs">
+                    <span className={isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}>
+                      Paste this URL into FreJun&apos;s Incoming Call URL field to route calls directly to this assistant.
+                    </span>
+                    {copiedFrejunAssistantId === viewingAssistant.id && (
+                      <span className={isDarkMode ? 'text-green-400' : 'text-green-600'}>Copied!</span>
+                    )}
+                  </div>
+                  <div className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid'}`}>
+                    Token: <code className={`font-mono ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>{viewingAssistant.frejun_flow_token}</code>
                   </div>
                 </div>
               </div>
