@@ -65,8 +65,9 @@ class CallLogResponse(BaseModel):
     price: Optional[str] = Field(None, description="Call cost (negative for charges)")
     price_unit: Optional[str] = Field(None, description="Currency (USD, EUR, etc.)")
 
-    # Recording
+    # Recording & Transcription
     recording_url: Optional[str] = Field(None, description="Recording URL if available")
+    transcription_text: Optional[str] = Field(None, description="Call transcription if available")
 
     # AI Assistant Info (Custom)
     assistant_id: Optional[str] = Field(None, description="AI assistant that handled the call")
@@ -74,6 +75,14 @@ class CallLogResponse(BaseModel):
 
     # Queue Info
     queue_time: Optional[str] = Field(None, description="Time spent in queue")
+
+    # Voice Provider Configuration (Custom)
+    asr_provider: Optional[str] = Field(None, description="Speech-to-text provider used")
+    asr_model: Optional[str] = Field(None, description="ASR model used")
+    tts_provider: Optional[str] = Field(None, description="Text-to-speech provider used")
+    tts_model: Optional[str] = Field(None, description="TTS model used")
+    llm_provider: Optional[str] = Field(None, description="LLM provider used")
+    llm_model: Optional[str] = Field(None, description="LLM model used")
 
     class Config:
         populate_by_name = True

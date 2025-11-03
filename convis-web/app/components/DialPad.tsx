@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 
 interface DialPadProps {
   availableNumbers: { phone_number: string; provider: string; friendly_name?: string }[];
@@ -15,6 +15,20 @@ export function DialPad({ availableNumbers, onCall, isDarkMode, onClose, isVisib
   const [selectedFrom, setSelectedFrom] = useState('');
   const [isCalling, setIsCalling] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const handleCall = useCallback(async () => {
+    if (!selectedFrom || !phoneNumber) return;
+
+    setIsCalling(true);
+    try {
+      await onCall(selectedFrom, phoneNumber);
+      setPhoneNumber('');
+    } catch (error) {
+      console.error('Call failed:', error);
+    } finally {
+      setIsCalling(false);
+    }
+  }, [onCall, phoneNumber, selectedFrom]);
 
   // Handle keyboard numpad input
   useEffect(() => {
@@ -38,7 +52,7 @@ export function DialPad({ availableNumbers, onCall, isDarkMode, onClose, isVisib
       // Enter to call
       else if (e.key === 'Enter' && phoneNumber && selectedFrom) {
         e.preventDefault();
-        handleCall();
+        void handleCall();
       }
       // Special characters
       else if (e.key === '*' || e.key === '#' || e.key === '+') {
@@ -48,7 +62,7 @@ export function DialPad({ availableNumbers, onCall, isDarkMode, onClose, isVisib
 
     window.addEventListener('keydown', handleKeyPress);
     return () => window.removeEventListener('keydown', handleKeyPress);
-  }, [isVisible, phoneNumber, selectedFrom]);
+  }, [handleCall, isVisible, phoneNumber, selectedFrom]);
 
   // Focus input when visible
   useEffect(() => {
@@ -63,20 +77,6 @@ export function DialPad({ availableNumbers, onCall, isDarkMode, onClose, isVisib
 
   const handleBackspace = () => {
     setPhoneNumber(prev => prev.slice(0, -1));
-  };
-
-  const handleCall = async () => {
-    if (!selectedFrom || !phoneNumber) return;
-
-    setIsCalling(true);
-    try {
-      await onCall(selectedFrom, phoneNumber);
-      setPhoneNumber('');
-    } catch (error) {
-      console.error('Call failed:', error);
-    } finally {
-      setIsCalling(false);
-    }
   };
 
   const digits = [

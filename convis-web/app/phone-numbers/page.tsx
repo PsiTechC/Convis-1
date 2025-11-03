@@ -57,6 +57,12 @@ interface CallLog {
   assistant_id?: string;
   assistant_name?: string;
   platform?: 'twilio' | 'frejun';
+  asr_provider?: string;
+  asr_model?: string;
+  tts_provider?: string;
+  tts_model?: string;
+  llm_provider?: string;
+  llm_model?: string;
 }
 
 interface ServiceProvider {
@@ -69,10 +75,36 @@ interface ServiceProvider {
   features: string[];
 }
 
+interface User {
+  id: string;
+  email: string;
+  full_name?: string;
+  [key: string]: unknown;
+}
+
+interface AvailableNumber {
+  phone_number: string;
+  friendly_name?: string;
+  locality?: string;
+  region?: string;
+  iso_country?: string;
+  capabilities?: {
+    voice?: boolean;
+    sms?: boolean;
+    mms?: boolean;
+  };
+}
+
+interface VerifiedCallerId {
+  phone_number: string;
+  friendly_name?: string;
+  validation_code?: string;
+}
+
 function PhoneNumbersPageContent() {
   const router = useRouter();
   const urlSearchParams = useSearchParams();
-  const [user, setUser] = useState<any>(null);
+  const [user, setUser] = useState<User | null>(null);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
   const [activeNav, setActiveNav] = useState('Phone Numbers');
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -95,7 +127,7 @@ function PhoneNumbersPageContent() {
   const [isAssigning, setIsAssigning] = useState(false);
   const [isPurchaseModalOpen, setIsPurchaseModalOpen] = useState(false);
   const [numberSearchParams, setNumberSearchParams] = useState({ areaCode: '', contains: '' });
-  const [availableNumbers, setAvailableNumbers] = useState<any[]>([]);
+  const [availableNumbers, setAvailableNumbers] = useState<AvailableNumber[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isPurchasing, setIsPurchasing] = useState(false);
   const [selectedNumber, setSelectedNumber] = useState<string>('');
@@ -105,7 +137,7 @@ function PhoneNumbersPageContent() {
   const [selectedPhoneForCall, setSelectedPhoneForCall] = useState<PhoneNumber | null>(null);
   const [callToNumber, setCallToNumber] = useState('');
   const [isInitiatingCall, setIsInitiatingCall] = useState(false);
-  const [verifiedCallerIds, setVerifiedCallerIds] = useState<any[]>([]);
+  const [verifiedCallerIds, setVerifiedCallerIds] = useState<VerifiedCallerId[]>([]);
   const [isLoadingCallerIds, setIsLoadingCallerIds] = useState(false);
   const [activeCallNumbers, setActiveCallNumbers] = useState<Set<string>>(new Set());
   const [isDialPadOpen, setIsDialPadOpen] = useState(false);
@@ -164,6 +196,7 @@ function PhoneNumbersPageContent() {
     if (savedTheme === 'dark') {
       setIsDarkMode(true);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
 
   useEffect(() => {
@@ -175,7 +208,7 @@ function PhoneNumbersPageContent() {
       setActiveNav('Phone Numbers');
       setActiveTab('numbers');
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+     
   }, [urlSearchParams]);
 
   useEffect(() => {
@@ -356,23 +389,23 @@ function PhoneNumbersPageContent() {
 
       const provider = phoneNumber.provider.toLowerCase();
       let endpoint = '';
-      let requestBody: any = {};
+      const requestBody: {
+        user_id?: string;
+        from_number: string;
+        to_number: string;
+        assistant_id?: string;
+      } = {
+        from_number: fromNumber,
+        to_number: toNumber,
+      };
 
       if (provider === 'twilio') {
         endpoint = `${API_URL}/api/twilio-webhooks/make-call`;
-        requestBody = {
-          user_id: userId,
-          from_number: fromNumber,
-          to_number: toNumber,
-        };
+        requestBody.user_id = userId;
       } else if (provider === 'frejun') {
         endpoint = `${API_URL}/api/frejun/initiate-call`;
-        requestBody = {
-          from_number: fromNumber,
-          to_number: toNumber,
-          assistant_id: phoneNumber.assigned_assistant_id,
-          user_id: userId,
-        };
+        requestBody.assistant_id = phoneNumber.assigned_assistant_id;
+        requestBody.user_id = userId;
       } else {
         throw new Error(`Unsupported provider: ${provider}`);
       }
@@ -398,9 +431,9 @@ function PhoneNumbersPageContent() {
       setTimeout(() => {
         fetchCallLogs();
       }, 2000);
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error making call:', error);
-      alert(error.message || 'Failed to initiate call');
+      alert(error instanceof Error ? error.message : 'Failed to initiate call');
       throw error;
     }
   };
@@ -797,7 +830,7 @@ function PhoneNumbersPageContent() {
         }, 300000);
 
         // Store interval ID to clear it when needed
-        (window as any).callStatusInterval = statusInterval;
+        (window as Window & { callStatusInterval?: NodeJS.Timeout }).callStatusInterval = statusInterval;
       } else {
         const error = await response.json();
         alert(error.detail || 'Failed to initiate call');
@@ -1189,8 +1222,8 @@ function PhoneNumbersPageContent() {
                     </div>
                     <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
                       phone.status === 'active'
-                        ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                        : 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
+                        ? 'bg-green-600 text-white dark:bg-green-500 dark:text-white'
+                        : 'bg-yellow-600 text-white dark:bg-yellow-500 dark:text-white'
                     }`}>
                       {phone.status}
                     </span>
@@ -1456,8 +1489,8 @@ function PhoneNumbersPageContent() {
                             <td className="px-6 py-4">
                               <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
                                 call.platform?.toLowerCase() === 'frejun'
-                                  ? 'bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400'
-                                  : 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400'
+                                  ? 'bg-purple-600 text-white dark:bg-purple-500 dark:text-white'
+                                  : 'bg-blue-600 text-white dark:bg-blue-500 dark:text-white'
                               }`}>
                                 {call.platform?.toUpperCase() || 'TWILIO'}
                               </span>
@@ -1465,12 +1498,12 @@ function PhoneNumbersPageContent() {
                             <td className="px-6 py-4">
                               <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
                                 call.status === 'completed'
-                                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                                  ? 'bg-green-600 text-white dark:bg-green-500 dark:text-white'
                                   : call.status === 'failed'
-                                  ? 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+                                  ? 'bg-red-600 text-white dark:bg-red-500 dark:text-white'
                                   : call.status === 'busy'
-                                  ? 'bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400'
-                                  : 'bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300'
+                                  ? 'bg-yellow-600 text-white dark:bg-yellow-500 dark:text-white'
+                                  : 'bg-gray-600 text-white dark:bg-gray-500 dark:text-white'
                               }`}>
                                 {call.status}
                               </span>
@@ -1495,14 +1528,9 @@ function PhoneNumbersPageContent() {
                             </td>
                             <td className="px-6 py-4">
                               {call.recording_url ? (
-                                <audio
-                                  controls
-                                  className="max-w-xs"
-                                  preload="metadata"
-                                >
-                                  <source src={call.recording_url} type="audio/mpeg" />
-                                  Your browser does not support audio playback.
-                                </audio>
+                                <span className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
+                                  Recording available
+                                </span>
                               ) : (
                                 <span className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                                   No recording
@@ -1627,7 +1655,7 @@ function PhoneNumbersPageContent() {
                       How it works
                     </p>
                     <p className={`text-sm ${isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
-                      After selecting a provider, you'll enter your API credentials. Once authenticated, your phone numbers will automatically sync with Convis AI.
+                      After selecting a provider, you&apos;ll enter your API credentials. Once authenticated, your phone numbers will automatically sync with Convis AI.
                     </p>
                   </div>
                 </div>
@@ -2145,7 +2173,7 @@ function PhoneNumbersPageContent() {
                     1. Search for available numbers by area code or digits<br />
                     2. Select a number from the results<br />
                     3. Choose an AI assistant to assign<br />
-                    4. Click "Purchase & Configure" - webhook is automatically set up!
+                    4. Click &quot;Purchase & Configure&quot; - webhook is automatically set up!
                   </p>
                 </div>
               )}
@@ -2343,6 +2371,66 @@ function PhoneNumbersPageContent() {
                 )}
               </div>
 
+              {/* Voice Configuration Section */}
+              {(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) && (
+                <div className={`mb-6 p-4 rounded-xl ${isDarkMode ? 'bg-purple-900/20 border border-purple-800' : 'bg-purple-50 border border-purple-200'}`}>
+                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-purple-300' : 'text-purple-900'}`}>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                    </svg>
+                    Voice Provider Configuration
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {selectedCallLog.asr_provider && (
+                      <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                        <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Speech-to-Text (ASR)
+                        </p>
+                        <p className={`text-sm font-semibold ${isDarkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                          {selectedCallLog.asr_provider}
+                        </p>
+                        {selectedCallLog.asr_model && (
+                          <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Model: {selectedCallLog.asr_model}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {selectedCallLog.tts_provider && (
+                      <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                        <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Text-to-Speech (TTS)
+                        </p>
+                        <p className={`text-sm font-semibold ${isDarkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                          {selectedCallLog.tts_provider}
+                        </p>
+                        {selectedCallLog.tts_model && (
+                          <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Model: {selectedCallLog.tts_model}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                    {selectedCallLog.llm_provider && (
+                      <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                        <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Language Model (LLM)
+                        </p>
+                        <p className={`text-sm font-semibold ${isDarkMode ? 'text-purple-300' : 'text-purple-700'}`}>
+                          {selectedCallLog.llm_provider}
+                        </p>
+                        {selectedCallLog.llm_model && (
+                          <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Model: {selectedCallLog.llm_model}
+                          </p>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {/* Recording Section */}
               {selectedCallLog.recording_url && (
                 <div className={`mb-6 p-4 rounded-xl ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
@@ -2352,32 +2440,9 @@ function PhoneNumbersPageContent() {
                     </svg>
                     Call Recording
                   </h3>
-                  <audio
-                    controls
-                    className="w-full"
-                    preload="metadata"
-                  >
-                    <source src={selectedCallLog.recording_url} type="audio/mpeg" />
-                    Your browser does not support audio playback.
-                  </audio>
-                  <div className="mt-3 flex gap-3">
-                    <a
-                      href={selectedCallLog.recording_url}
-                      download
-                      className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        isDarkMode
-                          ? 'bg-gray-600 hover:bg-gray-500 text-white'
-                          : 'bg-gray-200 hover:bg-gray-300 text-neutral-dark'
-                      }`}
-                    >
-                      <div className="flex items-center gap-2">
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                        </svg>
-                        Download Recording
-                      </div>
-                    </a>
-                  </div>
+                  <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-3`}>
+                    A recording is available for this call. Contact your administrator to access call recordings.
+                  </p>
                 </div>
               )}
 

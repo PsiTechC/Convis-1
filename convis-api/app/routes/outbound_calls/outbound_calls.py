@@ -5,7 +5,7 @@ import re
 import websockets
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import APIRouter, WebSocket, HTTPException, status
+from fastapi import APIRouter, WebSocket, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from fastapi.websockets import WebSocketDisconnect
 from twilio.rest import Client
@@ -505,12 +505,14 @@ async def make_outbound_call(assistant_id: str, request: OutboundCallRequest):
         # Clean domain (remove protocols and trailing slashes)
         domain = re.sub(r'(^\w+:|^)\/\/|\/+$', '', settings.api_base_url)
 
-        # Create TwiML to connect to media stream
+        # Create TwiML to connect to media stream with custom parameters
         outbound_twiml = (
             f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<Response>'
             f'<Connect>'
-            f'<Stream url="wss://{domain}/api/outbound-calls/media-stream/{assistant_id}" />'
+            f'<Stream url="wss://{domain}/api/outbound-calls/media-stream/{assistant_id}">'
+            f'<Parameter name="to_number" value="{phone_number}" />'
+            f'</Stream>'
             f'</Connect>'
             f'</Response>'
         )
@@ -518,14 +520,32 @@ async def make_outbound_call(assistant_id: str, request: OutboundCallRequest):
         logger.info(f"Calling {phone_number} from {phone_number_from}")
         logger.info(f"WebSocket URL: wss://{domain}/api/outbound-calls/media-stream/{assistant_id}")
 
-        # Make the call
+        # Make the call with recording enabled
         call = twilio_client.calls.create(
             from_=phone_number_from,
             to=phone_number,
-            twiml=outbound_twiml
+            twiml=outbound_twiml,
+            record=True,  # Enable call recording
+            recording_status_callback=f'{settings.api_base_url}/api/outbound-calls/recording-status',
+            recording_status_callback_method='POST'
+            # Note: transcribe parameter has been deprecated in newer Twilio SDK versions
+            # Transcription can be requested separately via the Recordings API if needed
         )
 
         logger.info(f"Call created with SID: {call.sid}")
+
+        # Build voice configuration info for tracking
+        voice_config = {
+            "asr_provider": assistant.get('asr_provider', 'openai'),
+            "asr_model": assistant.get('asr_model'),
+            "asr_language": assistant.get('asr_language', 'en'),
+            "tts_provider": assistant.get('tts_provider', 'openai'),
+            "tts_model": assistant.get('tts_model'),
+            "tts_voice": assistant.get('tts_voice'),
+            "llm_provider": assistant.get('llm_provider', 'openai'),
+            "llm_model": assistant.get('llm_model'),
+            "llm_max_tokens": assistant.get('llm_max_tokens', 150)
+        }
 
         # Store call in database for tracking
         call_logs_collection = db['call_logs']
@@ -540,11 +560,12 @@ async def make_outbound_call(assistant_id: str, request: OutboundCallRequest):
             "from_number": phone_number_from,
             "to_number": phone_number,
             "status": "initiated",
+            "voice_config": voice_config,  # Add voice provider configuration
             "created_at": datetime.utcnow(),
             "updated_at": datetime.utcnow()
         }
         call_logs_collection.insert_one(call_log)
-        logger.info(f"Call log stored for SID: {call.sid}")
+        logger.info(f"Call log stored for SID: {call.sid} with voice config: {voice_config}")
 
         return OutboundCallResponse(
             message="Outbound call initiated successfully",
@@ -925,6 +946,82 @@ IMPORTANT:
 
             scheduling_task.add_done_callback(_clear_task)
 
+        # Determine if we should use OpenAI Realtime API or custom providers
+        asr_provider = assistant.get('asr_provider', 'openai')
+        tts_provider = assistant.get('tts_provider', 'openai')
+        llm_provider = assistant.get('llm_provider', 'openai')
+
+        # Check if using all OpenAI providers (eligible for Realtime API)
+        # Accept both 'openai' and 'openai-realtime' as valid OpenAI Realtime providers
+        use_openai_realtime = (
+            asr_provider == 'openai' and
+            tts_provider == 'openai' and
+            (llm_provider == 'openai' or llm_provider == 'openai-realtime')
+        )
+
+        logger.info(f"[TWILIO] Provider Configuration: ASR={asr_provider}, TTS={tts_provider}, LLM={llm_provider}")
+        logger.info(f"[TWILIO] Using OpenAI Realtime API: {use_openai_realtime}")
+
+        # If using custom providers, delegate to custom provider handler
+        if not use_openai_realtime:
+            logger.info(f"[TWILIO] Routing to custom provider handler for assistant {assistant_id}")
+            from app.routes.frejun.custom_provider_stream import CustomProviderStreamHandler
+            from app.utils.assistant_keys import resolve_provider_keys
+
+            # Resolve all necessary API keys
+            provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+
+            # Get the primary API key (OpenAI for LLM if needed, or from resolved keys)
+            primary_api_key = provider_keys.get(llm_provider)
+            if not primary_api_key:
+                logger.error(f"No API key found for LLM provider: {llm_provider}")
+                await websocket.close(code=1008, reason=f"No API key configured for {llm_provider}")
+                return
+
+            # Create assistant config for custom provider handler
+            assistant_config = {
+                'system_message': system_message,
+                'voice': voice,
+                'temperature': temperature,
+                'greeting': call_greeting,
+                'asr_provider': asr_provider,
+                'tts_provider': tts_provider,
+                'llm_provider': llm_provider,
+                'asr_language': assistant.get('asr_language', 'en'),
+                'asr_model': assistant.get('asr_model'),
+                'asr_keywords': assistant.get('asr_keywords', []),
+                'tts_model': assistant.get('tts_model'),
+                'tts_speed': assistant.get('tts_speed', 1.0),
+                'tts_voice': assistant.get('tts_voice'),
+                'llm_model': assistant.get('llm_model'),
+                'llm_max_tokens': assistant.get('llm_max_tokens', 150),
+                'enable_precise_transcript': assistant.get('enable_precise_transcript', False),
+                'interruption_threshold': assistant.get('interruption_threshold', 2),
+                'response_rate': assistant.get('response_rate', 'balanced'),
+                'check_user_online': assistant.get('check_user_online', True),
+                'audio_buffer_size': assistant.get('audio_buffer_size', 200),
+                'provider_keys': provider_keys  # Pass all resolved keys
+            }
+
+            # Use custom provider stream handler
+            handler = CustomProviderStreamHandler(
+                websocket=websocket,
+                assistant_config=assistant_config,
+                openai_api_key=primary_api_key,
+                call_id="twilio_custom_provider_call"  # Twilio will provide call_sid via websocket
+            )
+
+            try:
+                await handler.handle_stream()
+            except Exception as e:
+                logger.error(f"Error in custom provider handler: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            finally:
+                await websocket.close()
+            return
+
+        # OpenAI Realtime API path (existing code)
         # OpenAI Realtime API requires temperature >= 0.6
         if temperature < 0.6:
             logger.warning(f"Temperature {temperature} is below OpenAI minimum. Adjusting to 0.6")
@@ -937,12 +1034,14 @@ IMPORTANT:
             await websocket.close(code=1008, reason=exc.detail)
             return
 
-        logger.info(f"Using configuration - Voice: {voice}, Temperature: {temperature}")
+        # Get the LLM model to use for OpenAI Realtime API
+        llm_model = assistant.get('llm_model', 'gpt-4o-mini-realtime-preview')
+        logger.info(f"[TWILIO] Using OpenAI Realtime API - Model: {llm_model}, Voice: {voice}, Temperature: {temperature}")
 
-        # Connect to OpenAI WebSocket using the assistant's API key (exact URL from original)
+        # Connect to OpenAI WebSocket using the assistant's API key and selected model
         # Increased timeout to handle connection delays
         async with websockets.connect(
-            f"wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview&temperature={temperature}",
+            f"wss://api.openai.com/v1/realtime?model={llm_model}&temperature={temperature}",
             additional_headers={
                 "Authorization": f"Bearer {openai_api_key}",
                 "OpenAI-Beta": "realtime=v1"
@@ -995,7 +1094,50 @@ IMPORTANT:
                             start_info = data['start']
                             stream_sid = start_info.get('streamSid')
                             call_sid = start_info.get('callSid') or start_info.get('call_sid') or call_sid
-                            logger.info(f"Outbound stream has started {stream_sid}")
+
+                            # Extract recipient number from custom parameters
+                            recipient_number = start_info.get('customParameters', {}).get('to_number')
+                            logger.info(f"Outbound stream started {stream_sid} to {recipient_number}")
+
+                            # Look up recipient name from database (leads or contacts)
+                            recipient_name = None
+                            if recipient_number and assistant_user_id:
+                                try:
+                                    # Check leads collection
+                                    lead = db['leads'].find_one({
+                                        "user_id": assistant_user_id,
+                                        "phone_number": recipient_number
+                                    })
+                                    if lead:
+                                        recipient_name = lead.get('name') or lead.get('first_name')
+                                        logger.info(f"Found recipient in leads: {recipient_name}")
+
+                                    # If not found, check contacts
+                                    if not recipient_name:
+                                        contact = db['contacts'].find_one({
+                                            "user_id": assistant_user_id,
+                                            "phone": recipient_number
+                                        })
+                                        if contact:
+                                            recipient_name = contact.get('name')
+                                            logger.info(f"Found recipient in contacts: {recipient_name}")
+                                except Exception as e:
+                                    logger.error(f"Error looking up recipient: {e}")
+
+                            # Update system message with recipient info if available
+                            if recipient_name:
+                                enhanced_system_message = f"{system_message}\n\nIMPORTANT: You are calling {recipient_name}. Greet them by name and use their name naturally during the conversation."
+                                # Send updated session with recipient context
+                                await send_session_update(
+                                    openai_ws,
+                                    enhanced_system_message,
+                                    voice,
+                                    temperature,
+                                    enable_interruptions=True,
+                                    greeting_text=f"Hello {recipient_name}! {call_greeting.replace('Hello!', '').strip()}"
+                                )
+                                logger.info(f"Updated greeting for outbound call to {recipient_name}")
+
                             response_start_timestamp_twilio = None
                             latest_media_timestamp = 0
                             last_assistant_item = None
@@ -1303,6 +1445,115 @@ async def check_number_allowed(twilio_client: Client, phone_number: str) -> bool
     except Exception as e:
         logger.error(f"Error checking phone number: {e}")
         return False
+
+@router.api_route("/recording-status", methods=["GET", "POST"])
+async def handle_outbound_recording_status(request: Request):
+    """
+    Callback endpoint for Twilio outbound call recording status updates.
+    Updates call log with recording URL when recording is completed.
+    """
+    try:
+        # Get form data from Twilio
+        if request.method == "POST":
+            form_data = await request.form()
+        else:
+            form_data = request.query_params
+
+        recording_sid = form_data.get('RecordingSid')
+        recording_url = form_data.get('RecordingUrl')
+        recording_status = form_data.get('RecordingStatus')
+        recording_duration = form_data.get('RecordingDuration')
+        call_sid = form_data.get('CallSid')
+
+        logger.info(f"Outbound recording status: {recording_status} for call {call_sid}")
+        logger.info(f"Recording URL: {recording_url}")
+
+        if recording_status == 'completed' and call_sid:
+            # Update call log with recording information
+            db = Database.get_db()
+            call_logs_collection = db['call_logs']
+
+            update_data = {
+                'recording_sid': recording_sid,
+                'recording_url': recording_url,
+                'recording_duration': int(recording_duration) if recording_duration else None,
+                'recording_status': recording_status,
+                'updated_at': datetime.utcnow()
+            }
+
+            result = call_logs_collection.update_one(
+                {'call_sid': call_sid},
+                {'$set': update_data}
+            )
+
+            if result.modified_count > 0:
+                logger.info(f"Updated outbound call log with recording URL for call {call_sid}")
+            else:
+                logger.warning(f"Outbound call log not found for call_sid: {call_sid}")
+
+        return {"status": "success", "message": "Recording status received"}
+
+    except Exception as error:
+        logger.error(f"Error handling outbound recording status: {str(error)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": str(error)}
+
+
+@router.api_route("/transcription-status", methods=["GET", "POST"])
+async def handle_outbound_transcription_status(request: Request):
+    """
+    Callback endpoint for Twilio outbound call transcription status updates.
+    Saves transcription text to database when transcription is completed.
+    """
+    try:
+        # Get form data from Twilio
+        if request.method == "POST":
+            form_data = await request.form()
+        else:
+            form_data = request.query_params
+
+        transcription_sid = form_data.get('TranscriptionSid')
+        transcription_text = form_data.get('TranscriptionText')
+        transcription_status = form_data.get('TranscriptionStatus')
+        recording_sid = form_data.get('RecordingSid')
+        call_sid = form_data.get('CallSid')
+        transcription_url = form_data.get('TranscriptionUrl')
+
+        logger.info(f"Outbound transcription status: {transcription_status} for call {call_sid}")
+
+        if transcription_status == 'completed' and call_sid and transcription_text:
+            # Update call log with transcription
+            db = Database.get_db()
+            call_logs_collection = db['call_logs']
+
+            update_data = {
+                'transcription_sid': transcription_sid,
+                'transcription_text': transcription_text,
+                'transcription_url': transcription_url,
+                'transcription_status': transcription_status,
+                'updated_at': datetime.utcnow()
+            }
+
+            result = call_logs_collection.update_one(
+                {'call_sid': call_sid},
+                {'$set': update_data}
+            )
+
+            if result.modified_count > 0:
+                logger.info(f"Updated outbound call log with transcription for call {call_sid}")
+                logger.info(f"Transcription preview: {transcription_text[:100]}...")
+            else:
+                logger.warning(f"Outbound call log not found for call_sid: {call_sid}")
+
+        return {"status": "success", "message": "Transcription status received"}
+
+    except Exception as error:
+        logger.error(f"Error handling outbound transcription status: {str(error)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": str(error)}
+
 
 async def get_twilio_phone_number(twilio_client: Client) -> str:
     """

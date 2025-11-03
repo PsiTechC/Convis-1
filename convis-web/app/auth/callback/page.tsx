@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useState } from 'react';
+import { Suspense, useCallback, useEffect, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 function AuthCallbackPageContent() {
@@ -9,11 +9,7 @@ function AuthCallbackPageContent() {
   const [status, setStatus] = useState<'loading' | 'success' | 'error'>('loading');
   const [message, setMessage] = useState('Processing authentication...');
 
-  useEffect(() => {
-    handleCallback();
-  }, []);
-
-  const handleCallback = async () => {
+  const handleCallback = useCallback(async () => {
     try {
       // Get the authorization code or token from URL params
       const code = searchParams.get('code');
@@ -55,7 +51,7 @@ function AuthCallbackPageContent() {
       });
 
       if (response.ok) {
-        const data = await response.json();
+        await response.json();
         setStatus('success');
         setMessage(`Successfully connected to ${provider}! Syncing your phone numbers...`);
 
@@ -79,7 +75,11 @@ function AuthCallbackPageContent() {
       setMessage('An error occurred during authentication.');
       setTimeout(() => router.push('/phone-numbers'), 2000);
     }
-  };
+  }, [router, searchParams]);
+
+  useEffect(() => {
+    void handleCallback();
+  }, [handleCallback]);
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary/10 to-primary/5 flex items-center justify-center p-4">

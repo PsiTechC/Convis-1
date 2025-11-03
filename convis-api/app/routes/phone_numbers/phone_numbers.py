@@ -19,6 +19,7 @@ from app.utils.twilio_helpers import decrypt_twilio_credentials
 from app.utils.frejun_helpers import decrypt_frejun_credentials
 from bson import ObjectId
 from datetime import datetime
+from typing import Any, List, Optional, Set
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 import httpx
@@ -27,6 +28,33 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _serialize_datetime(value: Any, *, fallback: bool = False) -> Optional[str]:
+    """
+    Coerce datetime-like values (datetime, str, None) into ISO strings.
+
+    Args:
+        value: Raw value from MongoDB/Twilio response.
+        fallback: Whether to return a current timestamp when the value is empty.
+
+    Returns:
+        ISO8601 datetime string or None.
+    """
+    if value is None:
+        return datetime.utcnow().isoformat() + "Z" if fallback else None
+
+    if isinstance(value, datetime):
+        iso_value = value.isoformat()
+        return iso_value if value.tzinfo else f"{iso_value}Z"
+
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped:
+            return stripped
+        return datetime.utcnow().isoformat() + "Z" if fallback else None
+
+    return datetime.utcnow().isoformat() + "Z" if fallback else None
 
 
 @router.get("/connection-status/{user_id}", response_model=ProviderConnectionResponse, status_code=status.HTTP_200_OK)
@@ -835,166 +863,169 @@ async def get_user_call_logs(user_id: str, limit: int = 100):
                 detail="Invalid user_id format"
             )
 
-        # Get user's phone numbers with assistant assignments
+        # Get user's phone numbers with assistant assignments (optional)
         phone_docs = list(phone_numbers_collection.find({"user_id": user_obj_id}))
 
-        if not phone_docs:
-            return CallLogListResponse(call_logs=[], total=0)
+        phone_to_assistant: dict[str, dict[str, str]] = {}
+        user_phone_numbers: list[str] = []
 
-        # Create a mapping of phone numbers to assistant info
-        phone_to_assistant = {}
-        for phone_doc in phone_docs:
-            if phone_doc.get("assigned_assistant_id"):
-                phone_to_assistant[phone_doc["phone_number"]] = {
-                    "id": str(phone_doc["assigned_assistant_id"]),
-                    "name": phone_doc.get("assigned_assistant_name", "Unknown Assistant")
+        if phone_docs:
+            for phone_doc in phone_docs:
+                user_phone_numbers.append(phone_doc["phone_number"])
+                if phone_doc.get("assigned_assistant_id"):
+                    phone_to_assistant[phone_doc["phone_number"]] = {
+                        "id": str(phone_doc["assigned_assistant_id"]),
+                        "name": phone_doc.get("assigned_assistant_name", "Unknown Assistant")
+                    }
+
+        # Always include call logs stored in our database (covers FreJun/outbound tracking)
+        call_logs: List[CallLogResponse] = []
+        processed_sids: Set[str] = set()
+        call_logs_collection = db['call_logs']
+        db_calls = list(
+            call_logs_collection.find({"user_id": user_obj_id})
+            .sort("created_at", -1)
+            .limit(limit)
+        )
+
+        for db_call in db_calls:
+            call_sid = db_call.get("call_sid")
+            if call_sid:
+                processed_sids.add(call_sid)
+
+            assistant_info = None
+            if db_call.get("assigned_assistant_id"):
+                assistant_info = {
+                    "id": str(db_call["assigned_assistant_id"]),
+                    "name": db_call.get("assistant_name", "Unknown Assistant")
+                }
+            elif db_call.get("assistant_id"):
+                assistant_info = {
+                    "id": str(db_call["assistant_id"]),
+                    "name": db_call.get("assistant_name", "Unknown Assistant")
                 }
 
-        # Get Twilio connection
+            # Get voice configuration from call log
+            voice_config = db_call.get("voice_config", {})
+
+            call_log = CallLogResponse(
+                id=call_sid or str(db_call["_id"]),
+                **{"from": db_call.get("from_number") or "Unknown"},
+                to=db_call.get("to_number") or "Unknown",
+                direction=db_call.get("direction", "outbound-api"),
+                status=db_call.get("status", "unknown"),
+                duration=db_call.get("duration"),
+                start_time=_serialize_datetime(db_call.get("start_time")),
+                end_time=_serialize_datetime(db_call.get("end_time")),
+                date_created=_serialize_datetime(
+                    db_call.get("created_at") or db_call.get("started_at"),
+                    fallback=True
+                ),
+                date_updated=_serialize_datetime(db_call.get("updated_at")),
+                answered_by=None,
+                caller_name=None,
+                forwarded_from=None,
+                parent_call_sid=None,
+                price=None,
+                price_unit=None,
+                recording_url=db_call.get("recording_url"),
+                transcription_text=db_call.get("transcription_text"),
+                assistant_id=assistant_info["id"] if assistant_info else None,
+                assistant_name=assistant_info["name"] if assistant_info else None,
+                queue_time=None,
+                asr_provider=voice_config.get("asr_provider"),
+                asr_model=voice_config.get("asr_model"),
+                tts_provider=voice_config.get("tts_provider"),
+                tts_model=voice_config.get("tts_model"),
+                llm_provider=voice_config.get("llm_provider"),
+                llm_model=voice_config.get("llm_model")
+            )
+            call_logs.append(call_log)
+
+        # Optionally augment with Twilio data if connection and credentials exist
         twilio_connection = provider_connections_collection.find_one({
             "user_id": user_obj_id,
             "provider": "twilio"
         })
 
-        if not twilio_connection:
-            return CallLogListResponse(call_logs=[], total=0)
+        if twilio_connection:
+            try:
+                account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
+                if not account_sid or not auth_token:
+                    raise RuntimeError("Stored Twilio credentials are missing or invalid")
 
-        # Fetch comprehensive call logs from Twilio
-        try:
-            account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
-            if not account_sid or not auth_token:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail="Stored Twilio credentials are missing or invalid. Please reconnect your provider."
-                )
+                client = Client(account_sid, auth_token)
+                calls = client.calls.list(limit=limit)
 
-            client = Client(account_sid, auth_token)
+                for call in calls:
+                    if call.sid in processed_sids:
+                        continue
 
-            # Get user's phone numbers for filtering
-            user_phone_numbers = [doc["phone_number"] for doc in phone_docs]
+                    from_number = getattr(call, 'from_', None) or getattr(call, 'from', None)
 
-            # Fetch calls from Twilio (both to and from user's numbers)
-            calls = client.calls.list(limit=limit)
+                    involves_user = False
+                    if user_phone_numbers:
+                        involves_user = (
+                            call.to in user_phone_numbers or
+                            from_number in user_phone_numbers
+                        )
+                    elif call.to or from_number:
+                        # No stored numbers, include everything linked to the user account
+                        involves_user = True
 
-            # Also fetch calls from our database (for outbound calls we tracked)
-            call_logs_collection = db['call_logs']
-            db_calls = list(call_logs_collection.find({"user_id": user_obj_id}).sort("created_at", -1).limit(limit))
+                    if not involves_user:
+                        continue
 
-            call_logs = []
-            processed_sids = set()  # Track which call SIDs we've already processed
+                    assistant_info = None
+                    if call.direction in ['inbound', 'trunking'] and call.to:
+                        assistant_info = phone_to_assistant.get(call.to)
 
-            # First, process database calls (our tracked outbound calls)
-            for db_call in db_calls:
-                call_sid = db_call.get("call_sid")
-                if call_sid:
-                    processed_sids.add(call_sid)
+                    call_log = CallLogResponse(
+                        id=call.sid,
+                        **{"from": getattr(call, 'from_formatted', None) or from_number or "Unknown"},
+                        to=getattr(call, 'to_formatted', None) or call.to or "Unknown",
+                        direction=call.direction,
+                        status=call.status,
+                        duration=int(call.duration) if call.duration else None,
+                        start_time=_serialize_datetime(call.start_time),
+                        end_time=_serialize_datetime(call.end_time),
+                        date_created=_serialize_datetime(call.date_created, fallback=True),
+                        date_updated=_serialize_datetime(call.date_updated),
+                        answered_by=getattr(call, 'answered_by', None),
+                        caller_name=getattr(call, 'caller_name', None),
+                        forwarded_from=getattr(call, 'forwarded_from', None),
+                        parent_call_sid=getattr(call, 'parent_call_sid', None),
+                        price=call.price if call.price else None,
+                        price_unit=getattr(call, 'price_unit', None) if call.price else None,
+                        recording_url=None,
+                        transcription_text=None,
+                        assistant_id=assistant_info["id"] if assistant_info else None,
+                        assistant_name=assistant_info["name"] if assistant_info else None,
+                        queue_time=getattr(call, 'queue_time', None),
+                        asr_provider=None,
+                        asr_model=None,
+                        tts_provider=None,
+                        tts_model=None,
+                        llm_provider=None,
+                        llm_model=None
+                    )
 
-                # Get assistant info
-                assistant_info = None
-                if db_call.get("assigned_assistant_id"):
-                    assistant_info = {
-                        "id": str(db_call["assigned_assistant_id"]),
-                        "name": db_call.get("assistant_name", "Unknown Assistant")
-                    }
-                elif db_call.get("assistant_id"):
-                    assistant_info = {
-                        "id": str(db_call["assistant_id"]),
-                        "name": db_call.get("assistant_name", "Unknown Assistant")
-                    }
+                    call_logs.append(call_log)
+            except TwilioRestException as e:
+                logger.warning(f"Twilio API error fetching call logs for user {user_id}: {str(e)}")
+            except Exception as e:
+                logger.error(f"Error fetching call logs from Twilio for user {user_id}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
+        else:
+            logger.info(f"No Twilio connection found for user {user_id}; returning database call logs only.")
 
-                call_log = CallLogResponse(
-                    id=call_sid or str(db_call["_id"]),
-                    **{"from": db_call.get("from_number", "Unknown")},
-                    to=db_call.get("to_number", "Unknown"),
-                    direction=db_call.get("direction", "outbound-api"),
-                    status=db_call.get("status", "unknown"),
-                    duration=db_call.get("duration"),
-                    start_time=db_call.get("start_time"),
-                    end_time=db_call.get("end_time"),
-                    date_created=db_call.get("created_at").isoformat() + "Z" if db_call.get("created_at") else None,
-                    date_updated=db_call.get("updated_at").isoformat() + "Z" if db_call.get("updated_at") else None,
-                    answered_by=None,
-                    caller_name=None,
-                    forwarded_from=None,
-                    parent_call_sid=None,
-                    price=None,
-                    price_unit=None,
-                    recording_url=None,
-                    assistant_id=assistant_info["id"] if assistant_info else None,
-                    assistant_name=assistant_info["name"] if assistant_info else None,
-                    queue_time=None
-                )
-                call_logs.append(call_log)
+        logger.info(f"Returning {len(call_logs)} call logs for user {user_id}")
 
-            # Then process Twilio calls (skip if already processed from database)
-            for call in calls:
-                # Skip if we already processed this call from database
-                if call.sid in processed_sids:
-                    continue
-                # Get from number (handle different formats)
-                from_number = getattr(call, 'from_', None) or getattr(call, 'from', None)
-
-                # Check if this call involves any of the user's phone numbers
-                involves_user = (
-                    call.to in user_phone_numbers or
-                    from_number in user_phone_numbers
-                )
-
-                if not involves_user:
-                    continue
-
-                # Determine which assistant handled this call (if inbound)
-                assistant_info = None
-                if call.direction in ['inbound', 'trunking']:
-                    assistant_info = phone_to_assistant.get(call.to)
-
-                # Build comprehensive call log
-                call_log = CallLogResponse(
-                    id=call.sid,
-                    **{"from": getattr(call, 'from_formatted', None) or from_number},
-                    to=getattr(call, 'to_formatted', None) or call.to,
-                    direction=call.direction,
-                    status=call.status,
-                    duration=int(call.duration) if call.duration else None,
-                    start_time=call.start_time.isoformat() + "Z" if call.start_time else None,
-                    end_time=call.end_time.isoformat() + "Z" if call.end_time else None,
-                    date_created=call.date_created.isoformat() + "Z" if call.date_created else datetime.utcnow().isoformat() + "Z",
-                    date_updated=call.date_updated.isoformat() + "Z" if call.date_updated else None,
-                    answered_by=getattr(call, 'answered_by', None),
-                    caller_name=getattr(call, 'caller_name', None),
-                    forwarded_from=getattr(call, 'forwarded_from', None),
-                    parent_call_sid=getattr(call, 'parent_call_sid', None),
-                    price=call.price if call.price else None,
-                    price_unit=getattr(call, 'price_unit', None) if call.price else None,
-                    recording_url=None,  # Will fetch if needed
-                    assistant_id=assistant_info["id"] if assistant_info else None,
-                    assistant_name=assistant_info["name"] if assistant_info else None,
-                    queue_time=getattr(call, 'queue_time', None)
-                )
-
-                call_logs.append(call_log)
-
-            logger.info(f"Fetched {len(call_logs)} call logs for user {user_id}")
-
-            return CallLogListResponse(
-                call_logs=call_logs,
-                total=len(call_logs)
-            )
-
-        except TwilioRestException as e:
-            logger.error(f"Twilio API error fetching call logs: {str(e)}")
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail=f"Error accessing Twilio: {str(e)}"
-            )
-        except Exception as e:
-            logger.error(f"Error fetching call logs from Twilio: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Error fetching call logs: {str(e)}"
-            )
+        return CallLogListResponse(
+            call_logs=call_logs,
+            total=len(call_logs)
+        )
 
     except HTTPException:
         raise

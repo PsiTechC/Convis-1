@@ -101,6 +101,12 @@ type StoredUser = {
   [key: string]: unknown;
 };
 
+type VerifiedCallerId = string | {
+  phone_number?: string | null;
+  friendly_name?: string | null;
+  [key: string]: unknown;
+};
+
 
 function formatDateTime(value?: string | null) {
   if (!value) return 'Not scheduled';
@@ -163,7 +169,7 @@ export default function CampaignDetailPage() {
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
   const [callToNumber, setCallToNumber] = useState('');
   const [isInitiatingCall, setIsInitiatingCall] = useState(false);
-  const [verifiedCallerIds, setVerifiedCallerIds] = useState<any[]>([]);
+  const [verifiedCallerIds, setVerifiedCallerIds] = useState<VerifiedCallerId[]>([]);
   const [isLoadingCallerIds, setIsLoadingCallerIds] = useState(false);
   const [activeCallSid, setActiveCallSid] = useState<string | null>(null);
   const [activeCallStatus, setActiveCallStatus] = useState('');
@@ -282,7 +288,7 @@ export default function CampaignDetailPage() {
     } catch (err) {
       console.error('Error fetching leads', err);
     }
-  }, [API_URL, resolvedCampaignId]);
+  }, [resolvedCampaignId]);
 
   const fetchActiveCalls = useCallback(async () => {
     if (!resolvedCampaignId) return;
@@ -302,7 +308,7 @@ export default function CampaignDetailPage() {
     } finally {
       setIsLoadingActiveCalls(false);
     }
-  }, [API_URL, resolvedCampaignId]);
+  }, [resolvedCampaignId]);
 
   useEffect(() => {
     if (!resolvedCampaignId) return;
@@ -481,7 +487,7 @@ export default function CampaignDetailPage() {
     } finally {
       setIsLoadingCallerIds(false);
     }
-  }, [API_URL, userIdValue]);
+  }, [userIdValue]);
 
   const checkCallStatus = useCallback(async (callSid: string) => {
     if (!userIdValue) return;
@@ -511,7 +517,7 @@ export default function CampaignDetailPage() {
     } catch (statusError) {
       console.error('Error checking call status', statusError);
     }
-  }, [API_URL, fetchActiveCalls, fetchLeads, fetchStats, userIdValue]);
+  }, [fetchActiveCalls, fetchLeads, fetchStats, userIdValue]);
 
   const hangupCall = useCallback(async () => {
     if (!activeCallSid || !userIdValue) return;
@@ -543,7 +549,7 @@ export default function CampaignDetailPage() {
       console.error('Error ending call', hangupError);
       alert('An error occurred while ending the call');
     }
-  }, [API_URL, activeCallSid, fetchActiveCalls, fetchLeads, fetchStats, userIdValue]);
+  }, [activeCallSid, fetchActiveCalls, fetchLeads, fetchStats, userIdValue]);
 
   const handleMakeCall = async () => {
     if (!assistantInfo?.id) {

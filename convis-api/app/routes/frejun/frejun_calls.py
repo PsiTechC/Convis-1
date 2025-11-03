@@ -11,14 +11,16 @@ import websockets
 import base64
 import audioop  # Built-in module for Python < 3.13
 from datetime import datetime
-from typing import Optional
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Body
+from typing import Optional, List
+from urllib.parse import urlparse
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, HTTPException, Body, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from bson import ObjectId
 
 from app.config.database import Database
 from app.config.settings import settings
+from .custom_provider_stream import handle_custom_provider_stream
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -53,7 +55,7 @@ def get_assistant_config(assistant_id: str):
     """Fetch AI assistant configuration from database"""
     try:
         db = Database.get_db()
-        assistants_collection = db['ai_assistants']
+        assistants_collection = db['assistants']
 
         if not ObjectId.is_valid(assistant_id):
             logger.error(f"Assistant ID {assistant_id} is not a valid ObjectId")
@@ -79,13 +81,15 @@ def get_assistant_config(assistant_id: str):
             "voice": assistant.get("voice", "alloy"),
             "temperature": assistant.get("temperature", 0.8),
             "user_id": user_id,
-            "greeting": assistant.get("greeting", "Hello! How can I help you today?"),
+            "greeting": assistant.get("call_greeting") or assistant.get("greeting", "Hello! Thanks for calling. How can I help you today?"),
+            "asr_provider": assistant.get("asr_provider", "openai"),
+            "tts_provider": assistant.get("tts_provider", "openai"),
         }
     except Exception as e:
         logger.error(f"Error fetching assistant config: {e}")
         return None
 
-def create_call_log(call_id: str, assistant_id: str, user_id: str, from_number: str, to_number: str, call_type: str = "inbound"):
+def create_call_log(call_id: str, assistant_id: str, user_id: str, from_number: str, to_number: str, call_type: str = "inbound", voice_config: Optional[dict] = None):
     """Create a call log entry in the database"""
     try:
         db = Database.get_db()
@@ -114,6 +118,10 @@ def create_call_log(call_id: str, assistant_id: str, user_id: str, from_number: 
             "updated_at": datetime.utcnow()
         }
 
+        # Add voice provider configuration if provided
+        if voice_config:
+            call_log_entry["voice_config"] = voice_config
+
         result = call_logs_collection.insert_one(call_log_entry)
         logger.info(f"Created FreJun call log: {result.inserted_id} for call {call_id}")
         return result.inserted_id
@@ -140,10 +148,107 @@ def update_call_log(call_id: str, update_data: dict):
         logger.error(f"Error updating call log: {e}")
         return False
 
+def normalize_phone_number(phone_number: Optional[str]) -> Optional[str]:
+    """
+    Normalize phone numbers for matching.
+
+    - Strips spaces, dashes, parentheses
+    - Converts leading 00 to +
+    - Ensures consistent + prefix for E.164 numbers
+    """
+    if not phone_number:
+        return None
+
+    phone_number = phone_number.strip()
+    if not phone_number:
+        return None
+
+    digits_only = "".join(ch for ch in phone_number if ch.isdigit())
+    if not digits_only:
+        return phone_number
+
+    if phone_number.startswith("+"):
+        return f"+{digits_only}"
+
+    if digits_only.startswith("00"):
+        return f"+{digits_only[2:]}"
+
+    return digits_only
+
+def build_phone_lookup_candidates(original_number: Optional[str]) -> List[str]:
+    """
+    Generate a list of candidate phone numbers to try when looking up in the database.
+    """
+    candidates: List[str] = []
+    if not original_number:
+        return candidates
+
+    normalized = normalize_phone_number(original_number)
+
+    # Preserve original format first
+    candidates.append(original_number)
+
+    # Add normalized variant
+    if normalized and normalized not in candidates:
+        candidates.append(normalized)
+
+    # Add + prefixed variant if missing
+    if normalized and not normalized.startswith("+"):
+        plus_prefixed = f"+{normalized}"
+        if plus_prefixed not in candidates:
+            candidates.append(plus_prefixed)
+
+    # Add digits-only variant without leading +
+    digits_only = "".join(ch for ch in normalized or "" if ch.isdigit())
+    if digits_only and digits_only not in candidates:
+        candidates.append(digits_only)
+
+    return candidates
+
+def resolve_server_domain(request: Optional[Request] = None) -> str:
+    """
+    Determine the publicly reachable server domain for webhook/websocket callbacks.
+
+    Priority:
+    1. Explicit settings (`API_BASE_URL`, `BASE_URL`)
+    2. Forwarded host/proto headers (ngrok, reverse proxies)
+    3. Request base URL
+    4. Production fallback
+    """
+    server_domain = (
+        settings.api_base_url
+        or settings.base_url
+        or os.getenv("API_BASE_URL")
+    )
+
+    if server_domain:
+        server_domain = server_domain.strip()
+    elif request is not None:
+        forwarded_host = request.headers.get("x-forwarded-host")
+        forwarded_proto = request.headers.get("x-forwarded-proto")
+
+        if forwarded_host:
+            scheme = (forwarded_proto or request.url.scheme or "https").strip()
+            server_domain = f"{scheme}://{forwarded_host}"
+        else:
+            server_domain = str(request.base_url)
+    else:
+        server_domain = ""
+
+    server_domain = server_domain.strip()
+
+    if not server_domain:
+        server_domain = "https://api.convis.ai"
+
+    if "://" not in server_domain:
+        server_domain = f"https://{server_domain.lstrip('/')}"
+
+    return server_domain.rstrip("/")
+
 # ==================== Call Flow Configuration ====================
 
 @router.post("/flow", status_code=200)
-async def get_call_flow(payload: dict = Body(...)):
+async def get_call_flow(request: Request, payload: Optional[dict] = Body(default=None)):
     """
     FreJun calls this endpoint to get the call flow configuration.
     This is called when an incoming call is received.
@@ -153,6 +258,10 @@ async def get_call_flow(payload: dict = Body(...)):
     - Audio chunk size
     - Whether to record the call
     """
+    # Handle empty or null payload
+    if payload is None:
+        payload = {}
+
     logger.info(f"[FREJUN] Raw flow request payload: {payload}")
 
     # Extract fields from payload (flexible format)
@@ -166,30 +275,88 @@ async def get_call_flow(payload: dict = Body(...)):
         # Look up which assistant is assigned to this phone number
         db = Database.get_db()
         phone_numbers_collection = db['phone_numbers']
+        assistants_collection = db['assistants']
 
-        phone_doc = phone_numbers_collection.find_one({"phone_number": to_number})
+        assistant_id: Optional[str] = None
+        assistant_doc: Optional[dict] = None
 
-        if not phone_doc:
-            logger.warning(f"[FREJUN] Phone number {to_number} not found in database")
+        lookup_candidates = build_phone_lookup_candidates(to_number)
+        phone_doc = None
+
+        for candidate in lookup_candidates:
+            phone_doc = phone_numbers_collection.find_one({"phone_number": candidate})
+            if phone_doc:
+                logger.info(f"[FREJUN] Matched phone number {to_number} to stored entry {candidate}")
+                break
+
+        if phone_doc:
+            assigned_assistant_id = phone_doc.get("assigned_assistant_id")
+
+            if not assigned_assistant_id:
+                logger.warning(f"[FREJUN] No assistant assigned to {to_number}")
+                return JSONResponse({
+                    "error": "No assistant assigned to this number"
+                }, status_code=404)
+
+            assistant_id = str(assigned_assistant_id)
+
+            if not ObjectId.is_valid(assistant_id):
+                logger.warning(f"[FREJUN] Assistant ID {assistant_id} for {to_number} is invalid")
+                return JSONResponse({
+                    "error": "Assistant configuration invalid"
+                }, status_code=400)
+        else:
+            assistant_token = (
+                request.query_params.get("assistant_token")
+                or request.query_params.get("assistantToken")
+                or payload.get("assistant_token")
+                or payload.get("assistantToken")
+                or payload.get("assistant-token")
+            )
+            assistant_id_param = (
+                request.query_params.get("assistant_id")
+                or request.query_params.get("assistantId")
+                or payload.get("assistant_id")
+                or payload.get("assistantId")
+            )
+
+            if assistant_token:
+                assistant_doc = assistants_collection.find_one({"frejun_flow_token": assistant_token})
+                if not assistant_doc:
+                    logger.warning(f"[FREJUN] Invalid assistant token provided: {assistant_token}")
+                    return JSONResponse({
+                        "error": "Assistant token not recognized"
+                    }, status_code=404)
+
+                assistant_id = str(assistant_doc["_id"])
+                logger.info(f"[FREJUN] Using assistant token mapping for assistant {assistant_id}")
+            elif assistant_id_param:
+                if not ObjectId.is_valid(assistant_id_param):
+                    logger.warning(f"[FREJUN] Invalid assistant_id provided: {assistant_id_param}")
+                    return JSONResponse({
+                        "error": "Assistant identifier is invalid"
+                    }, status_code=400)
+                assistant_exists = assistants_collection.find_one({"_id": ObjectId(assistant_id_param)})
+                if not assistant_exists:
+                    logger.warning(f"[FREJUN] Assistant {assistant_id_param} not found for direct mapping")
+                    return JSONResponse({
+                        "error": "Assistant not found"
+                    }, status_code=404)
+                assistant_id = assistant_id_param
+                logger.info(f"[FREJUN] Using direct assistant_id mapping for assistant {assistant_id}")
+            else:
+                logger.warning(
+                    f"[FREJUN] Phone number {to_number} not found and no assistant token provided (tried: {lookup_candidates})"
+                )
+                return JSONResponse({
+                    "error": "Phone number not configured, and no assistant token supplied"
+                }, status_code=404)
+
+        if not assistant_id:
+            logger.error("[FREJUN] Failed to resolve assistant for call flow request")
             return JSONResponse({
-                "error": "Phone number not configured"
-            }, status_code=404)
-
-        assigned_assistant_id = phone_doc.get("assigned_assistant_id")
-
-        if not assigned_assistant_id:
-            logger.warning(f"[FREJUN] No assistant assigned to {to_number}")
-            return JSONResponse({
-                "error": "No assistant assigned to this number"
-            }, status_code=404)
-
-        assistant_id = str(assigned_assistant_id)
-
-        if not ObjectId.is_valid(assistant_id):
-            logger.warning(f"[FREJUN] Assistant ID {assistant_id} for {to_number} is invalid")
-            return JSONResponse({
-                "error": "Assistant configuration invalid"
-            }, status_code=400)
+                "error": "Assistant could not be resolved"
+            }, status_code=500)
 
         # Get assistant configuration
         assistant_config = get_assistant_config(assistant_id)
@@ -200,31 +367,64 @@ async def get_call_flow(payload: dict = Body(...)):
                 "error": "Assistant configuration not found"
             }, status_code=404)
 
-        # Create call log
+        # Determine which WebSocket endpoint to use based on provider configuration
+        asr_provider = assistant_config.get("asr_provider", "openai")
+        tts_provider = assistant_config.get("tts_provider", "openai")
+        llm_provider = assistant_config.get("llm_provider", "openai")
+        llm_model = assistant_config.get("llm_model")
+
+        # Build voice configuration info
+        voice_config = {
+            "asr_provider": asr_provider,
+            "asr_model": assistant_config.get("asr_model"),
+            "asr_language": assistant_config.get("asr_language", "en"),
+            "tts_provider": tts_provider,
+            "tts_model": assistant_config.get("tts_model"),
+            "tts_voice": assistant_config.get("tts_voice"),
+            "llm_provider": llm_provider,
+            "llm_model": llm_model,
+            "llm_max_tokens": assistant_config.get("llm_max_tokens", 150)
+        }
+
+        # Create call log with voice configuration
         create_call_log(
             call_id=call_id,
             assistant_id=assistant_id,
             user_id=assistant_config["user_id"],
             from_number=from_number,
             to_number=to_number,
-            call_type="inbound"
+            call_type="inbound",
+            voice_config=voice_config
         )
 
-        # Get the server domain
-        server_domain = (
-            settings.api_base_url
-            or settings.base_url
-            or os.getenv("API_BASE_URL")
-            or "https://api.convis.ai"
-        )
-        server_domain = server_domain.rstrip("/")
-        ws_protocol = "wss" if server_domain.startswith("https") else "ws"
-        ws_domain = server_domain.replace("https://", "").replace("http://", "")
+        # Get the server domain dynamically (supports ngrok and reverse proxies)
+        server_domain = resolve_server_domain(request)
+        logger.info(f"[FREJUN] Resolved server domain for flow: {server_domain}")
+        parsed_domain = urlparse(server_domain)
+        scheme = parsed_domain.scheme or "https"
+        ws_protocol = "wss" if scheme == "https" else "ws"
+        ws_host = parsed_domain.netloc or parsed_domain.path
+        base_path = parsed_domain.path.rstrip("/") if parsed_domain.netloc and parsed_domain.path not in ("", "/") else ""
+
+        # Use custom provider flow if either ASR or TTS is not OpenAI
+        # Use OpenAI Realtime API only if BOTH are OpenAI (backward compatibility)
+        if asr_provider == "openai" and tts_provider == "openai":
+            # Use existing OpenAI Realtime API flow (UNCHANGED)
+            ws_endpoint = "media-stream"
+            logger.info(f"[FREJUN] Routing to OpenAI Realtime API (default)")
+        else:
+            # Use custom provider flow
+            ws_endpoint = "custom-media-stream"
+            logger.info(f"[FREJUN] Routing to Custom Providers (ASR={asr_provider}, TTS={tts_provider})")
 
         # Return call flow configuration with WebSocket streaming
+        ws_base = f"{ws_protocol}://{ws_host}"
+        if base_path:
+            ws_base = f"{ws_base}{base_path}"
+
         flow_config = {
             "type": "stream",
-            "ws_url": f"{ws_protocol}://{ws_domain}/api/frejun/media-stream/{assistant_id}?call_id={call_id}",
+            "ws_url": f"{ws_base}/api/frejun/{ws_endpoint}/{assistant_id}?call_id={call_id}",
             "chunk_size": 500,  # Audio chunk size in bytes
             "record": True  # Enable call recording
         }
@@ -335,7 +535,9 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
     if temperature < 0.6:
         logger.warning(f"[FREJUN WS] Temperature {temperature} below minimum, adjusting to 0.6")
         temperature = 0.6
-    greeting_text = assistant_config.get("greeting") or "Hello! How can I help you today?"
+
+    # Use the greeting exactly as configured, no default fallback
+    greeting_text = assistant_config.get("greeting", "Hello! Thanks for calling. How can I help you today?")
 
     # Update call log to in-progress
     update_call_log(call_id, {"call_status": "in-progress"})
@@ -343,10 +545,13 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
     openai_ws = None
 
     try:
-        # Connect to OpenAI Realtime API
-        openai_url = f"wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01"
+        # Get the LLM model to use for OpenAI Realtime API
+        llm_model = assistant_config.get('llm_model', 'gpt-4o-mini-realtime-preview')
 
-        logger.info(f"[FREJUN WS] Connecting to OpenAI Realtime API...")
+        # Connect to OpenAI Realtime API
+        openai_url = f"wss://api.openai.com/v1/realtime?model={llm_model}"
+
+        logger.info(f"[FREJUN WS] Connecting to OpenAI Realtime API with model: {llm_model}...")
 
         async with websockets.connect(
             openai_url,
@@ -386,11 +591,13 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             await openai_ws.send(json.dumps(session_config))
             logger.info(f"[FREJUN WS] Sent session configuration to OpenAI")
 
+            # Send greeting as assistant message (pre-generated response)
+            # This makes the AI start speaking immediately without waiting
             initial_message = {
                 "type": "conversation.item.create",
                 "item": {
                     "type": "message",
-                    "role": "user",
+                    "role": "assistant",
                     "content": [
                         {
                             "type": "input_text",
@@ -400,8 +607,10 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                 }
             }
             await openai_ws.send(json.dumps(initial_message))
+
+            # Trigger immediate audio generation for the greeting
             await openai_ws.send(json.dumps({"type": "response.create"}))
-            logger.info(f"[FREJUN WS] Sent initial greeting to OpenAI")
+            logger.info(f"[FREJUN WS] Sent initial greeting to OpenAI for immediate playback")
 
             resample_state_up = None
             resample_state_down = None
@@ -599,7 +808,7 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 # ==================== Outbound Calls ====================
 
 @router.post("/initiate-call", status_code=200)
-async def initiate_outbound_call(request: OutboundCallRequest):
+async def initiate_outbound_call(request: Request, payload: OutboundCallRequest):
     """
     Initiate an outbound call using FreJun (Teler) API.
 
@@ -608,11 +817,11 @@ async def initiate_outbound_call(request: OutboundCallRequest):
     2. Uses the teler client to initiate the call
     3. Returns the call ID
     """
-    logger.info(f"[FREJUN] Initiating outbound call from {request.from_number} to {request.to_number}")
+    logger.info(f"[FREJUN] Initiating outbound call from {payload.from_number} to {payload.to_number}")
 
     try:
         # Verify assistant exists
-        assistant_config = get_assistant_config(request.assistant_id)
+        assistant_config = get_assistant_config(payload.assistant_id)
 
         if not assistant_config:
             raise HTTPException(status_code=404, detail="Assistant not found")
@@ -627,36 +836,46 @@ async def initiate_outbound_call(request: OutboundCallRequest):
         from teler import AsyncClient
 
         # Get server domain for callbacks
-        server_domain = (
-            settings.api_base_url
-            or settings.base_url
-            or os.getenv("API_BASE_URL")
-            or "https://api.convis.ai"
-        )
-        server_domain = server_domain.rstrip("/")
+        server_domain = resolve_server_domain(request)
+        logger.info(f"[FREJUN] Using server domain for outbound callbacks: {server_domain}")
 
         # Create call using teler client
         async with AsyncClient(api_key=frejun_api_key, timeout=10) as client:
+            logger.info(f"[FREJUN] Calling teler API to create call...")
             call = await client.calls.create(
-                from_number=request.from_number,
-                to_number=request.to_number,
+                from_number=payload.from_number,
+                to_number=payload.to_number,
                 flow_url=f"{server_domain}/api/frejun/flow",
                 status_callback_url=f"{server_domain}/api/frejun/webhook",
                 record=True
             )
 
+            logger.info(f"[FREJUN] Call created, extracting ID from response: {type(call)}")
             call_id = call.id
-
             logger.info(f"[FREJUN] Call initiated successfully - Call ID: {call_id}")
 
-            # Create call log
+            # Build voice configuration info
+            voice_config = {
+                "asr_provider": assistant_config.get("asr_provider", "openai"),
+                "asr_model": assistant_config.get("asr_model"),
+                "asr_language": assistant_config.get("asr_language", "en"),
+                "tts_provider": assistant_config.get("tts_provider", "openai"),
+                "tts_model": assistant_config.get("tts_model"),
+                "tts_voice": assistant_config.get("tts_voice"),
+                "llm_provider": assistant_config.get("llm_provider", "openai"),
+                "llm_model": assistant_config.get("llm_model"),
+                "llm_max_tokens": assistant_config.get("llm_max_tokens", 150)
+            }
+
+            # Create call log with voice configuration
             create_call_log(
                 call_id=call_id,
-                assistant_id=request.assistant_id,
-                user_id=request.user_id,
-                from_number=request.from_number,
-                to_number=request.to_number,
-                call_type="outbound"
+                assistant_id=payload.assistant_id,
+                user_id=payload.user_id,
+                from_number=payload.from_number,
+                to_number=payload.to_number,
+                call_type="outbound",
+                voice_config=voice_config
             )
 
             return JSONResponse({
@@ -670,6 +889,25 @@ async def initiate_outbound_call(request: OutboundCallRequest):
     except Exception as e:
         logger.error(f"[FREJUN] Error initiating call: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to initiate call: {str(e)}")
+
+# ==================== Custom Provider WebSocket ====================
+
+@router.websocket("/custom-media-stream/{assistant_id}")
+async def custom_media_stream(websocket: WebSocket, assistant_id: str):
+    """
+    WebSocket endpoint for custom provider streaming (Deepgram, Cartesia, ElevenLabs, etc.)
+
+    This is used when an AI assistant is configured with custom ASR/TTS providers,
+    NOT using OpenAI Realtime API.
+    """
+    call_id = websocket.query_params.get("call_id", "unknown")
+    logger.info(f"[CUSTOM WS] New custom provider connection for assistant {assistant_id}, call {call_id}")
+
+    await handle_custom_provider_stream(
+        websocket=websocket,
+        assistant_id=assistant_id,
+        call_id=call_id
+    )
 
 # ==================== Health Check ====================
 

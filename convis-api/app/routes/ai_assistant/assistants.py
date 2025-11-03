@@ -18,6 +18,9 @@ from pydantic import BaseModel, validator
 import logging
 import os
 import httpx
+import secrets
+
+from app.config.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +65,49 @@ def resolve_tts_model_and_voice(requested_voice: str) -> tuple[str, str]:
 
     # All other voices map to the GPT-4o mini TTS model which exposes the richer catalogue
     return DEFAULT_TTS_MODEL, normalized
+
+
+def generate_unique_frejun_token(collection) -> str:
+    """
+    Generate a unique shareable token for FreJun flow routing.
+    """
+    while True:
+        token = secrets.token_urlsafe(16)
+        if not collection.find_one({"frejun_flow_token": token}):
+            return token
+
+
+def ensure_frejun_token(assistant: dict, collection) -> str:
+    """
+    Ensure an assistant document has a FreJun token assigned.
+    """
+    token = assistant.get("frejun_flow_token")
+    if token:
+        return token
+
+    now = datetime.utcnow()
+    token = generate_unique_frejun_token(collection)
+    collection.update_one(
+        {"_id": assistant["_id"]},
+        {"$set": {"frejun_flow_token": token, "updated_at": now}}
+    )
+    assistant["frejun_flow_token"] = token
+    assistant["updated_at"] = now
+    return token
+
+
+def build_frejun_flow_url(token: str) -> str:
+    """
+    Build the public FreJun flow URL for a given assistant token.
+    """
+    base_url = (
+        settings.api_base_url
+        or settings.base_url
+        or os.getenv("API_BASE_URL")
+        or "https://api.convis.ai"
+    )
+    base_url = base_url.rstrip("/")
+    return f"{base_url}/api/frejun/flow?assistant_token={token}"
 
 
 class VoiceDemoRequest(BaseModel):
@@ -222,7 +268,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
         if not call_greeting:
             call_greeting = DEFAULT_CALL_GREETING
 
-        # Validate calendar_account_id if provided
+        # Validate calendar_account_id if provided (legacy support)
         calendar_account_obj_id = None
         calendar_account_email = None
         if assistant_data.calendar_account_id:
@@ -247,8 +293,35 @@ async def create_assistant(assistant_data: AIAssistantCreate):
                     detail="Invalid calendar_account_id format"
                 )
 
+        # Validate calendar_account_ids if provided (new multi-calendar support)
+        calendar_account_obj_ids = []
+        if assistant_data.calendar_account_ids:
+            calendar_accounts_collection = db['calendar_accounts']
+            for cal_id in assistant_data.calendar_account_ids:
+                try:
+                    cal_obj_id = ObjectId(cal_id)
+                    calendar_account = calendar_accounts_collection.find_one({
+                        "_id": cal_obj_id,
+                        "user_id": user_obj_id
+                    })
+                    if not calendar_account:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Calendar account {cal_id} not found or does not belong to user"
+                        )
+                    calendar_account_obj_ids.append(cal_obj_id)
+                except Exception as e:
+                    if isinstance(e, HTTPException):
+                        raise
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid calendar_account_id format: {cal_id}"
+                    )
+
         # Create assistant document
         now = datetime.utcnow()
+        frejun_token = generate_unique_frejun_token(assistants_collection)
+
         assistant_doc = {
             "user_id": user_obj_id,
             "name": assistant_data.name,
@@ -257,6 +330,33 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             "temperature": assistant_data.temperature,
             "call_greeting": call_greeting,
             "calendar_account_id": calendar_account_obj_id,
+            "calendar_account_ids": calendar_account_obj_ids,
+            "calendar_enabled": assistant_data.calendar_enabled if assistant_data.calendar_enabled is not None else False,
+            "last_calendar_used_index": -1,
+            "asr_provider": assistant_data.asr_provider or "openai",
+            "tts_provider": assistant_data.tts_provider or "openai",
+            # ASR Configuration
+            "asr_language": assistant_data.asr_language or "en",
+            "asr_model": assistant_data.asr_model,
+            "asr_keywords": assistant_data.asr_keywords or [],
+            # TTS Configuration
+            "tts_model": assistant_data.tts_model,
+            "tts_voice": assistant_data.tts_voice or assistant_data.voice,
+            "tts_speed": assistant_data.tts_speed if assistant_data.tts_speed is not None else 1.0,
+            # Transcription & Interruptions
+            "enable_precise_transcript": assistant_data.enable_precise_transcript if assistant_data.enable_precise_transcript is not None else False,
+            "interruption_threshold": assistant_data.interruption_threshold if assistant_data.interruption_threshold is not None else 2,
+            # Voice Response Rate
+            "response_rate": assistant_data.response_rate or "balanced",
+            # User Online Detection
+            "check_user_online": assistant_data.check_user_online if assistant_data.check_user_online is not None else True,
+            # Buffer & Latency Settings
+            "audio_buffer_size": assistant_data.audio_buffer_size if assistant_data.audio_buffer_size is not None else 200,
+            # LLM Configuration
+            "llm_provider": assistant_data.llm_provider or "openai",
+            "llm_model": assistant_data.llm_model,
+            "llm_max_tokens": assistant_data.llm_max_tokens if assistant_data.llm_max_tokens is not None else 150,
+            "frejun_flow_token": frejun_token,
             "created_at": now,
             "updated_at": now
         }
@@ -278,6 +378,8 @@ async def create_assistant(assistant_data: AIAssistantCreate):
                 "provider": selected_key_doc['provider']
             }
 
+        has_api_key_value = bool(api_key_obj_id or encrypted_api_key)
+
         return AIAssistantResponse(
             id=str(result.inserted_id),
             user_id=str(assistant_data.user_id),
@@ -286,7 +388,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             voice=assistant_data.voice,
             temperature=assistant_data.temperature,
             call_greeting=call_greeting,
-            has_api_key=True,  # Just created with API key
+            has_api_key=has_api_key_value,
             api_key_id=api_key_metadata["id"] if api_key_metadata else None,
             api_key_label=api_key_metadata["label"] if api_key_metadata else None,
             api_key_provider=api_key_metadata["provider"] if api_key_metadata else ("openai" if encrypted_api_key else None),
@@ -294,6 +396,34 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             has_knowledge_base=False,
             calendar_account_id=str(calendar_account_obj_id) if calendar_account_obj_id else None,
             calendar_account_email=calendar_account_email,
+            calendar_account_ids=[str(obj_id) for obj_id in calendar_account_obj_ids],
+            calendar_enabled=assistant_data.calendar_enabled if assistant_data.calendar_enabled is not None else False,
+            last_calendar_used_index=-1,
+            frejun_flow_token=frejun_token,
+            frejun_flow_url=build_frejun_flow_url(frejun_token),
+            asr_provider=assistant_data.asr_provider or "openai",
+            tts_provider=assistant_data.tts_provider or "openai",
+            # ASR Configuration
+            asr_language=assistant_data.asr_language or "en",
+            asr_model=assistant_data.asr_model,
+            asr_keywords=assistant_data.asr_keywords or [],
+            # TTS Configuration
+            tts_model=assistant_data.tts_model,
+            tts_speed=assistant_data.tts_speed if assistant_data.tts_speed is not None else 1.0,
+            tts_voice=assistant_data.tts_voice or assistant_data.voice,
+            # Transcription & Interruptions
+            enable_precise_transcript=assistant_data.enable_precise_transcript if assistant_data.enable_precise_transcript is not None else False,
+            interruption_threshold=assistant_data.interruption_threshold if assistant_data.interruption_threshold is not None else 2,
+            # Voice Response Rate
+            response_rate=assistant_data.response_rate or "balanced",
+            # User Online Detection
+            check_user_online=assistant_data.check_user_online if assistant_data.check_user_online is not None else True,
+            # Buffer & Latency Settings
+            audio_buffer_size=assistant_data.audio_buffer_size if assistant_data.audio_buffer_size is not None else 200,
+            # LLM Configuration
+            llm_provider=assistant_data.llm_provider or "openai",
+            llm_model=assistant_data.llm_model,
+            llm_max_tokens=assistant_data.llm_max_tokens if assistant_data.llm_max_tokens is not None else 150,
             created_at=now.isoformat() + "Z",
             updated_at=now.isoformat() + "Z"
         )
@@ -350,6 +480,9 @@ async def get_user_assistants(user_id: str):
         assistants = []
 
         for assistant in assistants_cursor:
+            frejun_token = ensure_frejun_token(assistant, assistants_collection)
+            frejun_flow_url = build_frejun_flow_url(frejun_token)
+
             # Get knowledge base files
             kb_files = []
             for file_data in assistant.get('knowledge_base_files', []):
@@ -406,6 +539,31 @@ async def get_user_assistants(user_id: str):
                 has_knowledge_base=len(kb_files) > 0,
                 calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
                 calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
+                frejun_flow_token=frejun_token,
+                frejun_flow_url=frejun_flow_url,
+                asr_provider=assistant.get('asr_provider', 'openai'),
+                tts_provider=assistant.get('tts_provider', 'openai'),
+                # ASR Configuration
+                asr_language=assistant.get('asr_language', 'en'),
+                asr_model=assistant.get('asr_model'),
+                asr_keywords=assistant.get('asr_keywords', []),
+                # TTS Configuration
+                tts_model=assistant.get('tts_model'),
+                tts_speed=assistant.get('tts_speed', 1.0),
+                tts_voice=assistant.get('tts_voice') or assistant.get('voice'),
+                # Transcription & Interruptions
+                enable_precise_transcript=assistant.get('enable_precise_transcript', False),
+                interruption_threshold=assistant.get('interruption_threshold', 2),
+                # Voice Response Rate
+                response_rate=assistant.get('response_rate', 'balanced'),
+                # User Online Detection
+                check_user_online=assistant.get('check_user_online', True),
+                # Buffer & Latency Settings
+                audio_buffer_size=assistant.get('audio_buffer_size', 200),
+                # LLM Configuration
+                llm_provider=assistant.get('llm_provider', 'openai'),
+                llm_model=assistant.get('llm_model'),
+                llm_max_tokens=assistant.get('llm_max_tokens', 150),
                 created_at=assistant['created_at'].isoformat() + "Z",
                 updated_at=assistant['updated_at'].isoformat() + "Z"
             ))
@@ -465,6 +623,9 @@ async def get_assistant(assistant_id: str):
                 detail="AI assistant not found"
             )
 
+        frejun_token = ensure_frejun_token(assistant, assistants_collection)
+        frejun_flow_url = build_frejun_flow_url(frejun_token)
+
         kb_files = []
         for file_data in assistant.get('knowledge_base_files', []):
             kb_files.append(KnowledgeBaseFile(
@@ -517,6 +678,34 @@ async def get_assistant(assistant_id: str):
             has_knowledge_base=len(kb_files) > 0,
             calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
             calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
+            calendar_account_ids=[str(obj_id) for obj_id in assistant.get('calendar_account_ids', [])],
+            calendar_enabled=assistant.get('calendar_enabled', False),
+            last_calendar_used_index=assistant.get('last_calendar_used_index', -1),
+            frejun_flow_token=frejun_token,
+            frejun_flow_url=frejun_flow_url,
+            asr_provider=assistant.get('asr_provider', 'openai'),
+            tts_provider=assistant.get('tts_provider', 'openai'),
+            # ASR Configuration
+            asr_language=assistant.get('asr_language', 'en'),
+            asr_model=assistant.get('asr_model'),
+            asr_keywords=assistant.get('asr_keywords', []),
+            # TTS Configuration
+            tts_model=assistant.get('tts_model'),
+            tts_speed=assistant.get('tts_speed', 1.0),
+            tts_voice=assistant.get('tts_voice') or assistant.get('voice'),
+            # Transcription & Interruptions
+            enable_precise_transcript=assistant.get('enable_precise_transcript', False),
+            interruption_threshold=assistant.get('interruption_threshold', 2),
+            # Voice Response Rate
+            response_rate=assistant.get('response_rate', 'balanced'),
+            # User Online Detection
+            check_user_online=assistant.get('check_user_online', True),
+            # Buffer & Latency Settings
+            audio_buffer_size=assistant.get('audio_buffer_size', 200),
+            # LLM Configuration
+            llm_provider=assistant.get('llm_provider', 'openai'),
+            llm_model=assistant.get('llm_model'),
+            llm_max_tokens=assistant.get('llm_max_tokens', 150),
             created_at=assistant['created_at'].isoformat() + "Z",
             updated_at=assistant['updated_at'].isoformat() + "Z"
         )
@@ -614,7 +803,41 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             update_doc["openai_api_key"] = encryption_service.encrypt(update_data.openai_api_key)
             update_doc["api_key_id"] = None
 
-        # Handle calendar_account_id update
+        # Handle provider updates
+        if update_data.asr_provider is not None:
+            update_doc["asr_provider"] = update_data.asr_provider
+        if update_data.tts_provider is not None:
+            update_doc["tts_provider"] = update_data.tts_provider
+        if update_data.asr_language is not None:
+            update_doc["asr_language"] = update_data.asr_language
+        if update_data.asr_model is not None:
+            update_doc["asr_model"] = update_data.asr_model
+        if update_data.asr_keywords is not None:
+            update_doc["asr_keywords"] = update_data.asr_keywords
+        if update_data.tts_model is not None:
+            update_doc["tts_model"] = update_data.tts_model
+        if update_data.tts_speed is not None:
+            update_doc["tts_speed"] = update_data.tts_speed
+        if update_data.tts_voice is not None:
+            update_doc["tts_voice"] = update_data.tts_voice
+        if update_data.enable_precise_transcript is not None:
+            update_doc["enable_precise_transcript"] = update_data.enable_precise_transcript
+        if update_data.interruption_threshold is not None:
+            update_doc["interruption_threshold"] = update_data.interruption_threshold
+        if update_data.response_rate is not None:
+            update_doc["response_rate"] = update_data.response_rate
+        if update_data.check_user_online is not None:
+            update_doc["check_user_online"] = update_data.check_user_online
+        if update_data.audio_buffer_size is not None:
+            update_doc["audio_buffer_size"] = update_data.audio_buffer_size
+        if update_data.llm_provider is not None:
+            update_doc["llm_provider"] = update_data.llm_provider
+        if update_data.llm_model is not None:
+            update_doc["llm_model"] = update_data.llm_model
+        if update_data.llm_max_tokens is not None:
+            update_doc["llm_max_tokens"] = update_data.llm_max_tokens
+
+        # Handle calendar_account_id update (legacy support)
         if update_data.calendar_account_id is not None:
             if update_data.calendar_account_id == "":
                 update_doc["calendar_account_id"] = None
@@ -638,6 +861,36 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
                     )
                 update_doc["calendar_account_id"] = calendar_account_obj_id
 
+        # Handle calendar_account_ids update (new multi-calendar support)
+        if update_data.calendar_account_ids is not None:
+            calendar_accounts_collection = db['calendar_accounts']
+            calendar_account_obj_ids = []
+            for cal_id in update_data.calendar_account_ids:
+                try:
+                    cal_obj_id = ObjectId(cal_id)
+                    calendar_account = calendar_accounts_collection.find_one({
+                        "_id": cal_obj_id,
+                        "user_id": assistant['user_id']
+                    })
+                    if not calendar_account:
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Calendar account {cal_id} not found or does not belong to user"
+                        )
+                    calendar_account_obj_ids.append(cal_obj_id)
+                except Exception as e:
+                    if isinstance(e, HTTPException):
+                        raise
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail=f"Invalid calendar_account_id format: {cal_id}"
+                    )
+            update_doc["calendar_account_ids"] = calendar_account_obj_ids
+
+        # Handle calendar_enabled update
+        if update_data.calendar_enabled is not None:
+            update_doc["calendar_enabled"] = update_data.calendar_enabled
+
         # Update the assistant
         assistants_collection.update_one(
             {"_id": assistant_obj_id},
@@ -648,6 +901,9 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
         updated_assistant = assistants_collection.find_one({"_id": assistant_obj_id})
 
         logger.info(f"AI assistant {assistant_id} updated successfully")
+
+        frejun_token = ensure_frejun_token(updated_assistant, assistants_collection)
+        frejun_flow_url = build_frejun_flow_url(frejun_token)
 
         # Get knowledge base files
         kb_files = []
@@ -701,6 +957,34 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             has_knowledge_base=len(kb_files) > 0,
             calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
             calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
+            calendar_account_ids=[str(obj_id) for obj_id in assistant.get('calendar_account_ids', [])],
+            calendar_enabled=assistant.get('calendar_enabled', False),
+            last_calendar_used_index=assistant.get('last_calendar_used_index', -1),
+            frejun_flow_token=frejun_token,
+            frejun_flow_url=frejun_flow_url,
+            asr_provider=updated_assistant.get('asr_provider', 'openai'),
+            tts_provider=updated_assistant.get('tts_provider', 'openai'),
+            # ASR Configuration
+            asr_language=updated_assistant.get('asr_language', 'en'),
+            asr_model=updated_assistant.get('asr_model'),
+            asr_keywords=updated_assistant.get('asr_keywords', []),
+            # TTS Configuration
+            tts_model=updated_assistant.get('tts_model'),
+            tts_speed=updated_assistant.get('tts_speed', 1.0),
+            tts_voice=updated_assistant.get('tts_voice') or updated_assistant.get('voice'),
+            # Transcription & Interruptions
+            enable_precise_transcript=updated_assistant.get('enable_precise_transcript', False),
+            interruption_threshold=updated_assistant.get('interruption_threshold', 2),
+            # Voice Response Rate
+            response_rate=updated_assistant.get('response_rate', 'balanced'),
+            # User Online Detection
+            check_user_online=updated_assistant.get('check_user_online', True),
+            # Buffer & Latency Settings
+            audio_buffer_size=updated_assistant.get('audio_buffer_size', 200),
+            # LLM Configuration
+            llm_provider=updated_assistant.get('llm_provider', 'openai'),
+            llm_model=updated_assistant.get('llm_model'),
+            llm_max_tokens=updated_assistant.get('llm_max_tokens', 150),
             created_at=updated_assistant['created_at'].isoformat() + "Z",
             updated_at=updated_assistant['updated_at'].isoformat() + "Z"
         )
