@@ -61,6 +61,19 @@ class CustomProviderStreamHandler:
         self.tts_voice = assistant_config.get('tts_voice', self.voice)
         self.temperature = assistant_config.get('temperature', 0.8)
         self.system_message = assistant_config.get('system_message', 'You are a helpful AI assistant.')
+
+        # Add language instruction to system message if not English
+        bot_language = assistant_config.get('bot_language', 'en')
+        if bot_language and bot_language != 'en':
+            language_names = {
+                'hi': 'Hindi', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+                'pt': 'Portuguese', 'it': 'Italian', 'ja': 'Japanese', 'ko': 'Korean',
+                'ar': 'Arabic', 'ru': 'Russian', 'zh': 'Chinese', 'nl': 'Dutch',
+                'pl': 'Polish', 'tr': 'Turkish'
+            }
+            language_name = language_names.get(bot_language, bot_language.upper())
+            self.system_message = f"{self.system_message}\n\nIMPORTANT: You MUST speak and respond ONLY in {language_name}. All your responses should be in {language_name} language."
+
         # Use greeting exactly as configured by user
         self.greeting = assistant_config.get('greeting', 'Hello! Thanks for calling. How can I help you today?')
 
@@ -531,6 +544,7 @@ async def handle_custom_provider_stream(
             "llm_provider": assistant.get("llm_provider", "openai"),
             "llm_model": assistant.get("llm_model"),
             "llm_max_tokens": assistant.get("llm_max_tokens", 150),
+            "bot_language": assistant.get("bot_language", "en"),
         }
 
         logger.info(f"[CUSTOM] Starting stream with providers: ASR={assistant_config['asr_provider']}, TTS={assistant_config['tts_provider']}")

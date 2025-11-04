@@ -356,6 +356,8 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             "llm_provider": assistant_data.llm_provider or "openai",
             "llm_model": assistant_data.llm_model,
             "llm_max_tokens": assistant_data.llm_max_tokens if assistant_data.llm_max_tokens is not None else 150,
+            # Language Configuration
+            "bot_language": assistant_data.bot_language or "en",
             "frejun_flow_token": frejun_token,
             "created_at": now,
             "updated_at": now
@@ -424,6 +426,8 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             llm_provider=assistant_data.llm_provider or "openai",
             llm_model=assistant_data.llm_model,
             llm_max_tokens=assistant_data.llm_max_tokens if assistant_data.llm_max_tokens is not None else 150,
+            # Language Configuration
+            bot_language=assistant_data.bot_language or "en",
             created_at=now.isoformat() + "Z",
             updated_at=now.isoformat() + "Z"
         )
@@ -564,6 +568,11 @@ async def get_user_assistants(user_id: str):
                 llm_provider=assistant.get('llm_provider', 'openai'),
                 llm_model=assistant.get('llm_model'),
                 llm_max_tokens=assistant.get('llm_max_tokens', 150),
+                # Language Configuration
+                bot_language=assistant.get('bot_language', 'en'),
+                calendar_account_ids=[str(obj_id) for obj_id in assistant.get('calendar_account_ids', [])],
+                calendar_enabled=assistant.get('calendar_enabled', False),
+                last_calendar_used_index=assistant.get('last_calendar_used_index', -1),
                 created_at=assistant['created_at'].isoformat() + "Z",
                 updated_at=assistant['updated_at'].isoformat() + "Z"
             ))
@@ -706,6 +715,8 @@ async def get_assistant(assistant_id: str):
             llm_provider=assistant.get('llm_provider', 'openai'),
             llm_model=assistant.get('llm_model'),
             llm_max_tokens=assistant.get('llm_max_tokens', 150),
+            # Language Configuration
+            bot_language=assistant.get('bot_language', 'en'),
             created_at=assistant['created_at'].isoformat() + "Z",
             updated_at=assistant['updated_at'].isoformat() + "Z"
         )
@@ -836,6 +847,8 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             update_doc["llm_model"] = update_data.llm_model
         if update_data.llm_max_tokens is not None:
             update_doc["llm_max_tokens"] = update_data.llm_max_tokens
+        if update_data.bot_language is not None:
+            update_doc["bot_language"] = update_data.bot_language
 
         # Handle calendar_account_id update (legacy support)
         if update_data.calendar_account_id is not None:
@@ -985,6 +998,8 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             llm_provider=updated_assistant.get('llm_provider', 'openai'),
             llm_model=updated_assistant.get('llm_model'),
             llm_max_tokens=updated_assistant.get('llm_max_tokens', 150),
+            # Language Configuration
+            bot_language=updated_assistant.get('bot_language', 'en'),
             created_at=updated_assistant['created_at'].isoformat() + "Z",
             updated_at=updated_assistant['updated_at'].isoformat() + "Z"
         )

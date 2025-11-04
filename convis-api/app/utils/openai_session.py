@@ -42,7 +42,8 @@ async def send_session_update(
     voice: str,
     temperature: float = 0.8,
     enable_interruptions: bool = True,
-    greeting_text: Optional[str] = None
+    greeting_text: Optional[str] = None,
+    max_response_output_tokens: Optional[int] = None
 ):
     """
     Send session update to OpenAI WebSocket with dynamic configuration.
@@ -56,21 +57,28 @@ async def send_session_update(
         temperature: Temperature for response generation (0.0-1.0)
         enable_interruptions: Whether to enable interruption handling
         greeting_text: Optional custom greeting text (passed to send_initial_conversation_item)
+        max_response_output_tokens: Optional max tokens for AI responses (e.g., 'inf', 50-4096)
     """
-    session_update = {
-        "type": "session.update",
-        "session": {
-            "turn_detection": {"type": "server_vad"},
-            "input_audio_format": "g711_ulaw",
-            "output_audio_format": "g711_ulaw",
-            "voice": voice,
-            "instructions": system_message,
-            "modalities": ["audio", "text"],
-            "temperature": temperature,
-        }
+    session_config = {
+        "turn_detection": {"type": "server_vad"},
+        "input_audio_format": "g711_ulaw",
+        "output_audio_format": "g711_ulaw",
+        "voice": voice,
+        "instructions": system_message,
+        "modalities": ["audio", "text"],
+        "temperature": temperature,
     }
 
-    logger.info(f'Sending session update with voice={voice}, temperature={temperature}')
+    # Add max_response_output_tokens if specified
+    if max_response_output_tokens is not None:
+        session_config["max_response_output_tokens"] = max_response_output_tokens
+
+    session_update = {
+        "type": "session.update",
+        "session": session_config
+    }
+
+    logger.info(f'Sending session update with voice={voice}, temperature={temperature}, max_tokens={max_response_output_tokens}')
     logger.info('Session modalities: ["audio", "text"], formats: g711_ulaw')
     await openai_ws.send(json.dumps(session_update))
 
