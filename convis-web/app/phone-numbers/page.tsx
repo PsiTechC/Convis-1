@@ -142,6 +142,9 @@ function PhoneNumbersPageContent() {
   const [activeCallNumbers, setActiveCallNumbers] = useState<Set<string>>(new Set());
   const [isDialPadOpen, setIsDialPadOpen] = useState(false);
   const [providerFilter, setProviderFilter] = useState<'all' | 'twilio' | 'frejun'>('all');
+  const [isAddFrejunModalOpen, setIsAddFrejunModalOpen] = useState(false);
+  const [frejunPhoneNumber, setFrejunPhoneNumber] = useState('');
+  const [isAddingFrejun, setIsAddingFrejun] = useState(false);
 
   // Active call tracking
   const [activeCallSid, setActiveCallSid] = useState<string | null>(null);
@@ -899,6 +902,47 @@ function PhoneNumbersPageContent() {
     }
   };
 
+  const handleAddFrejunNumber = async () => {
+    try {
+      setIsAddingFrejun(true);
+      const token = localStorage.getItem('token');
+      const userId = user?.id || user?._id || user?.clientId;
+
+      if (!userId) {
+        throw new Error('User ID not found');
+      }
+
+      // Validate phone number format
+      if (!frejunPhoneNumber.trim()) {
+        alert('Please enter a phone number');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/phone-numbers/add-frejun-number/${userId}?phone_number=${encodeURIComponent(frejunPhoneNumber)}`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        alert('FreJun number added successfully!');
+        setIsAddFrejunModalOpen(false);
+        setFrejunPhoneNumber('');
+        fetchPhoneNumbers(userId, token);
+      } else {
+        const error = await response.json();
+        throw new Error(error.detail || 'Failed to add FreJun number');
+      }
+    } catch (error) {
+      console.error('Error adding FreJun number:', error);
+      alert(error instanceof Error ? error.message : 'Failed to add FreJun number');
+    } finally {
+      setIsAddingFrejun(false);
+    }
+  };
+
   const formatDuration = (seconds?: number | null): string => {
     if (!seconds || seconds === 0) return '-';
     const mins = Math.floor(seconds / 60);
@@ -1178,15 +1222,17 @@ function PhoneNumbersPageContent() {
               </div>
 
               {/* Provider-Categorized Phone Numbers */}
-              {['twilio', 'frejun'].map(provider => {
+              {['twilio'].map(provider => {
                 const providerNumbers = phoneNumbers.filter(p => p.provider.toLowerCase() === provider);
                 if (providerNumbers.length === 0) return null;
 
                 return (
                   <div key={provider} className="mb-8">
-                    <h3 className={`text-lg font-bold mb-4 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                      {provider.charAt(0).toUpperCase() + provider.slice(1)} Numbers ({providerNumbers.length})
-                    </h3>
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                        {provider.charAt(0).toUpperCase() + provider.slice(1)} Numbers ({providerNumbers.length})
+                      </h3>
+                    </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                       {providerNumbers.map((phone) => (
                 <div
@@ -1332,6 +1378,128 @@ function PhoneNumbersPageContent() {
                   </div>
                 );
               })}
+
+              {/* Other Providers Section - Always Show */}
+              <div className="mb-8">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className={`text-lg font-bold ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                    Other Providers ({phoneNumbers.filter(p => p.provider.toLowerCase() === 'frejun').length})
+                  </h3>
+                  <button
+                    onClick={() => setIsAddFrejunModalOpen(true)}
+                    className="px-4 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-200 flex items-center gap-2 font-semibold text-sm"
+                  >
+                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                    Add Number
+                  </button>
+                </div>
+
+                {phoneNumbers.filter(p => p.provider.toLowerCase() === 'frejun').length > 0 ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {phoneNumbers.filter(p => p.provider.toLowerCase() === 'frejun').map((phone) => (
+                      <div
+                        key={phone.id}
+                        className={`${isDarkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-neutral-mid/10'} border rounded-2xl p-6 hover:shadow-lg transition-all duration-200`}
+                      >
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex items-center gap-3">
+                            <div className="w-12 h-12 bg-gradient-to-br from-cyan-500 to-blue-600 rounded-xl flex items-center justify-center relative">
+                              <svg className="w-6 h-6 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                              </svg>
+                              {activeCallNumbers.has(phone.phone_number) && (
+                                <div className="absolute -top-1 -right-1 w-4 h-4 bg-green-500 rounded-full border-2 border-white animate-pulse"></div>
+                              )}
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <h3 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                                  {phone.phone_number}
+                                </h3>
+                                {activeCallNumbers.has(phone.phone_number) && (
+                                  <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 animate-pulse">
+                                    Live Call
+                                  </span>
+                                )}
+                              </div>
+                              <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                                {phone.provider}
+                              </p>
+                            </div>
+                          </div>
+                        </div>
+
+                        {phone.assigned_assistant_name && (
+                          <div className={`p-3 rounded-xl mb-4 ${isDarkMode ? 'bg-gray-700/50' : 'bg-gray-50'}`}>
+                            <div className="flex items-start gap-2">
+                              <svg className="w-5 h-5 text-primary mt-0.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                              </svg>
+                              <div className="flex-1">
+                                <p className={`text-xs font-medium mb-1 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                                  AI Assistant Assigned
+                                </p>
+                                <p className={`text-sm font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                                  {phone.assigned_assistant_name}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2">
+                          <button
+                            onClick={() => handleOpenAssignModal(phone)}
+                            className={`flex-1 px-4 py-2 rounded-xl ${isDarkMode ? 'bg-primary/20 hover:bg-primary/30 text-primary' : 'bg-primary/10 hover:bg-primary/20 text-primary'} transition-colors text-sm font-medium flex items-center justify-center gap-2`}
+                          >
+                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                            {phone.assigned_assistant_name ? 'Change' : 'Assign'} AI
+                          </button>
+                          {phone.assigned_assistant_name && (
+                            <button
+                              onClick={() => handleUnassignAssistant(phone)}
+                              className={`px-4 py-2 rounded-xl ${isDarkMode ? 'bg-red-900/30 hover:bg-red-900/50 text-red-400' : 'bg-red-50 hover:bg-red-100 text-red-600'} transition-colors`}
+                              title="Unassign AI Assistant"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                              </svg>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className={`${isDarkMode ? 'bg-gray-800/50 border-gray-700' : 'bg-gray-50 border-gray-200'} border-2 border-dashed rounded-2xl p-8 text-center`}>
+                    <div className="w-16 h-16 bg-gradient-to-br from-cyan-500/20 to-blue-600/20 rounded-full flex items-center justify-center mx-auto mb-4">
+                      <svg className="w-8 h-8 text-cyan-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                    </div>
+                    <h4 className={`text-lg font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                      No Other Provider Numbers Yet
+                    </h4>
+                    <p className={`mb-4 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Add numbers from FreJun or other telephony providers
+                    </p>
+                    <button
+                      onClick={() => setIsAddFrejunModalOpen(true)}
+                      className="px-6 py-2 bg-gradient-to-r from-cyan-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-200 inline-flex items-center gap-2 font-semibold text-sm"
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                      </svg>
+                      Add Your First Number
+                    </button>
+                  </div>
+                )}
+              </div>
             </>
           ) : (
             <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl p-12 text-center`}>
@@ -2686,6 +2854,105 @@ function PhoneNumbersPageContent() {
           className="fixed inset-0 bg-black/50 z-30 lg:hidden"
           onClick={() => setIsMobileMenuOpen(false)}
         ></div>
+      )}
+
+      {/* Add FreJun Number Modal */}
+      {isAddFrejunModalOpen && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl shadow-2xl w-full max-w-md`}>
+            {/* Modal Header */}
+            <div className={`px-6 py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'}`}>
+              <div className="flex items-center justify-between">
+                <h3 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                  Add Other Provider Number
+                </h3>
+                <button
+                  onClick={() => {
+                    setIsAddFrejunModalOpen(false);
+                    setFrejunPhoneNumber('');
+                  }}
+                  className={`${isDarkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'} transition-colors`}
+                >
+                  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6 space-y-4">
+              <div>
+                <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
+                  Phone Number (E.164 Format)
+                </label>
+                <input
+                  type="text"
+                  value={frejunPhoneNumber}
+                  onChange={(e) => setFrejunPhoneNumber(e.target.value)}
+                  placeholder="+1234567890"
+                  className={`w-full px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' : 'bg-neutral-light border-neutral-mid/20 text-neutral-dark'} border focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all font-mono text-sm`}
+                />
+                <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                  Example: +19175551234 (must include country code)
+                </p>
+              </div>
+
+              <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-blue-900/20 border-blue-800' : 'bg-blue-50 border-blue-200'} border`}>
+                <div className="flex items-start gap-2">
+                  <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  <div>
+                    <p className={`text-sm font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-900'}`}>
+                      How to Add
+                    </p>
+                    <p className={`text-xs mt-1 ${isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                      • Number must be in E.164 format (+1234567890)
+                      <br />
+                      • Must be configured in your FreJun/other provider account
+                      <br />
+                      • Set provider webhooks to https://api.convis.ai/api/frejun/flow
+                      <br />
+                      • After adding, assign an AI assistant to handle calls
+                    </p>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className={`px-6 py-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} flex gap-3`}>
+              <button
+                onClick={() => {
+                  setIsAddFrejunModalOpen(false);
+                  setFrejunPhoneNumber('');
+                }}
+                className={`flex-1 px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-neutral-light hover:bg-neutral-mid/20 text-neutral-dark'} transition-colors font-semibold`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleAddFrejunNumber}
+                disabled={isAddingFrejun || !frejunPhoneNumber.trim()}
+                className={`flex-1 px-4 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                  isAddingFrejun || !frejunPhoneNumber.trim()
+                    ? 'bg-gray-400 cursor-not-allowed text-gray-600'
+                    : 'bg-gradient-to-r from-cyan-500 to-blue-600 text-white hover:shadow-lg hover:shadow-blue-500/25'
+                }`}
+              >
+                {isAddingFrejun ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    Adding...
+                  </div>
+                ) : (
+                  'Add Number'
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Dial Pad - Inline Component (Bottom Right) */}

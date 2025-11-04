@@ -37,12 +37,14 @@ class CustomProviderStreamHandler:
         websocket: WebSocket,
         assistant_config: Dict[str, Any],
         openai_api_key: str,
-        call_id: str
+        call_id: str,
+        platform: str = "frejun"  # "frejun" or "twilio"
     ):
         self.websocket = websocket
         self.assistant_config = assistant_config
         self.openai_api_key = openai_api_key
         self.call_id = call_id
+        self.platform = platform  # Track which platform we're on
 
         # Provider instances
         self.asr_provider = None
@@ -238,27 +240,46 @@ class CustomProviderStreamHandler:
             greeting_audio = await self.tts_provider.synthesize(self.greeting)
 
             # Convert audio if needed (FreJun expects 8kHz PCM)
-            # Most TTS providers output at higher sample rates
             if len(greeting_audio) > 0:
-                # Downsample to 8kHz if needed
-                # audioop.ratecv parameters: (fragment, width, nchannels, inrate, outrate, state)
-                # Assuming TTS output is 16kHz or 24kHz, downsample to 8kHz
-                try:
-                    # This is a simple approach - assume input is 16kHz
-                    converted_audio, _ = audioop.ratecv(greeting_audio, 2, 1, 16000, 8000, None)
-                except Exception as conv_error:
-                    logger.warning(f"[CUSTOM] Audio conversion failed, using original: {conv_error}")
-                    converted_audio = greeting_audio
+                # Determine input sample rate based on TTS provider
+                input_sample_rate = 8000  # Default for Cartesia
+                if self.tts_provider_name == 'elevenlabs':
+                    input_sample_rate = 16000
+                elif self.tts_provider_name == 'openai':
+                    input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
 
-                # Send to FreJun as base64
+                # Only resample if input is not already 8kHz
+                if input_sample_rate != 8000:
+                    try:
+                        converted_audio, _ = audioop.ratecv(greeting_audio, 2, 1, input_sample_rate, 8000, None)
+                        logger.info(f"[CUSTOM] Converted audio from {input_sample_rate}Hz to 8kHz for FreJun")
+                    except Exception as conv_error:
+                        logger.warning(f"[CUSTOM] Audio conversion failed, using original: {conv_error}")
+                        converted_audio = greeting_audio
+                else:
+                    # Cartesia already outputs at 8kHz, no conversion needed
+                    converted_audio = greeting_audio
+                    logger.info(f"[CUSTOM] Audio already at 8kHz, no conversion needed")
+
+                # Send audio in platform-specific format
                 audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
-                await self.websocket.send_json({
-                    "event": "media",
-                    "media": {
-                        "payload": audio_b64
-                    }
-                })
-                logger.info(f"[CUSTOM] Greeting sent ({len(converted_audio)} bytes)")
+
+                if self.platform == "frejun":
+                    # FreJun format
+                    await self.websocket.send_json({
+                        "type": "audio",
+                        "audio_b64": audio_b64
+                    })
+                else:
+                    # Twilio format
+                    await self.websocket.send_json({
+                        "event": "media",
+                        "media": {
+                            "payload": audio_b64
+                        }
+                    })
+
+                logger.info(f"[CUSTOM] Greeting sent to {self.platform} ({len(converted_audio)} bytes)")
 
         except Exception as e:
             logger.error(f"[CUSTOM] Error sending greeting: {e}", exc_info=True)
@@ -323,24 +344,45 @@ class CustomProviderStreamHandler:
             logger.info(f"[CUSTOM] Synthesizing speech...")
             response_audio = await self.tts_provider.synthesize(response_text)
 
-            # Convert audio format if needed
-            try:
-                # Downsample to 8kHz for FreJun
-                converted_audio, _ = audioop.ratecv(response_audio, 2, 1, 16000, 8000, None)
-            except Exception as conv_error:
-                logger.warning(f"[CUSTOM] Audio conversion failed: {conv_error}")
+            # Convert audio format if needed (FreJun expects 8kHz)
+            # Determine input sample rate based on TTS provider
+            input_sample_rate = 8000  # Default for Cartesia
+            if self.tts_provider_name == 'elevenlabs':
+                input_sample_rate = 16000
+            elif self.tts_provider_name == 'openai':
+                input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
+
+            # Only resample if input is not already 8kHz
+            if input_sample_rate != 8000:
+                try:
+                    converted_audio, _ = audioop.ratecv(response_audio, 2, 1, input_sample_rate, 8000, None)
+                    logger.info(f"[CUSTOM] Converted audio from {input_sample_rate}Hz to 8kHz for FreJun")
+                except Exception as conv_error:
+                    logger.warning(f"[CUSTOM] Audio conversion failed: {conv_error}")
+                    converted_audio = response_audio
+            else:
+                # Cartesia already outputs at 8kHz, no conversion needed
                 converted_audio = response_audio
 
-            # Send audio to FreJun
+            # Send audio in platform-specific format
             audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
-            await self.websocket.send_json({
-                "event": "media",
-                "media": {
-                    "payload": audio_b64
-                }
-            })
 
-            logger.info(f"[CUSTOM] Response audio sent ({len(converted_audio)} bytes)")
+            if self.platform == "frejun":
+                # FreJun format
+                await self.websocket.send_json({
+                    "type": "audio",
+                    "audio_b64": audio_b64
+                })
+            else:
+                # Twilio format
+                await self.websocket.send_json({
+                    "event": "media",
+                    "media": {
+                        "payload": audio_b64
+                    }
+                })
+
+            logger.info(f"[CUSTOM] Response audio sent to {self.platform} ({len(converted_audio)} bytes)")
 
             # Log to database
             await self.log_interaction(transcript, response_text)
@@ -423,31 +465,56 @@ class CustomProviderStreamHandler:
             # Main message loop
             while self.is_running:
                 try:
-                    # Receive message from FreJun
+                    # Receive message from platform (FreJun or Twilio)
                     message = await asyncio.wait_for(
                         self.websocket.receive_json(),
                         timeout=30.0
                     )
 
-                    event = message.get("event")
+                    # Handle platform-specific message formats
+                    if self.platform == "frejun":
+                        # FreJun format: {"type": "audio", "data": {"audio_b64": "..."}}
+                        msg_type = message.get("type")
 
-                    if event == "media":
-                        # Audio data from caller
-                        media = message.get("media", {})
-                        payload = media.get("payload")
+                        if msg_type == "audio":
+                            # Audio data from caller
+                            data_obj = message.get("data", {})
+                            audio_b64 = data_obj.get("audio_b64")
 
-                        if payload:
-                            # Decode base64 audio
-                            audio_data = base64.b64decode(payload)
-                            await self.process_audio_chunk(audio_data)
+                            if audio_b64:
+                                # Decode base64 audio
+                                audio_data = base64.b64decode(audio_b64)
+                                await self.process_audio_chunk(audio_data)
 
-                    elif event == "start":
-                        logger.info(f"[CUSTOM] Stream started: {message}")
+                        elif msg_type == "start":
+                            logger.info(f"[CUSTOM] FreJun stream started: {message}")
 
-                    elif event == "stop":
-                        logger.info(f"[CUSTOM] Stream stopped")
-                        self.is_running = False
-                        break
+                        elif msg_type == "stop":
+                            logger.info(f"[CUSTOM] FreJun stream stopped")
+                            self.is_running = False
+                            break
+
+                    else:
+                        # Twilio format: {"event": "media", "media": {"payload": "..."}}
+                        event = message.get("event")
+
+                        if event == "media":
+                            # Audio data from caller
+                            media = message.get("media", {})
+                            payload = media.get("payload")
+
+                            if payload:
+                                # Decode base64 audio
+                                audio_data = base64.b64decode(payload)
+                                await self.process_audio_chunk(audio_data)
+
+                        elif event == "start":
+                            logger.info(f"[CUSTOM] Twilio stream started: {message}")
+
+                        elif event == "stop":
+                            logger.info(f"[CUSTOM] Twilio stream stopped")
+                            self.is_running = False
+                            break
 
                 except asyncio.TimeoutError:
                     # No message received, continue
@@ -549,12 +616,13 @@ async def handle_custom_provider_stream(
 
         logger.info(f"[CUSTOM] Starting stream with providers: ASR={assistant_config['asr_provider']}, TTS={assistant_config['tts_provider']}")
 
-        # Create and run stream handler
+        # Create and run stream handler (FreJun platform)
         handler = CustomProviderStreamHandler(
             websocket=websocket,
             assistant_config=assistant_config,
             openai_api_key=openai_api_key,
-            call_id=call_id
+            call_id=call_id,
+            platform="frejun"
         )
 
         await handler.handle_stream()
