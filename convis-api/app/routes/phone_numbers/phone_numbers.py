@@ -1441,7 +1441,6 @@ async def add_frejun_phone_number(user_id: str, phone_number: str):
         db = Database.get_db()
         users_collection = db['users']
         phone_numbers_collection = db['phone_numbers']
-        provider_connections_collection = db['provider_connections']
 
         logger.info(f"Adding FreJun number {phone_number} for user: {user_id}")
 
@@ -1461,17 +1460,8 @@ async def add_frejun_phone_number(user_id: str, phone_number: str):
                 detail="User not found"
             )
 
-        # Check if FreJun is connected
-        frejun_connection = provider_connections_collection.find_one({
-            "user_id": user_obj_id,
-            "provider": "frejun"
-        })
-
-        if not frejun_connection:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="FreJun not connected. Please connect FreJun first."
-            )
+        # Note: We don't require FreJun to be "connected" via OAuth since users
+        # are manually adding numbers from their own FreJun/other provider accounts
 
         # Validate phone number format
         if not phone_number.startswith("+"):

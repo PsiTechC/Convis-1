@@ -685,12 +685,13 @@ IMPORTANT:
                 'provider_keys': provider_keys
             }
 
-            # Use custom provider stream handler
+            # Use custom provider stream handler (Twilio platform)
             handler = CustomProviderStreamHandler(
                 websocket=websocket,
                 assistant_config=assistant_config,
                 openai_api_key=primary_api_key,
-                call_id="twilio_inbound_custom_provider"
+                call_id="twilio_inbound_custom_provider",
+                platform="twilio"
             )
 
             try:

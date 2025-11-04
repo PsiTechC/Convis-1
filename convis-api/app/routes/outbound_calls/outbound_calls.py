@@ -1027,12 +1027,13 @@ IMPORTANT:
                 'provider_keys': provider_keys  # Pass all resolved keys
             }
 
-            # Use custom provider stream handler
+            # Use custom provider stream handler (Twilio platform)
             handler = CustomProviderStreamHandler(
                 websocket=websocket,
                 assistant_config=assistant_config,
                 openai_api_key=primary_api_key,
-                call_id="twilio_custom_provider_call"  # Twilio will provide call_sid via websocket
+                call_id="twilio_custom_provider_call",  # Twilio will provide call_sid via websocket
+                platform="twilio"
             )
 
             try:
