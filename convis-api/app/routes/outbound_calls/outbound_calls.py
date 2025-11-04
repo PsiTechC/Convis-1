@@ -657,6 +657,29 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
         voice = assistant['voice']
         temperature = assistant['temperature']
         call_greeting = assistant.get('call_greeting')
+        bot_language = assistant.get('bot_language', 'en')
+
+        # Add language instruction to system message if not English
+        if bot_language and bot_language != 'en':
+            language_names = {
+                'hi': 'Hindi',
+                'es': 'Spanish',
+                'fr': 'French',
+                'de': 'German',
+                'pt': 'Portuguese',
+                'it': 'Italian',
+                'ja': 'Japanese',
+                'ko': 'Korean',
+                'ar': 'Arabic',
+                'ru': 'Russian',
+                'zh': 'Chinese',
+                'nl': 'Dutch',
+                'pl': 'Polish',
+                'tr': 'Turkish'
+            }
+            language_name = language_names.get(bot_language, bot_language.upper())
+            system_message = f"{system_message}\n\nIMPORTANT: You MUST speak and respond ONLY in {language_name}. All your responses should be in {language_name} language."
+
         timezone_hint = (
             assistant.get('timezone')
             or settings.default_timezone
@@ -995,6 +1018,7 @@ IMPORTANT:
                 'tts_voice': assistant.get('tts_voice'),
                 'llm_model': assistant.get('llm_model'),
                 'llm_max_tokens': assistant.get('llm_max_tokens', 150),
+                'bot_language': assistant.get('bot_language', 'en'),
                 'enable_precise_transcript': assistant.get('enable_precise_transcript', False),
                 'interruption_threshold': assistant.get('interruption_threshold', 2),
                 'response_rate': assistant.get('response_rate', 'balanced'),
@@ -1061,6 +1085,7 @@ IMPORTANT:
                 temperature,
                 enable_interruptions=True,
                 greeting_text=call_greeting,
+                max_response_output_tokens=assistant.get('llm_max_tokens', 150)
             )
 
             # Connection specific state

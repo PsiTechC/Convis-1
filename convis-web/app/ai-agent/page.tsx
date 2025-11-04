@@ -639,6 +639,7 @@ export default function AIAgentPage() {
             llm_provider: formData.llm_provider,
             llm_model: formData.llm_model,
             llm_max_tokens: formData.llm_max_tokens,
+            bot_language: formData.bot_language,
           }),
         });
 
@@ -692,6 +693,7 @@ export default function AIAgentPage() {
             llm_provider: formData.llm_provider,
             llm_model: formData.llm_model,
             llm_max_tokens: formData.llm_max_tokens,
+            bot_language: formData.bot_language,
           }),
         });
 
@@ -1159,6 +1161,7 @@ export default function AIAgentPage() {
       llm_provider: llmProvider,
       llm_model: llmModel,
       llm_max_tokens: llmMaxTokens,
+      bot_language: assistant.bot_language || 'en',
     });
     setKnowledgeBaseFiles(dedupeKnowledgeBaseFiles(assistant.knowledge_base_files || []));
 
