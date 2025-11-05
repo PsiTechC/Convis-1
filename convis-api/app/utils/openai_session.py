@@ -60,7 +60,12 @@ async def send_session_update(
         max_response_output_tokens: Optional max tokens for AI responses (e.g., 'inf', 50-4096)
     """
     session_config = {
-        "turn_detection": {"type": "server_vad"},
+        "turn_detection": {
+            "type": "server_vad",
+            "threshold": 0.8,  # Much higher = much less sensitive (was 0.7, now 0.8)
+            "prefix_padding_ms": 300,  # Standard padding
+            "silence_duration_ms": 800  # Wait 800ms of silence before considering turn complete
+        },
         "input_audio_format": "g711_ulaw",
         "output_audio_format": "g711_ulaw",
         "voice": voice,

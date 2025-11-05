@@ -1911,175 +1911,6 @@ export default function AIAgentPage() {
                 </div>
               </div>
 
-              {/* Voice Selection */}
-              <div>
-                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-3`}>
-                  Agent voice selection
-                </label>
-                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-4`}>
-                  Click on a voice to select it, and use the play button to hear a demo
-                </p>
-
-                {/* Voice Filters */}
-                <div className="mb-4 space-y-3">
-                  {/* Gender Filter */}
-                  <div>
-                    <label className={`block text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'} mb-2`}>
-                      Filter by Gender
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {(['All', 'Male', 'Female', 'Neutral'] as const).map((gender) => (
-                        <button
-                          key={gender}
-                          type="button"
-                          onClick={() => setVoiceGenderFilter(gender)}
-                          className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
-                            voiceGenderFilter === gender
-                              ? 'bg-primary text-white shadow-md'
-                              : isDarkMode
-                                ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
-                          }`}
-                        >
-                          {gender === 'All' ? 'All Genders' : gender}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Accent Filter */}
-                  <div>
-                    <label className={`block text-xs font-medium ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'} mb-2`}>
-                      Filter by Accent
-                    </label>
-                    <div className="flex flex-wrap gap-2">
-                      {uniqueAccents.map((accent) => (
-                        <button
-                          key={accent}
-                          type="button"
-                          onClick={() => setVoiceAccentFilter(accent)}
-                          className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
-                            voiceAccentFilter === accent
-                              ? 'bg-primary text-white shadow-md'
-                              : isDarkMode
-                                ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                                : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
-                          }`}
-                        >
-                          {accent === 'All' ? 'All Accents' : accent}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Results Count */}
-                  <div className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                    Showing {filteredVoices.length} of {VOICE_OPTIONS.length} voices
-                  </div>
-                </div>
-
-                <div className={`rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/30' : 'border-neutral-mid/20 bg-white'} max-h-[400px] overflow-y-auto`}>
-                  {filteredVoices.length === 0 ? (
-                    <div className={`p-8 text-center ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                      <p className="text-sm">No voices match the selected filters.</p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setVoiceGenderFilter('All');
-                          setVoiceAccentFilter('All');
-                        }}
-                        className={`mt-3 text-xs px-3 py-1.5 rounded-lg ${
-                          isDarkMode
-                            ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                            : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
-                        }`}
-                      >
-                        Clear filters
-                      </button>
-                    </div>
-                  ) : (
-                    filteredVoices.map((voice, index) => (
-                    <div
-                      key={voice.value}
-                      className={`flex items-center justify-between p-4 cursor-pointer transition-all ${
-                        index !== filteredVoices.length - 1 ? (isDarkMode ? 'border-b border-gray-600' : 'border-b border-neutral-mid/10') : ''
-                      } ${
-                        formData.voice === voice.value
-                          ? isDarkMode
-                            ? 'bg-primary/20 hover:bg-primary/25'
-                            : 'bg-primary/10 hover:bg-primary/15'
-                          : isDarkMode
-                            ? 'hover:bg-gray-700/50'
-                            : 'hover:bg-neutral-mid/5'
-                      }`}
-                      onClick={() => setFormData(prev => ({ ...prev, voice: voice.value }))}
-                    >
-                      <div className="flex items-center gap-3 flex-1 min-w-0">
-                        <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
-                          formData.voice === voice.value
-                            ? 'bg-primary text-white'
-                            : isDarkMode
-                              ? 'bg-gray-600 text-gray-200'
-                              : 'bg-neutral-mid/10 text-neutral-dark'
-                        }`}>
-                          {voice.gender === 'Male' ? '👨' : voice.gender === 'Female' ? '👩' : '🧑'}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h4 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
-                              {voice.label}
-                            </h4>
-                            {formData.voice === voice.value && (
-                              <svg className="w-4 h-4 text-primary flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-                                <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
-                              </svg>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                              {voice.gender}
-                            </span>
-                            <span className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid/60'}`}>•</span>
-                            <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                              {voice.accent} Accent
-                            </span>
-                          </div>
-                          <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid/80'}`}>
-                            {voice.description}
-                          </p>
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleVoiceDemo(voice.value);
-                        }}
-                        disabled={playingVoice !== null && playingVoice !== voice.value}
-                        className={`flex-shrink-0 p-2.5 rounded-full transition-all ${
-                          playingVoice === voice.value
-                            ? 'bg-primary text-white shadow-lg scale-110'
-                            : isDarkMode
-                              ? 'bg-gray-600 text-gray-200 hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed'
-                              : 'bg-neutral-mid/10 text-neutral-dark hover:bg-neutral-mid/20 disabled:opacity-30 disabled:cursor-not-allowed'
-                        }`}
-                        title={playingVoice === voice.value ? 'Stop' : 'Play demo'}
-                      >
-                        {playingVoice === voice.value ? (
-                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
-                          </svg>
-                        ) : (
-                          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
-                          </svg>
-                        )}
-                      </button>
-                    </div>
-                  ))
-                  )}
-                </div>
-              </div>
 
               {/* Temperature */}
               <div>
@@ -2190,19 +2021,7 @@ export default function AIAgentPage() {
                 {/* Two Option Cards */}
                 <div className="space-y-3 mb-6">
                   {/* OpenAI Realtime API Option */}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setProviderMode('realtime');
-                      const defaultRealtimeModel = LLM_MODELS['openai-realtime'][0].value;
-                      setFormData({
-                        ...formData,
-                        asr_provider: 'openai',
-                        tts_provider: 'openai',
-                        llm_provider: 'openai-realtime',
-                        llm_model: defaultRealtimeModel,
-                      });
-                    }}
+                  <div
                     className={`w-full p-4 rounded-lg border-2 transition-all ${
                       providerMode === 'realtime'
                         ? isDarkMode
@@ -2213,14 +2032,47 @@ export default function AIAgentPage() {
                         : 'border-gray-200 bg-gray-50 hover:border-gray-300'
                     }`}
                   >
-                    <div className="text-left">
-                      <h4 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                        OpenAI Realtime API
-                      </h4>
-                      <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Use OpenAI&apos;s all-in-one Realtime API (existing system)
-                      </p>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProviderMode('realtime');
+                        const defaultRealtimeModel = LLM_MODELS['openai-realtime'][0].value;
+                        setFormData({
+                          ...formData,
+                          asr_provider: 'openai',
+                          tts_provider: 'openai',
+                          llm_provider: 'openai-realtime',
+                          llm_model: defaultRealtimeModel,
+                        });
+                      }}
+                      className="w-full text-left"
+                    >
+                      <div className="flex items-start gap-3">
+                        {/* Radio Button */}
+                        <div className="flex-shrink-0 mt-0.5">
+                          <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                            providerMode === 'realtime'
+                              ? 'border-primary bg-primary'
+                              : isDarkMode
+                              ? 'border-gray-500'
+                              : 'border-gray-300'
+                          }`}>
+                            {providerMode === 'realtime' && (
+                              <div className="w-2 h-2 rounded-full bg-white"></div>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="text-left flex-1">
+                          <h4 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                            OpenAI Realtime API
+                          </h4>
+                          <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Use OpenAI&apos;s all-in-one Realtime API (existing system)
+                          </p>
+                        </div>
+                      </div>
+                    </button>
 
                     {/* Realtime Model Selection (only shown when selected) */}
                     {providerMode === 'realtime' && (
@@ -2253,9 +2105,179 @@ export default function AIAgentPage() {
                             Latency: {LLM_MODELS['openai-realtime'].find(m => m.value === formData.llm_model)?.latency || '320'}ms
                           </span>
                         </div>
+
+                        {/* Voice Selection - Only for OpenAI Realtime API */}
+                        <div className="mt-4 pt-4 border-t" style={{ borderColor: isDarkMode ? '#4b5563' : '#e5e7eb' }}>
+                          <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-3 block font-medium`}>
+                            Agent Voice Selection
+                          </label>
+                          <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-500'} mb-3`}>
+                            Click on a voice to select it, and use the play button to hear a demo
+                          </p>
+
+                          {/* Voice Filters */}
+                          <div className="mb-3 space-y-3">
+                            {/* Gender Filter */}
+                            <div>
+                              <label className={`block text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-2`}>
+                                Filter by Gender
+                              </label>
+                              <div className="flex flex-wrap gap-2">
+                                {(['All', 'Male', 'Female', 'Neutral'] as const).map((gender) => (
+                                  <button
+                                    key={gender}
+                                    type="button"
+                                    onClick={() => setVoiceGenderFilter(gender)}
+                                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                                      voiceGenderFilter === gender
+                                        ? 'bg-primary text-white shadow-md'
+                                        : isDarkMode
+                                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                          : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                                    }`}
+                                  >
+                                    {gender === 'All' ? 'All Genders' : gender}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Accent Filter */}
+                            <div>
+                              <label className={`block text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-2`}>
+                                Filter by Accent
+                              </label>
+                              <div className="flex flex-wrap gap-2">
+                                {uniqueAccents.map((accent) => (
+                                  <button
+                                    key={accent}
+                                    type="button"
+                                    onClick={() => setVoiceAccentFilter(accent)}
+                                    className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-all ${
+                                      voiceAccentFilter === accent
+                                        ? 'bg-primary text-white shadow-md'
+                                        : isDarkMode
+                                          ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                          : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                                    }`}
+                                  >
+                                    {accent === 'All' ? 'All Accents' : accent}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            {/* Results Count */}
+                            <div className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              Showing {filteredVoices.length} of {VOICE_OPTIONS.length} voices
+                            </div>
+                          </div>
+
+                          <div className={`rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-700/30' : 'border-neutral-mid/20 bg-white'} max-h-[350px] overflow-y-auto`}>
+                            {filteredVoices.length === 0 ? (
+                              <div className={`p-8 text-center ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                                <p className="text-sm">No voices match the selected filters.</p>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setVoiceGenderFilter('All');
+                                    setVoiceAccentFilter('All');
+                                  }}
+                                  className={`mt-3 text-xs px-3 py-1.5 rounded-lg ${
+                                    isDarkMode
+                                      ? 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                      : 'bg-neutral-light text-neutral-dark hover:bg-neutral-mid/20'
+                                  }`}
+                                >
+                                  Clear filters
+                                </button>
+                              </div>
+                            ) : (
+                              filteredVoices.map((voice, index) => (
+                              <div
+                                key={voice.value}
+                                className={`flex items-center justify-between p-4 cursor-pointer transition-all ${
+                                  index !== filteredVoices.length - 1 ? (isDarkMode ? 'border-b border-gray-600' : 'border-b border-neutral-mid/10') : ''
+                                } ${
+                                  formData.voice === voice.value
+                                    ? isDarkMode
+                                      ? 'bg-primary/20 hover:bg-primary/25'
+                                      : 'bg-primary/10 hover:bg-primary/15'
+                                    : isDarkMode
+                                      ? 'hover:bg-gray-700/50'
+                                      : 'hover:bg-neutral-mid/5'
+                                }`}
+                                onClick={() => setFormData(prev => ({ ...prev, voice: voice.value }))}
+                              >
+                                <div className="flex items-center gap-3 flex-1 min-w-0">
+                                  <div className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
+                                    formData.voice === voice.value
+                                      ? 'bg-primary text-white'
+                                      : isDarkMode
+                                        ? 'bg-gray-600 text-gray-200'
+                                        : 'bg-neutral-mid/10 text-neutral-dark'
+                                  }`}>
+                                    {voice.gender === 'Male' ? '👨' : voice.gender === 'Female' ? '👩' : '🧑'}
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <h4 className={`font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                                        {voice.label}
+                                      </h4>
+                                      {formData.voice === voice.value && (
+                                        <svg className="w-4 h-4 text-primary flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
+                                          <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                                        </svg>
+                                      )}
+                                    </div>
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                                        {voice.gender}
+                                      </span>
+                                      <span className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid/60'}`}>•</span>
+                                      <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                                        {voice.accent} Accent
+                                      </span>
+                                    </div>
+                                    <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-neutral-mid/80'}`}>
+                                      {voice.description}
+                                    </p>
+                                  </div>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleVoiceDemo(voice.value);
+                                  }}
+                                  disabled={playingVoice !== null && playingVoice !== voice.value}
+                                  className={`flex-shrink-0 p-2.5 rounded-full transition-all ${
+                                    playingVoice === voice.value
+                                      ? 'bg-primary text-white shadow-lg scale-110'
+                                      : isDarkMode
+                                        ? 'bg-gray-600 text-gray-200 hover:bg-gray-500 disabled:opacity-30 disabled:cursor-not-allowed'
+                                        : 'bg-neutral-mid/10 text-neutral-dark hover:bg-neutral-mid/20 disabled:opacity-30 disabled:cursor-not-allowed'
+                                  }`}
+                                  title={playingVoice === voice.value ? 'Stop' : 'Play demo'}
+                                >
+                                  {playingVoice === voice.value ? (
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                                    </svg>
+                                  ) : (
+                                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                      <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                                    </svg>
+                                  )}
+                                </button>
+                              </div>
+                            ))
+                            )}
+                          </div>
+                        </div>
                       </div>
                     )}
-                  </button>
+                  </div>
 
                   {/* Custom Providers Option */}
                   <button
@@ -2271,7 +2293,9 @@ export default function AIAgentPage() {
                           asr_language: 'en',
                           tts_provider: 'cartesia',
                           tts_voice: 'sonic',
-                          tts_model: 'sonic-english'
+                          tts_model: 'sonic-english',
+                          llm_provider: 'openai',
+                          llm_model: 'gpt-4-turbo'
                         });
                       }
                     }}
@@ -2285,13 +2309,30 @@ export default function AIAgentPage() {
                         : 'border-gray-200 bg-gray-50 hover:border-gray-300'
                     }`}
                   >
-                    <div className="text-left mb-3">
-                      <h4 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
-                        Custom Providers
-                      </h4>
-                      <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        Choose separate ASR and TTS providers for better cost/performance
-                      </p>
+                    <div className="flex items-start gap-3 mb-3">
+                      {/* Radio Button */}
+                      <div className="flex-shrink-0 mt-0.5">
+                        <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${
+                          providerMode === 'custom'
+                            ? 'border-primary bg-primary'
+                            : isDarkMode
+                            ? 'border-gray-500'
+                            : 'border-gray-300'
+                        }`}>
+                          {providerMode === 'custom' && (
+                            <div className="w-2 h-2 rounded-full bg-white"></div>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="text-left flex-1">
+                        <h4 className={`font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                          Custom Providers
+                        </h4>
+                        <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Choose separate ASR and TTS providers for better cost/performance
+                        </p>
+                      </div>
                     </div>
 
                     {/* Custom Provider Details (only shown when selected) */}
