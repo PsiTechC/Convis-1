@@ -580,9 +580,9 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.5,
-                        "prefix_padding_ms": 300,
-                        "silence_duration_ms": 500
+                        "threshold": 0.7,  # Higher = less sensitive (0.5 default, 0.0-1.0)
+                        "prefix_padding_ms": 500,  # More context before speech (300 default)
+                        "silence_duration_ms": 1000  # Longer silence before interruption (500 default, increased to 1000ms)
                     },
                     "temperature": temperature,
                 }

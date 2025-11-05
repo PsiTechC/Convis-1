@@ -11,11 +11,12 @@ import audioop
 import os
 from datetime import datetime
 from typing import Optional, Dict, Any
-from fastapi import WebSocket, WebSocketDisconnect
+from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from bson import ObjectId
 
 from app.config.database import Database
 from app.providers.factory import ProviderFactory
+from app.utils.assistant_keys import resolve_provider_keys, resolve_assistant_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +37,13 @@ class CustomProviderStreamHandler:
         self,
         websocket: WebSocket,
         assistant_config: Dict[str, Any],
-        openai_api_key: str,
+        openai_api_key: Optional[str],
         call_id: str,
-        platform: str = "frejun"  # "frejun" or "twilio"
+        platform: str = "frejun",  # "frejun" or "twilio"
+        provider_keys: Optional[Dict[str, str]] = None
     ):
         self.websocket = websocket
         self.assistant_config = assistant_config
-        self.openai_api_key = openai_api_key
         self.call_id = call_id
         self.platform = platform  # Track which platform we're on
 
@@ -55,6 +56,16 @@ class CustomProviderStreamHandler:
         self.conversation_history = []
         self.is_running = False
         self.audio_buffer = bytearray()
+
+        # API keys
+        self.provider_keys = provider_keys or assistant_config.get("provider_keys") or {}
+        if openai_api_key:
+            self.provider_keys.setdefault("openai", openai_api_key)
+        self.openai_api_key = (
+            openai_api_key
+            or self.provider_keys.get("openai")
+            or os.getenv("OPENAI_API_KEY")
+        )
 
         # Configuration
         self.asr_provider_name = assistant_config.get('asr_provider', 'openai')
@@ -116,15 +127,22 @@ class CustomProviderStreamHandler:
             if not asr_model:
                 asr_model = 'nova-2' if self.asr_provider_name == 'deepgram' else 'whisper-1'
 
-            if self.asr_provider_name == 'deepgram' and not os.getenv("DEEPGRAM_API_KEY"):
-                logger.warning("[CUSTOM] DEEPGRAM_API_KEY not configured. Falling back to OpenAI Whisper for ASR.")
+            asr_api_key = self.provider_keys.get(self.asr_provider_name)
+            if self.asr_provider_name == 'openai':
+                asr_api_key = asr_api_key or self.openai_api_key
+            elif self.asr_provider_name == 'deepgram':
+                asr_api_key = asr_api_key or os.getenv("DEEPGRAM_API_KEY")
+
+            if self.asr_provider_name == 'deepgram' and not asr_api_key:
+                logger.warning("[CUSTOM] Deepgram key not configured. Falling back to OpenAI Whisper for ASR.")
                 self.asr_provider_name = 'openai'
                 asr_model = 'whisper-1'
+                asr_api_key = self.openai_api_key or os.getenv("OPENAI_API_KEY")
 
             try:
                 self.asr_provider = ProviderFactory.create_asr_provider(
                     provider_name=self.asr_provider_name,
-                    api_key=self.openai_api_key if self.asr_provider_name == 'openai' else None,
+                    api_key=asr_api_key,
                     model=asr_model,
                     language=self.asr_language
                 )
@@ -136,7 +154,7 @@ class CustomProviderStreamHandler:
                     self.asr_model = 'whisper-1'
                     self.asr_provider = ProviderFactory.create_asr_provider(
                         provider_name='openai',
-                        api_key=self.openai_api_key,
+                        api_key=self.openai_api_key or os.getenv("OPENAI_API_KEY"),
                         model='whisper-1',
                         language=self.asr_language
                     )
@@ -150,19 +168,29 @@ class CustomProviderStreamHandler:
             if not tts_model:
                 tts_model = 'tts-1' if self.tts_provider_name == 'openai' else None
 
-            if self.tts_provider_name == 'cartesia' and not os.getenv("CARTESIA_API_KEY"):
-                logger.warning("[CUSTOM] CARTESIA_API_KEY not configured. Falling back to OpenAI TTS.")
+            tts_api_key = self.provider_keys.get(self.tts_provider_name)
+            if self.tts_provider_name == 'openai':
+                tts_api_key = tts_api_key or self.openai_api_key
+            elif self.tts_provider_name == 'cartesia':
+                tts_api_key = tts_api_key or os.getenv("CARTESIA_API_KEY")
+            elif self.tts_provider_name == 'elevenlabs':
+                tts_api_key = tts_api_key or os.getenv("ELEVENLABS_API_KEY")
+
+            if self.tts_provider_name == 'cartesia' and not tts_api_key:
+                logger.warning("[CUSTOM] Cartesia key not configured. Falling back to OpenAI TTS.")
                 self.tts_provider_name = 'openai'
                 tts_model = 'tts-1'
-            elif self.tts_provider_name == 'elevenlabs' and not os.getenv("ELEVENLABS_API_KEY"):
-                logger.warning("[CUSTOM] ELEVENLABS_API_KEY not configured. Falling back to OpenAI TTS.")
+                tts_api_key = self.openai_api_key or os.getenv("OPENAI_API_KEY")
+            elif self.tts_provider_name == 'elevenlabs' and not tts_api_key:
+                logger.warning("[CUSTOM] ElevenLabs key not configured. Falling back to OpenAI TTS.")
                 self.tts_provider_name = 'openai'
                 tts_model = 'tts-1'
+                tts_api_key = self.openai_api_key or os.getenv("OPENAI_API_KEY")
 
             try:
                 self.tts_provider = ProviderFactory.create_tts_provider(
                     provider_name=self.tts_provider_name,
-                    api_key=self.openai_api_key if self.tts_provider_name == 'openai' else None,
+                    api_key=tts_api_key,
                     voice=self.tts_voice or self.voice
                 )
             except Exception as tts_error:
@@ -173,7 +201,7 @@ class CustomProviderStreamHandler:
                     self.tts_model = 'tts-1'
                     self.tts_provider = ProviderFactory.create_tts_provider(
                         provider_name='openai',
-                        api_key=self.openai_api_key,
+                        api_key=self.openai_api_key or os.getenv("OPENAI_API_KEY"),
                         voice=self.voice
                     )
                 else:
@@ -185,14 +213,17 @@ class CustomProviderStreamHandler:
             if self.llm_provider == "openai":
                 try:
                     import openai
-                    self.llm_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
+                    openai_key = self.provider_keys.get('openai') or self.openai_api_key or os.getenv("OPENAI_API_KEY")
+                    if not openai_key:
+                        raise RuntimeError("OpenAI API key is not configured")
+                    self.llm_client = openai.AsyncOpenAI(api_key=openai_key)
                     llm_initialized = True
                 except Exception as openai_error:
                     logger.error(f"[CUSTOM] Failed to initialize OpenAI LLM client: {openai_error}", exc_info=True)
             elif self.llm_provider == "anthropic":
                 try:
                     import anthropic
-                    api_key = os.getenv("ANTHROPIC_API_KEY")
+                    api_key = self.provider_keys.get('anthropic') or os.getenv("ANTHROPIC_API_KEY")
                     if not api_key:
                         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
                     self.llm_client = anthropic.AsyncAnthropic(api_key=api_key)
@@ -202,7 +233,7 @@ class CustomProviderStreamHandler:
             elif self.llm_provider == "groq":
                 try:
                     from groq import AsyncGroq
-                    api_key = os.getenv("GROQ_API_KEY")
+                    api_key = self.provider_keys.get('groq') or os.getenv("GROQ_API_KEY")
                     if not api_key:
                         raise RuntimeError("GROQ_API_KEY is not configured")
                     self.llm_client = AsyncGroq(api_key=api_key)
@@ -212,8 +243,11 @@ class CustomProviderStreamHandler:
 
             if not llm_initialized:
                 import openai
+                fallback_key = self.provider_keys.get('openai') or self.openai_api_key or os.getenv("OPENAI_API_KEY")
+                if not fallback_key:
+                    raise RuntimeError("No supported LLM provider could be initialized (missing API keys)")
                 self.llm_provider = "openai"
-                self.llm_client = openai.AsyncOpenAI(api_key=self.openai_api_key)
+                self.llm_client = openai.AsyncOpenAI(api_key=fallback_key)
                 if not self.llm_model:
                     self.llm_model = "gpt-4o-mini"
                 llm_initialized = True
@@ -582,11 +616,26 @@ async def handle_custom_provider_stream(
             await websocket.close(code=1008, reason="User not found")
             return
 
-        openai_api_key = user.get("openai_key")
+        user_obj_id = ObjectId(str(user_id))
+
+        # Resolve provider keys (ASR/TTS/LLM)
+        provider_keys = resolve_provider_keys(db, assistant, user_obj_id)
+
+        # Ensure we have an OpenAI key available for fallbacks
+        openai_api_key = provider_keys.get("openai")
         if not openai_api_key:
-            logger.error(f"[CUSTOM] OpenAI API key not configured for user")
-            await websocket.close(code=1008, reason="API key not configured")
-            return
+            try:
+                openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+                provider_keys['openai'] = openai_api_key
+            except HTTPException as key_error:
+                env_openai_key = os.getenv("OPENAI_API_KEY")
+                if env_openai_key:
+                    provider_keys['openai'] = env_openai_key
+                    openai_api_key = env_openai_key
+                else:
+                    logger.error(f"[CUSTOM] OpenAI API key not configured for assistant: {key_error.detail}")
+                    await websocket.close(code=1008, reason="OpenAI API key not configured")
+                    return
 
         # Build assistant config
         assistant_config = {
@@ -612,6 +661,7 @@ async def handle_custom_provider_stream(
             "llm_model": assistant.get("llm_model"),
             "llm_max_tokens": assistant.get("llm_max_tokens", 150),
             "bot_language": assistant.get("bot_language", "en"),
+            "provider_keys": provider_keys,
         }
 
         logger.info(f"[CUSTOM] Starting stream with providers: ASR={assistant_config['asr_provider']}, TTS={assistant_config['tts_provider']}")
@@ -622,7 +672,8 @@ async def handle_custom_provider_stream(
             assistant_config=assistant_config,
             openai_api_key=openai_api_key,
             call_id=call_id,
-            platform="frejun"
+            platform="frejun",
+            provider_keys=provider_keys
         )
 
         await handler.handle_stream()

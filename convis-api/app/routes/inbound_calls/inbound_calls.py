@@ -652,12 +652,17 @@ IMPORTANT:
             # Resolve all necessary API keys
             provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
 
-            # Get the primary API key for LLM
-            primary_api_key = provider_keys.get(llm_provider)
-            if not primary_api_key:
+            # Ensure we have a key for the configured LLM provider
+            llm_api_key = provider_keys.get(llm_provider)
+            if llm_provider in ('openai', 'openai-realtime') and not llm_api_key:
+                llm_api_key = provider_keys.get('openai')
+
+            if not llm_api_key:
                 logger.error(f"No API key found for LLM provider: {llm_provider}")
                 await websocket.close(code=1008, reason=f"No API key configured for {llm_provider}")
                 return
+
+            openai_api_key = provider_keys.get('openai')
 
             # Create assistant config for custom provider handler
             assistant_config = {
@@ -689,9 +694,10 @@ IMPORTANT:
             handler = CustomProviderStreamHandler(
                 websocket=websocket,
                 assistant_config=assistant_config,
-                openai_api_key=primary_api_key,
+                openai_api_key=openai_api_key,
                 call_id="twilio_inbound_custom_provider",
-                platform="twilio"
+                platform="twilio",
+                provider_keys=provider_keys
             )
 
             try:
@@ -718,6 +724,88 @@ IMPORTANT:
             await websocket.close(code=1008, reason=exc.detail)
             return
 
+        # Determine if we should use OpenAI Realtime API or custom providers
+        asr_provider = assistant.get('asr_provider', 'openai')
+        tts_provider = assistant.get('tts_provider', 'openai')
+        llm_provider = assistant.get('llm_provider', 'openai')
+
+        # Check if using all OpenAI providers (eligible for Realtime API)
+        # Accept both 'openai' and 'openai-realtime' as valid OpenAI Realtime providers
+        use_openai_realtime = (
+            asr_provider == 'openai' and
+            tts_provider == 'openai' and
+            (llm_provider == 'openai' or llm_provider == 'openai-realtime')
+        )
+
+        logger.info(f"[INBOUND] Provider Configuration: ASR={asr_provider}, TTS={tts_provider}, LLM={llm_provider}")
+        logger.info(f"[INBOUND] Using OpenAI Realtime API: {use_openai_realtime}")
+
+        # If using custom providers, delegate to custom provider handler
+        if not use_openai_realtime:
+            logger.info(f"[INBOUND] Routing to custom provider handler for assistant {assistant_id}")
+            from app.routes.frejun.custom_provider_stream import CustomProviderStreamHandler
+            from app.utils.assistant_keys import resolve_provider_keys
+
+            # Resolve all necessary API keys
+            provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+
+            # Ensure we have a key for the configured LLM provider
+            llm_api_key = provider_keys.get(llm_provider)
+            if llm_provider in ('openai', 'openai-realtime') and not llm_api_key:
+                llm_api_key = provider_keys.get('openai') or openai_api_key
+
+            if not llm_api_key:
+                logger.error(f"No API key found for LLM provider: {llm_provider}")
+                await websocket.close(code=1008, reason=f"No API key configured for {llm_provider}")
+                return
+
+            # Create assistant config for custom provider handler
+            assistant_config = {
+                'system_message': system_message,
+                'voice': voice,
+                'temperature': temperature,
+                'greeting': call_greeting,
+                'asr_provider': asr_provider,
+                'tts_provider': tts_provider,
+                'llm_provider': llm_provider,
+                'asr_language': assistant.get('asr_language', 'en'),
+                'asr_model': assistant.get('asr_model'),
+                'asr_keywords': assistant.get('asr_keywords', []),
+                'tts_model': assistant.get('tts_model'),
+                'tts_speed': assistant.get('tts_speed', 1.0),
+                'tts_voice': assistant.get('tts_voice'),
+                'llm_model': assistant.get('llm_model'),
+                'llm_max_tokens': assistant.get('llm_max_tokens', 150),
+                'bot_language': bot_language,
+                'enable_precise_transcript': assistant.get('enable_precise_transcript', False),
+                'interruption_threshold': assistant.get('interruption_threshold', 2),
+                'response_rate': assistant.get('response_rate', 'balanced'),
+                'check_user_online': assistant.get('check_user_online', True),
+                'audio_buffer_size': assistant.get('audio_buffer_size', 200),
+                'provider_keys': provider_keys  # Pass all resolved keys
+            }
+
+            # Use custom provider stream handler (Twilio platform for inbound)
+            handler = CustomProviderStreamHandler(
+                websocket=websocket,
+                assistant_config=assistant_config,
+                openai_api_key=llm_api_key,  # Use the resolved LLM key
+                call_id="twilio_inbound_custom_provider",  # Twilio will provide call_sid via websocket
+                platform="twilio",
+                provider_keys=provider_keys
+            )
+
+            try:
+                await handler.handle_stream()
+            except Exception as e:
+                logger.error(f"[INBOUND] Error in custom provider handler: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+            finally:
+                await websocket.close()
+            return
+
+        # OpenAI Realtime API path (existing code)
         # Get the LLM model to use for OpenAI Realtime API
         llm_model = assistant.get('llm_model', 'gpt-4o-mini-realtime-preview')
         logger.info(f"[INBOUND] Using OpenAI Realtime API - Model: {llm_model}, Voice: {voice}, Temperature: {temperature}")
@@ -745,7 +833,7 @@ IMPORTANT:
                 temperature,
                 enable_interruptions=True,
                 greeting_text=call_greeting,
-                max_response_output_tokens=assistant.get('llm_max_tokens', 150)
+                max_response_output_tokens="inf"  # Allow unlimited response length for natural conversation
             )
 
             # Connection specific state
@@ -821,7 +909,7 @@ IMPORTANT:
                                     temperature,
                                     enable_interruptions=True,
                                     greeting_text=f"Hello {caller_name}! {call_greeting.replace('Hello!', '').strip()}",
-                                    max_response_output_tokens=assistant.get('llm_max_tokens', 150)
+                                    max_response_output_tokens="inf"  # Allow unlimited response length
                                 )
                                 logger.info(f"Updated greeting for {caller_name}")
 

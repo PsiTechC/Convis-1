@@ -994,12 +994,17 @@ IMPORTANT:
             # Resolve all necessary API keys
             provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
 
-            # Get the primary API key (OpenAI for LLM if needed, or from resolved keys)
-            primary_api_key = provider_keys.get(llm_provider)
-            if not primary_api_key:
+            # Ensure we have a key for the configured LLM provider
+            llm_api_key = provider_keys.get(llm_provider)
+            if llm_provider in ('openai', 'openai-realtime') and not llm_api_key:
+                llm_api_key = provider_keys.get('openai')
+
+            if not llm_api_key:
                 logger.error(f"No API key found for LLM provider: {llm_provider}")
                 await websocket.close(code=1008, reason=f"No API key configured for {llm_provider}")
                 return
+
+            openai_api_key = provider_keys.get('openai')
 
             # Create assistant config for custom provider handler
             assistant_config = {
@@ -1031,9 +1036,10 @@ IMPORTANT:
             handler = CustomProviderStreamHandler(
                 websocket=websocket,
                 assistant_config=assistant_config,
-                openai_api_key=primary_api_key,
+                openai_api_key=openai_api_key,
                 call_id="twilio_custom_provider_call",  # Twilio will provide call_sid via websocket
-                platform="twilio"
+                platform="twilio",
+                provider_keys=provider_keys
             )
 
             try:
@@ -1086,7 +1092,7 @@ IMPORTANT:
                 temperature,
                 enable_interruptions=True,
                 greeting_text=call_greeting,
-                max_response_output_tokens=assistant.get('llm_max_tokens', 150)
+                max_response_output_tokens="inf"  # Allow unlimited response length for natural conversation
             )
 
             # Connection specific state
