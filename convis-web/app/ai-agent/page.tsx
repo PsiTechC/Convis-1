@@ -1142,6 +1142,13 @@ export default function AIAgentPage() {
     const ttsVoice = assistant.tts_voice || defaultTtsVoice;
     const ttsModel = assistant.tts_model || defaultTtsModel;
 
+    // Filter out invalid calendar IDs (only keep IDs that exist in calendarAccounts)
+    const validCalendarAccountIds = calendarAccounts.length > 0
+      ? (assistant.calendar_account_ids || []).filter(id =>
+          calendarAccounts.some(account => account.id === id)
+        )
+      : [];
+
     setFormData({
       name: assistant.name,
       system_message: assistant.system_message,
@@ -1150,8 +1157,8 @@ export default function AIAgentPage() {
       api_key_id: assistant.api_key_id || '',
       call_greeting: assistant.call_greeting || DEFAULT_CALL_GREETING,
       calendar_account_id: assistant.calendar_account_id || '',
-      calendar_account_ids: assistant.calendar_account_ids || [],
-      calendar_enabled: assistant.calendar_enabled || false,
+      calendar_account_ids: validCalendarAccountIds,
+      calendar_enabled: validCalendarAccountIds.length > 0,
       asr_provider: asr,
       tts_provider: tts,
       asr_model: asrModel,
