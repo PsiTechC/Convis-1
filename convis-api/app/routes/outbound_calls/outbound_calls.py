@@ -726,13 +726,17 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 
         calendar_accounts_collection = db["calendar_accounts"]
         calendar_account_id_for_booking = None
+        calendar_account_ids_list = []
 
         logger.info(f"[OUTBOUND_CALENDAR_CHECK] Assistant calendar_account_id: {assistant.get('calendar_account_id')}")
+        logger.info(f"[OUTBOUND_CALENDAR_CHECK] Assistant calendar_account_ids: {assistant.get('calendar_account_ids', [])}")
         logger.info(f"[OUTBOUND_CALENDAR_CHECK] Campaign: {campaign is not None}, Lead ID: {lead_id}, Campaign ID: {campaign_id}")
 
         # Priority order for calendar account:
         # 1. Campaign calendar_account_id (if calendar_enabled on campaign)
-        # 2. Assistant calendar_account_id (fallback)
+        # 2. Assistant calendar_account_ids (new multi-calendar support)
+        # 3. Assistant calendar_account_id (legacy single calendar fallback)
+
         if campaign and campaign.get("calendar_enabled") and lead_id and campaign_id:
             calendar_enabled = True
             calendar_service = CalendarService()
@@ -746,6 +750,7 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                 account_doc = calendar_accounts_collection.find_one({"_id": calendar_account_id})
                 if account_doc:
                     calendar_account_id_for_booking = calendar_account_id
+                    calendar_account_ids_list = [str(calendar_account_id)]
                     logger.info(f"[OUTBOUND] Using campaign calendar account: {account_doc.get('email')}")
 
             # Fallback to assistant's calendar if campaign doesn't have one
@@ -755,28 +760,54 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                     account_doc = calendar_accounts_collection.find_one({"_id": assistant_calendar_id})
                     if account_doc:
                         calendar_account_id_for_booking = assistant_calendar_id
+                        calendar_account_ids_list = [str(assistant_calendar_id)]
                         logger.info(f"[OUTBOUND] Using assistant calendar account (fallback): {account_doc.get('email')}")
                 elif assistant_user_id:
                     account_doc = calendar_accounts_collection.find_one({"user_id": assistant_user_id})
                     if account_doc:
+                        calendar_account_ids_list = [str(account_doc['_id'])]
                         logger.info(f"[OUTBOUND] Using user's first calendar account (legacy fallback): {account_doc.get('email')}")
 
             if account_doc:
                 default_calendar_provider = account_doc.get("provider", "google")
-        elif assistant.get('calendar_account_id'):
-            # Calendar enabled via assistant (for non-campaign outbound calls)
-            logger.info(f"[OUTBOUND_CALENDAR_CHECK] Entering assistant calendar check block")
-            assistant_calendar_id = assistant.get('calendar_account_id')
-            account_doc = calendar_accounts_collection.find_one({"_id": assistant_calendar_id})
-            if account_doc:
-                calendar_enabled = True
-                calendar_account_id_for_booking = assistant_calendar_id
-                calendar_service = CalendarService()
-                calendar_intent_service = CalendarIntentService()
-                default_calendar_provider = account_doc.get("provider", "google")
-                logger.info(f"[OUTBOUND] ✓ Calendar enabled via assistant: {account_doc.get('email')}")
-            else:
-                logger.error(f"[OUTBOUND] ❌ Calendar account not found for ID: {assistant_calendar_id}")
+        else:
+            # Check for NEW multi-calendar support (calendar_account_ids)
+            assistant_calendar_ids = assistant.get('calendar_account_ids', [])
+            assistant_calendar_enabled = assistant.get('calendar_enabled', False)
+
+            if assistant_calendar_ids and assistant_calendar_enabled and assistant_user_id:
+                # Verify all calendar accounts exist and belong to the user
+                valid_calendar_ids = []
+                for cal_id in assistant_calendar_ids:
+                    calendar_account = calendar_accounts_collection.find_one({
+                        "_id": cal_id,
+                        "user_id": assistant_user_id
+                    })
+                    if calendar_account:
+                        valid_calendar_ids.append(str(cal_id))
+
+                if valid_calendar_ids:
+                    calendar_enabled = True
+                    calendar_account_ids_list = valid_calendar_ids
+                    calendar_service = CalendarService()
+                    calendar_intent_service = CalendarIntentService()
+                    logger.info(f"[OUTBOUND] Multi-calendar enabled for assistant {assistant_id} with {len(valid_calendar_ids)} calendar(s)")
+
+            # FALLBACK: Support legacy single calendar_account_id
+            if not calendar_enabled and assistant.get('calendar_account_id'):
+                logger.info(f"[OUTBOUND_CALENDAR_CHECK] Entering legacy single calendar check block")
+                assistant_calendar_id = assistant.get('calendar_account_id')
+                account_doc = calendar_accounts_collection.find_one({"_id": assistant_calendar_id})
+                if account_doc:
+                    calendar_enabled = True
+                    calendar_account_id_for_booking = assistant_calendar_id
+                    calendar_account_ids_list = [str(assistant_calendar_id)]
+                    calendar_service = CalendarService()
+                    calendar_intent_service = CalendarIntentService()
+                    default_calendar_provider = account_doc.get("provider", "google")
+                    logger.info(f"[OUTBOUND] Calendar enabled via assistant using legacy single account: {account_doc.get('email')}")
+                else:
+                    logger.error(f"[OUTBOUND] ❌ Calendar account not found for ID: {assistant_calendar_id}")
 
         # Add calendar scheduling instructions if calendar is enabled
         logger.info(f"[OUTBOUND_CALENDAR_CHECK] Final calendar_enabled status: {calendar_enabled}")
@@ -874,6 +905,131 @@ IMPORTANT:
                     appointment.setdefault("timezone", timezone_hint)
                     appointment.setdefault("notes", result.get("reason"))
                     provider = appointment.get("provider") or default_calendar_provider
+
+                    # Parse appointment times for availability checking
+                    try:
+                        start_time = datetime.fromisoformat(start_iso.replace('Z', '+00:00') if start_iso.endswith('Z') else start_iso)
+                        end_time = datetime.fromisoformat(end_iso.replace('Z', '+00:00') if end_iso.endswith('Z') else end_iso)
+                    except Exception as e:
+                        logger.error(f"[CALENDAR_ANALYSIS] Error parsing appointment times: {e}")
+                        return
+
+                    # MULTI-CALENDAR AVAILABILITY CHECKING
+                    if calendar_account_ids_list and len(calendar_account_ids_list) > 1:
+                        logger.info(f"[CALENDAR_ANALYSIS] Checking availability across {len(calendar_account_ids_list)} calendars...")
+
+                        # Check if ALL calendars are free
+                        availability_result = await calendar_service.check_availability_across_calendars(
+                            calendar_account_ids_list,
+                            start_time,
+                            end_time
+                        )
+
+                        if not availability_result.get("is_available"):
+                            # CONFLICT DETECTED - Inform the AI agent
+                            conflicts = availability_result.get("conflicts", [])
+                            conflict_details = []
+                            for conflict in conflicts:
+                                calendar_email = conflict.get("calendar_email", "Unknown")
+                                events = conflict.get("conflicting_events", [])
+                                for event in events:
+                                    conflict_details.append(f"{event.get('title')} at {event.get('start')}")
+
+                            conflict_message = (
+                                f"I'm sorry, but that time slot is already occupied in the calendar. "
+                                f"There's a conflict with: {', '.join(conflict_details[:2])}. "
+                                f"Could you please suggest an alternative time?"
+                            )
+
+                            logger.warning(f"[CALENDAR_ANALYSIS] Conflict detected: {conflict_message}")
+
+                            # Send conflict notification to AI agent
+                            await openai_ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "system",
+                                            "content": [
+                                                {
+                                                    "type": "input_text",
+                                                    "text": (
+                                                        f"CALENDAR CONFLICT: The requested time slot is not available. "
+                                                        f"Inform the caller: {conflict_message}"
+                                                    ),
+                                                }
+                                            ],
+                                        },
+                                    }
+                                )
+                            )
+                            await openai_ws.send(json.dumps({"type": "response.create"}))
+
+                            logger.info("[CALENDAR_ANALYSIS] Conflict notification sent to AI agent")
+                            return  # Don't book - wait for alternative time
+
+                        # ALL CALENDARS ARE FREE - Use round-robin to select which calendar to book
+                        logger.info("[CALENDAR_ANALYSIS] All calendars available - using round-robin selection")
+                        selected_calendar_id = await calendar_service.get_next_available_calendar_round_robin(
+                            assistant,
+                            start_time,
+                            end_time
+                        )
+
+                        if selected_calendar_id:
+                            calendar_account_id_for_booking = selected_calendar_id
+                            logger.info(f"[CALENDAR_ANALYSIS] Selected calendar {selected_calendar_id} via round-robin")
+                        else:
+                            logger.error("[CALENDAR_ANALYSIS] Round-robin selection failed")
+                            return
+
+                    # SINGLE CALENDAR - Just check if it's available
+                    elif calendar_account_ids_list and len(calendar_account_ids_list) == 1:
+                        logger.info(f"[CALENDAR_ANALYSIS] Checking availability for single calendar...")
+                        availability_result = await calendar_service.check_availability_across_calendars(
+                            calendar_account_ids_list,
+                            start_time,
+                            end_time
+                        )
+
+                        if not availability_result.get("is_available"):
+                            conflicts = availability_result.get("conflicts", [])
+                            conflict_message = (
+                                "I'm sorry, but that time slot is already occupied in the calendar. "
+                                "Could you please suggest an alternative time?"
+                            )
+
+                            logger.warning(f"[CALENDAR_ANALYSIS] Conflict detected in single calendar")
+
+                            # Send conflict notification to AI agent
+                            await openai_ws.send(
+                                json.dumps(
+                                    {
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "system",
+                                            "content": [
+                                                {
+                                                    "type": "input_text",
+                                                    "text": (
+                                                        f"CALENDAR CONFLICT: The requested time slot is not available. "
+                                                        f"Inform the caller: {conflict_message}"
+                                                    ),
+                                                }
+                                            ],
+                                        },
+                                    }
+                                )
+                            )
+                            await openai_ws.send(json.dumps({"type": "response.create"}))
+
+                            logger.info("[CALENDAR_ANALYSIS] Conflict notification sent to AI agent")
+                            return  # Don't book - wait for alternative time
+
+                        calendar_account_id_for_booking = calendar_account_ids_list[0]
+                        logger.info(f"[CALENDAR_ANALYSIS] Single calendar {calendar_account_id_for_booking} is available")
 
                     # For campaign calls, use book_appointment (requires lead_id and campaign_id)
                     # For non-campaign calls, use book_inbound_appointment
