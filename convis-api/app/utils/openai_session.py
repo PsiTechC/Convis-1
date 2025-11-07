@@ -62,9 +62,9 @@ async def send_session_update(
     session_config = {
         "turn_detection": {
             "type": "server_vad",
-            "threshold": 0.8,  # Much higher = much less sensitive (was 0.7, now 0.8)
-            "prefix_padding_ms": 300,  # Standard padding
-            "silence_duration_ms": 800  # Wait 800ms of silence before considering turn complete
+            "threshold": 0.4,  # Ultra-sensitive for instant detection (0.4 = very responsive)
+            "prefix_padding_ms": 100,  # Minimal padding for fastest response
+            "silence_duration_ms": 200  # Aggressive 200ms silence detection for sub-120ms total latency
         },
         "input_audio_format": "g711_ulaw",
         "output_audio_format": "g711_ulaw",

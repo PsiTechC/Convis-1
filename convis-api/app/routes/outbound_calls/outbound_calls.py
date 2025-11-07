@@ -658,6 +658,64 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
         temperature = assistant['temperature']
         call_greeting = assistant.get('call_greeting')
         bot_language = assistant.get('bot_language', 'en')
+        voice_mode = assistant.get('voice_mode', 'realtime')  # Get voice mode
+
+        logger.info(f"[OUTBOUND] Voice mode: {voice_mode}")
+
+        # Route to appropriate handler based on voice mode
+        if voice_mode == 'custom':
+            # Use custom provider pipeline (ASR -> LLM -> TTS)
+            logger.info("[OUTBOUND] Using custom provider mode")
+            from app.utils.custom_provider_handler import CustomProviderHandler
+
+            # Get API keys from environment variables
+            import os
+
+            api_keys = {
+                # ASR providers
+                'openai': openai_api_key or os.getenv('OPENAI_API_KEY'),
+                'deepgram': os.getenv('DEEPGRAM_API_KEY'),
+                'azure': os.getenv('AZURE_SPEECH_KEY'),
+                'sarvam': os.getenv('SARVAM_API_KEY'),
+                'assembly': os.getenv('ASSEMBLYAI_API_KEY'),
+                'google': os.getenv('GOOGLE_SPEECH_API_KEY'),
+
+                # LLM providers
+                'anthropic': os.getenv('ANTHROPIC_API_KEY'),
+                'deepseek': os.getenv('DEEPSEEK_API_KEY'),
+                'openrouter': os.getenv('OPENROUTER_API_KEY'),
+                'groq': os.getenv('GROQ_API_KEY'),
+
+                # TTS providers
+                'cartesia': os.getenv('CARTESIA_API_KEY'),
+                'elevenlabs': os.getenv('ELEVENLABS_API_KEY'),
+            }
+
+            # Remove None values
+            api_keys = {k: v for k, v in api_keys.items() if v is not None}
+
+            # Add Azure region to assistant config if available
+            if os.getenv('AZURE_SPEECH_REGION'):
+                assistant['azure_region'] = os.getenv('AZURE_SPEECH_REGION')
+            if os.getenv('AZURE_OPENAI_ENDPOINT'):
+                assistant['azure_openai_endpoint'] = os.getenv('AZURE_OPENAI_ENDPOINT')
+
+            # Initialize custom handler
+            handler = CustomProviderHandler(websocket, assistant, api_keys)
+
+            # Handle WebSocket messages
+            try:
+                async for message in websocket.iter_text():
+                    data = json.loads(message)
+                    await handler.handle_twilio_message(data)
+            except Exception as e:
+                logger.error(f"[CUSTOM_HANDLER_ERROR] {e}", exc_info=True)
+            finally:
+                await websocket.close()
+            return
+
+        # Continue with realtime API mode (default)
+        logger.info("[OUTBOUND] Using OpenAI Realtime API mode")
 
         # Add language instruction to system message if not English
         if bot_language and bot_language != 'en':
