@@ -1,9 +1,0 @@
-version: "2"
-authtoken: ${NGROK_AUTHTOKEN}
-
-tunnels:
-  api:
-    proto: http
-    addr: api:8000
-    inspect: true
-    bind_tls: true

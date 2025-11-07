@@ -17,19 +17,22 @@ class AIAssistantCreate(BaseModel):
     calendar_account_ids: Optional[List[str]] = []  # Multiple calendar accounts for availability checking and scheduling
     calendar_enabled: Optional[bool] = False  # Enable calendar functionality
 
-    # Provider selection
-    asr_provider: Optional[str] = "openai"  # openai, deepgram, groq
-    tts_provider: Optional[str] = "openai"  # openai, cartesia, elevenlabs
+    # Voice Mode Selection
+    voice_mode: Optional[str] = "realtime"  # realtime (OpenAI Realtime API) or custom (separate ASR/LLM/TTS)
+
+    # Provider selection (only used in custom mode)
+    asr_provider: Optional[str] = "deepgram"  # deepgram, azure, sarvam, assembly, google
+    tts_provider: Optional[str] = "sarvam"  # sarvam, cartesia, azuretts, elevenlabs, openai
 
     # ASR Configuration
     asr_language: Optional[str] = "en"  # Language code for ASR
-    asr_model: Optional[str] = None  # Model for ASR (e.g., nova-2 for Deepgram, whisper-1 for OpenAI)
-    asr_keywords: Optional[List[str]] = []  # Keywords to boost in ASR
+    asr_model: Optional[str] = "nova-3"  # nova-3, nova-2, nova-2-medical, nova-2-atc, etc. for Deepgram
+    asr_keywords: Optional[List[str]] = []  # Keywords to boost in ASR (e.g., ["Bruce:100"])
 
     # TTS Configuration
-    tts_model: Optional[str] = None  # Model for TTS
+    tts_model: Optional[str] = "bulbul:v2"  # bulbul:v2 for Sarvam, sonic-english for Cartesia, etc.
     tts_speed: Optional[float] = Field(default=1.0, ge=0.25, le=4.0)  # Speech speed multiplier
-    tts_voice: Optional[str] = None  # Voice identifier for TTS engines
+    tts_voice: Optional[str] = "Manisha"  # Voice identifier: Manisha, Hitesh, Abhilash, Karun, etc. for Sarvam
 
     # Transcription & Interruptions
     enable_precise_transcript: Optional[bool] = False  # Generate more precise transcripts during interruptions
@@ -45,8 +48,8 @@ class AIAssistantCreate(BaseModel):
     audio_buffer_size: Optional[int] = Field(default=200, ge=50, le=1000)  # Audio buffer size in ms
 
     # LLM Configuration
-    llm_provider: Optional[str] = "openai"  # openai, anthropic, groq
-    llm_model: Optional[str] = None  # e.g., gpt-4o, gpt-4o-mini, claude-3-5-sonnet
+    llm_provider: Optional[str] = "openai"  # openai, azure, openrouter, deepseek, anthropic, groq
+    llm_model: Optional[str] = None  # e.g., gpt-4.1-mini, gpt-4.1, gpt-4o, gpt-4o-mini, gpt-4, gpt-3.5-turbo, claude-3-5-sonnet
     llm_max_tokens: Optional[int] = Field(default=150, ge=50, le=4000)  # Max tokens in response
 
     # Language Configuration
@@ -64,7 +67,10 @@ class AIAssistantUpdate(BaseModel):
     calendar_account_ids: Optional[List[str]] = None  # Update multiple calendar accounts
     calendar_enabled: Optional[bool] = None  # Enable/disable calendar functionality
 
-    # Provider selection
+    # Voice Mode Selection
+    voice_mode: Optional[str] = None  # realtime or custom
+
+    # Provider selection (only used in custom mode)
     asr_provider: Optional[str] = None  # openai, deepgram, groq
     tts_provider: Optional[str] = None  # openai, cartesia, elevenlabs
 
@@ -92,8 +98,8 @@ class AIAssistantUpdate(BaseModel):
     audio_buffer_size: Optional[int] = Field(default=None, ge=50, le=1000)
 
     # LLM Configuration
-    llm_provider: Optional[str] = None  # openai, anthropic, groq
-    llm_model: Optional[str] = None  # e.g., gpt-4o, gpt-4o-mini, claude-3-5-sonnet
+    llm_provider: Optional[str] = None  # openai, azure, openrouter, deepseek, anthropic, groq
+    llm_model: Optional[str] = None  # e.g., gpt-4.1-mini, gpt-4.1, gpt-4o, gpt-4o-mini, gpt-4, gpt-3.5-turbo, claude-3-5-sonnet
     llm_max_tokens: Optional[int] = Field(default=None, ge=50, le=4000)  # Max tokens in response
 
     # Language Configuration
@@ -140,7 +146,10 @@ class AIAssistantResponse(BaseModel):
     frejun_flow_token: str
     frejun_flow_url: str
 
-    # Provider selection
+    # Voice Mode Selection
+    voice_mode: str = "realtime"  # realtime or custom
+
+    # Provider selection (only used in custom mode)
     asr_provider: str = "openai"  # openai, deepgram, groq
     tts_provider: str = "openai"  # openai, cartesia, elevenlabs
 
@@ -168,7 +177,7 @@ class AIAssistantResponse(BaseModel):
     audio_buffer_size: int = 200
 
     # LLM Configuration
-    llm_provider: str = "openai"
+    llm_provider: str = "openai"  # openai, azure, openrouter, deepseek, anthropic, groq
     llm_model: Optional[str] = None
     llm_max_tokens: int = 150
 

@@ -188,12 +188,25 @@ const VOICE_OPTIONS: VoiceOption[] = [
 // ASR Provider Models from convis-api/app/providers/asr.py
 const ASR_MODELS = {
   deepgram: [
-    { value: 'nova-2', label: 'Nova-2', cost: 0.0043, latency: 75 }
+    { value: 'nova-2', label: 'Nova-2', cost: 0.0043, latency: 75 },
+    { value: 'nova-3', label: 'Nova-3', cost: 0.0059, latency: 80 }
   ],
   openai: [
     { value: 'whisper-1', label: 'Whisper-1', cost: 0.006, latency: 250 }
+  ],
+  azure: [
+    { value: 'en-US', label: 'Azure Speech', cost: 0.0048, latency: 100 }
+  ],
+  sarvam: [
+    { value: 'saarika:v1', label: 'Saarika V1 (Indian Languages)', cost: 0.004, latency: 120 }
+  ],
+  assembly: [
+    { value: 'best', label: 'Best (Highest Accuracy)', cost: 0.005, latency: 150 },
+    { value: 'nano', label: 'Nano (Fastest)', cost: 0.003, latency: 90 }
+  ],
+  google: [
+    { value: 'default', label: 'Google Speech-to-Text', cost: 0.0048, latency: 130 }
   ]
-  // groq: Coming soon - Ultra-fast Whisper with 50ms latency
 };
 
 // TTS Provider Voices and Models from convis-api/app/providers/tts.py
@@ -218,6 +231,21 @@ const TTS_VOICES = {
     { value: 'onyx', label: 'Onyx - Deep male' },
     { value: 'nova', label: 'Nova - Female voice' },
     { value: 'shimmer', label: 'Shimmer - Soft female' }
+  ],
+  sarvam: [
+    { value: 'Manisha', label: 'Manisha - Female Hindi/English' },
+    { value: 'Hitesh', label: 'Hitesh - Male Hindi/English' },
+    { value: 'Abhilash', label: 'Abhilash - Male Hindi' },
+    { value: 'Karun', label: 'Karun - Male Hindi' },
+    { value: 'Anushka', label: 'Anushka - Female Hindi' },
+    { value: 'Vidya', label: 'Vidya - Female Hindi' },
+    { value: 'Arya', label: 'Arya - Female Hindi' }
+  ],
+  azuretts: [
+    { value: 'en-US-JennyNeural', label: 'Jenny (US Female)' },
+    { value: 'en-US-GuyNeural', label: 'Guy (US Male)' },
+    { value: 'en-IN-NeerjaNeural', label: 'Neerja (Indian Female)' },
+    { value: 'en-IN-PrabhatNeural', label: 'Prabhat (Indian Male)' }
   ]
 };
 
@@ -226,11 +254,19 @@ const TTS_MODELS = {
     { value: 'sonic-english', label: 'Sonic English', cost: 0.005, latency: 100 }
   ],
   elevenlabs: [
-    { value: 'eleven_turbo_v2', label: 'Eleven Turbo V2', cost: 0.018, latency: 150 }
+    { value: 'eleven_turbo_v2', label: 'Eleven Turbo V2', cost: 0.018, latency: 150 },
+    { value: 'eleven_monolingual_v1', label: 'Eleven Monolingual V1', cost: 0.022, latency: 180 }
   ],
   openai: [
     { value: 'tts-1', label: 'TTS-1 (Fast)', cost: 0.015, latency: 250 },
     { value: 'tts-1-hd', label: 'TTS-1-HD (Quality)', cost: 0.030, latency: 300 }
+  ],
+  sarvam: [
+    { value: 'bulbul:v1', label: 'Bulbul V1', cost: 0.005, latency: 120 },
+    { value: 'bulbul:v2', label: 'Bulbul V2 (Better Quality)', cost: 0.006, latency: 130 }
+  ],
+  azuretts: [
+    { value: 'neural', label: 'Neural TTS', cost: 0.016, latency: 140 }
   ]
 };
 
@@ -250,6 +286,11 @@ const LLM_MODELS = {
     { value: 'gpt-4o-mini-realtime-preview-2025-06-03', label: 'GPT-4O Mini Realtime 2025-06-03 (Preview)', cost: 0.0006, latency: 200 },
     { value: 'gpt-4o-mini-realtime', label: 'GPT-4O Mini Realtime (Stable Version, Ultra Fast, Lowest Cost)', cost: 0.0006, latency: 200 }
   ],
+  azure: [
+    { value: 'gpt-4o', label: 'Azure GPT-4O', cost: 0.005, latency: 850 },
+    { value: 'gpt-4', label: 'Azure GPT-4', cost: 0.01, latency: 1000 },
+    { value: 'gpt-35-turbo', label: 'Azure GPT-3.5 Turbo', cost: 0.0005, latency: 320 }
+  ],
   anthropic: [
     { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Best)', cost: 0.003, latency: 900 },
     { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus', cost: 0.015, latency: 1200 },
@@ -260,6 +301,15 @@ const LLM_MODELS = {
     { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Best)', cost: 0.00059, latency: 150 },
     { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', cost: 0.00024, latency: 120 },
     { value: 'llama-3.1-70b-versatile', label: 'Llama 3.1 70B', cost: 0.00059, latency: 150 }
+  ],
+  deepseek: [
+    { value: 'deepseek-chat', label: 'Deepseek Chat', cost: 0.00014, latency: 600 },
+    { value: 'deepseek-coder', label: 'Deepseek Coder', cost: 0.00014, latency: 650 }
+  ],
+  openrouter: [
+    { value: 'auto', label: 'Auto-select Best Model', cost: 0.002, latency: 700 },
+    { value: 'openai/gpt-4o', label: 'GPT-4O (via OpenRouter)', cost: 0.005, latency: 850 },
+    { value: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet (via OpenRouter)', cost: 0.003, latency: 950 }
   ]
 };
 
@@ -1541,8 +1591,9 @@ export default function AIAgentPage() {
                     {assistant.system_message}
                   </p>
 
-                  {/* API Key Status Badge */}
-                  <div className="mb-3">
+                  {/* Status Badges */}
+                  <div className="mb-3 flex flex-wrap gap-2">
+                    {/* API Key Status Badge */}
                     {assistant.has_api_key ? (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-green-500/10 text-green-500 border border-green-500/20">
                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1558,21 +1609,63 @@ export default function AIAgentPage() {
                         No API Key
                       </span>
                     )}
-                    {assistant.api_key_label && (
-                      <p className={`mt-2 text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                        Using: <span className="font-semibold text-primary">{assistant.api_key_label}</span>
-                        {assistant.api_key_provider ? ` • ${displayProviderLabel(assistant.api_key_provider)}` : ''}
-                      </p>
-                    )}
-                    {assistant.has_knowledge_base && (
+
+                    {/* Voice Mode Badge */}
+                    {(assistant.voice_mode === 'custom' || assistant.asr_provider || assistant.tts_provider) ? (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-purple-500/10 text-purple-500 border border-purple-500/20" title={`ASR: ${assistant.asr_provider || 'openai'} | LLM: ${assistant.llm_provider || 'openai'} | TTS: ${assistant.tts_provider || 'openai'}`}>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z" />
+                        </svg>
+                        Custom Providers
+                      </span>
+                    ) : (
                       <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-blue-500/10 text-blue-500 border border-blue-500/20">
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        Realtime API
+                      </span>
+                    )}
+
+                    {/* Knowledge Base Badge */}
+                    {assistant.has_knowledge_base && (
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold bg-indigo-500/10 text-indigo-500 border border-indigo-500/20">
                         <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253" />
                         </svg>
-                        {assistant.knowledge_base_files?.length || 0} {assistant.knowledge_base_files?.length === 1 ? 'Document' : 'Documents'}
+                        {assistant.knowledge_base_files?.length || 0} {assistant.knowledge_base_files?.length === 1 ? 'Doc' : 'Docs'}
                       </span>
                     )}
                   </div>
+
+                  {/* Provider Details for Custom Mode */}
+                  {(assistant.voice_mode === 'custom' || assistant.asr_provider || assistant.tts_provider) && (
+                    <div className={`mb-3 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} space-y-1`}>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">ASR:</span>
+                        <span className="text-purple-500 font-semibold">{(assistant.asr_provider || 'openai').toUpperCase()}</span>
+                        {assistant.asr_model && <span className="text-gray-500">({assistant.asr_model})</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">LLM:</span>
+                        <span className="text-purple-500 font-semibold">{(assistant.llm_provider || 'openai').toUpperCase()}</span>
+                        {assistant.llm_model && <span className="text-gray-500">({assistant.llm_model})</span>}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">TTS:</span>
+                        <span className="text-purple-500 font-semibold">{(assistant.tts_provider || 'openai').toUpperCase()}</span>
+                        {assistant.tts_voice && <span className="text-gray-500">({assistant.tts_voice})</span>}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* API Key Label */}
+                  {assistant.api_key_label && (
+                    <p className={`mb-3 text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                      Using: <span className="font-semibold text-primary">{assistant.api_key_label}</span>
+                      {assistant.api_key_provider ? ` • ${displayProviderLabel(assistant.api_key_provider)}` : ''}
+                    </p>
+                  )}
 
                   {/* Assistant Details */}
                   <div className="flex items-center gap-4 text-xs">
@@ -2345,6 +2438,37 @@ export default function AIAgentPage() {
                     {/* Custom Provider Details (only shown when selected) */}
                     {providerMode === 'custom' && (
                       <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-200'} space-y-4`} onClick={(e) => e.stopPropagation()}>
+                        {/* Ultra-Fast Preset Button */}
+                        <div className="flex items-center gap-2 mb-4">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFormData({
+                                ...formData,
+                                asr_provider: 'deepgram',
+                                asr_model: 'nova-3',
+                                asr_language: 'en',
+                                llm_provider: 'groq',
+                                llm_model: 'llama-3.3-70b-versatile',
+                                llm_max_tokens: 100,
+                                tts_provider: 'cartesia',
+                                tts_voice: 'sonic',
+                                tts_model: 'sonic-english'
+                              });
+                            }}
+                            className={`px-4 py-2 text-sm font-medium rounded-lg border transition-all ${
+                              isDarkMode
+                                ? 'bg-green-900/20 border-green-700 text-green-400 hover:bg-green-900/30'
+                                : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100'
+                            }`}
+                          >
+                            ⚡ Ultra-Fast Preset (~800ms latency)
+                          </button>
+                          <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                            Deepgram Nova-3 + Groq Llama 3.3 + Cartesia Sonic
+                          </span>
+                        </div>
+
                         {/* ASR Section */}
                         <div>
                           <div className="flex items-center gap-2 mb-3">
@@ -2364,7 +2488,7 @@ export default function AIAgentPage() {
                                 name="asr_provider"
                                 value={formData.asr_provider}
                                 onChange={(e) => {
-                                  const provider = e.target.value as 'deepgram' | 'openai';
+                                  const provider = e.target.value as 'deepgram' | 'openai' | 'azure' | 'sarvam' | 'assembly' | 'google';
                                   const defaultModel = ASR_MODELS[provider][0].value;
                                   setFormData({
                                     ...formData,
@@ -2376,6 +2500,10 @@ export default function AIAgentPage() {
                               >
                                 <option value="deepgram">Deepgram Nova</option>
                                 <option value="openai">OpenAI Whisper</option>
+                                <option value="azure">Azure Speech</option>
+                                <option value="sarvam">Sarvam AI (Indian Languages)</option>
+                                <option value="assembly">AssemblyAI</option>
+                                <option value="google">Google Speech-to-Text</option>
                               </select>
                             </div>
                             <div>
@@ -2442,7 +2570,7 @@ export default function AIAgentPage() {
                                 name="tts_provider"
                                 value={formData.tts_provider}
                                 onChange={(e) => {
-                                  const provider = e.target.value as 'cartesia' | 'elevenlabs' | 'openai';
+                                  const provider = e.target.value as 'cartesia' | 'elevenlabs' | 'openai' | 'sarvam' | 'azuretts';
                                   const defaultVoice = TTS_VOICES[provider][0].value;
                                   const defaultModel = TTS_MODELS[provider][0].value;
                                   setFormData({
@@ -2456,7 +2584,9 @@ export default function AIAgentPage() {
                               >
                                 <option value="cartesia">Cartesia Sonic</option>
                                 <option value="elevenlabs">ElevenLabs</option>
-                                <option value="openai">OpenAI</option>
+                                <option value="openai">OpenAI TTS</option>
+                                <option value="sarvam">Sarvam AI (Indian Voices)</option>
+                                <option value="azuretts">Azure TTS</option>
                               </select>
                             </div>
                             <div>
@@ -2523,7 +2653,7 @@ export default function AIAgentPage() {
                                 name="llm_provider"
                                 value={formData.llm_provider}
                                 onChange={(e) => {
-                                  const provider = e.target.value as 'openai' | 'openai-realtime' | 'anthropic' | 'groq';
+                                  const provider = e.target.value as 'openai' | 'openai-realtime' | 'azure' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter';
                                   const defaultModel = LLM_MODELS[provider][0].value;
                                   setFormData({
                                     ...formData,
@@ -2535,8 +2665,11 @@ export default function AIAgentPage() {
                               >
                                 <option value="openai">OpenAI GPT</option>
                                 <option value="openai-realtime">OpenAI Realtime API (Voice Optimized)</option>
+                                <option value="azure">Azure OpenAI</option>
                                 <option value="anthropic">Anthropic Claude</option>
                                 <option value="groq">Groq (Ultra-Fast)</option>
+                                <option value="deepseek">Deepseek (Cost-Effective)</option>
+                                <option value="openrouter">OpenRouter (Multi-Model)</option>
                               </select>
                             </div>
                             <div>
