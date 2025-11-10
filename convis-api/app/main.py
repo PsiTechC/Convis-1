@@ -19,6 +19,7 @@ from app.routes.twilio_webhooks import router as twilio_webhooks_router
 from app.routes.campaign_twilio_callbacks import router as campaign_twilio_router
 from app.routes.dashboard import router as dashboard_router
 from app.routes.frejun import router as frejun_router
+from app.routes.whatsapp import credentials_router, messages_router, webhooks_router
 from app.config.database import Database
 from app.config.settings import settings
 from app.services.campaign_scheduler import campaign_scheduler
@@ -112,6 +113,11 @@ app.include_router(campaign_twilio_router, tags=["Campaign Webhooks"])
 
 # FreJun Integration
 app.include_router(frejun_router, prefix="/api/frejun", tags=["FreJun Calls"])
+
+# WhatsApp Integration
+app.include_router(credentials_router, prefix="/api/whatsapp", tags=["WhatsApp"])
+app.include_router(messages_router, prefix="/api/whatsapp", tags=["WhatsApp"])
+app.include_router(webhooks_router, prefix="/api/whatsapp", tags=["WhatsApp Webhooks"])
 
 @app.on_event("startup")
 async def startup_event():
