@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import Navigation from '../components/Navigation';
-import TopBar from '../components/TopBar';
+import { useState, useEffect, useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import { DotLottieReact } from '@lottiefiles/dotlottie-react';
+import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
+import { TopBar } from '../components/TopBar';
 import AddCredentialModal from './components/AddCredentialModal';
 import SendMessageModal from './components/SendMessageModal';
 import MessageHistoryModal from './components/MessageHistoryModal';
@@ -12,6 +14,19 @@ import {
   verifyWhatsAppCredential,
   getWhatsAppStats
 } from '@/lib/whatsapp-api';
+
+type StoredUser = {
+  id?: string;
+  _id?: string;
+  clientId?: string;
+  name?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  email?: string;
+  [key: string]: unknown;
+};
 
 interface WhatsAppCredential {
   id: string;
@@ -33,8 +48,12 @@ interface WhatsAppStats {
 }
 
 export default function WhatsAppPage() {
+  const router = useRouter();
+  const [user, setUser] = useState<StoredUser | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
-  const [isNavOpen, setIsNavOpen] = useState(false);
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [activeNav, setActiveNav] = useState('WhatsApp');
   const [activeTab, setActiveTab] = useState<'credentials' | 'messages' | 'analytics'>('credentials');
 
   const [credentials, setCredentials] = useState<WhatsAppCredential[]>([]);
@@ -51,11 +70,25 @@ export default function WhatsAppPage() {
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
-    const darkModeEnabled = localStorage.getItem('darkMode') === 'enabled';
-    setIsDarkMode(darkModeEnabled);
+    const token = localStorage.getItem('token');
+    const userStr = localStorage.getItem('user');
+
+    if (!token) {
+      router.push('/login');
+      return;
+    }
+
+    if (userStr) {
+      const parsedUser: StoredUser = JSON.parse(userStr);
+      setUser(parsedUser);
+    }
+
+    const savedTheme = localStorage.getItem('theme');
+    setIsDarkMode(savedTheme === 'dark');
+
     fetchCredentials();
     fetchStats();
-  }, []);
+  }, [router]);
 
   const fetchCredentials = async () => {
     try {
@@ -157,33 +190,116 @@ export default function WhatsAppPage() {
     }
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem('token');
+    localStorage.removeItem('user');
+    localStorage.removeItem('clientId');
+    localStorage.removeItem('isAdmin');
+    router.push('/login');
+  };
+
+  const toggleTheme = () => {
+    const newTheme = !isDarkMode;
+    setIsDarkMode(newTheme);
+    localStorage.setItem('theme', newTheme ? 'dark' : 'light');
+  };
+
+  const handleNavigation = (navItem: NavigationItem) => {
+    setActiveNav(navItem.name);
+    router.push(navItem.href);
+  };
+
+  const navigationItems = useMemo(() => NAV_ITEMS, []);
+
+  const userInitial = useMemo(() => {
+    const possible = user?.fullName || user?.name || user?.username || user?.email;
+    if (!possible || typeof possible !== 'string' || possible.length === 0) {
+      return 'U';
+    }
+    return possible.trim().charAt(0).toUpperCase();
+  }, [user]);
+
+  const userGreeting = useMemo(() => {
+    const candidates = [
+      user?.firstName && user?.firstName,
+      user?.fullName,
+      user?.name,
+      user?.username,
+      user?.email,
+    ].filter((value) => typeof value === 'string' && value.trim().length > 0) as string[];
+    if (candidates.length === 0) return undefined;
+    const primary = candidates[0];
+    if (primary.includes('@')) {
+      return primary.split('@')[0];
+    }
+    return primary.split(' ')[0];
+  }, [user]);
+
+  if (!user) {
+    return (
+      <div className={`min-h-screen flex items-center justify-center ${isDarkMode ? 'bg-gray-900' : 'bg-neutral-light'}`}>
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
+      </div>
+    );
+  }
+
   return (
     <div className={`min-h-screen ${isDarkMode ? 'dark bg-gray-900' : 'bg-neutral-light'}`}>
+      {/* Sidebar */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 lg:z-30 transform ${
-          isNavOpen ? 'translate-x-0' : '-translate-x-full'
-        } lg:translate-x-0 transition-transform duration-300 ease-in-out`}
+        onMouseEnter={() => setIsSidebarCollapsed(false)}
+        onMouseLeave={() => setIsSidebarCollapsed(true)}
+        className={`fixed left-0 top-0 h-full ${isDarkMode ? 'bg-gray-800' : 'bg-white'} border-r ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} transition-all duration-300 z-40 ${isSidebarCollapsed ? 'w-20' : 'w-64'} ${isMobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}
       >
-        <Navigation
-          isDarkMode={isDarkMode}
-          setIsDarkMode={setIsDarkMode}
-          isOpen={isNavOpen}
-          setIsOpen={setIsNavOpen}
-        />
+        <div className="flex flex-col h-full">
+          {/* Logo */}
+          <div className={`flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start gap-3'} ${isSidebarCollapsed ? 'px-4' : 'px-6'} py-4 border-b ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'}`}>
+            <div className="w-10 h-10 bg-primary rounded-xl flex items-center justify-center flex-shrink-0">
+              <DotLottieReact
+                src="/microphone-animation.lottie"
+                loop
+                autoplay
+                style={{ width: '24px', height: '24px' }}
+              />
+            </div>
+            {!isSidebarCollapsed && (
+              <span className={`font-bold text-lg ${isDarkMode ? 'text-white' : 'text-neutral-dark'} whitespace-nowrap`}>Convis AI</span>
+            )}
+          </div>
+
+          {/* Navigation */}
+          <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
+            {navigationItems.map((item) => (
+              <button
+                key={item.name}
+                onClick={() => handleNavigation(item)}
+                className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
+                  activeNav === item.name
+                    ? `${isDarkMode ? 'bg-primary/20 text-primary' : 'bg-primary/10 text-primary'} font-semibold`
+                    : `${isDarkMode ? 'text-gray-400 hover:bg-gray-700 hover:text-white' : 'text-neutral-mid hover:bg-neutral-light hover:text-neutral-dark'}`
+                } ${isSidebarCollapsed ? 'justify-center' : ''}`}
+              >
+                <svg className="w-5 h-5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  {item.icon}
+                </svg>
+                {!isSidebarCollapsed && (
+                  <span className="text-sm">{item.name}</span>
+                )}
+              </button>
+            ))}
+          </nav>
+        </div>
       </aside>
 
-      {isNavOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
-          onClick={() => setIsNavOpen(false)}
-        />
-      )}
-
-      <div className="lg:ml-20">
+      {/* Main Content */}
+      <div className={`transition-all duration-300 ${isSidebarCollapsed ? 'lg:ml-20' : 'lg:ml-64'}`}>
         <TopBar
-          title="WhatsApp Integration"
           isDarkMode={isDarkMode}
-          onMenuClick={() => setIsNavOpen(!isNavOpen)}
+          toggleTheme={toggleTheme}
+          onLogout={handleLogout}
+          userInitial={userInitial}
+          userLabel={userGreeting}
+          onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
         />
 
         <main className="px-4 py-6 sm:px-6 lg:px-8">
@@ -463,6 +579,14 @@ export default function WhatsAppPage() {
             setSelectedCredential(null);
           }}
         />
+      )}
+
+      {/* Mobile Menu Overlay */}
+      {isMobileMenuOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-30 lg:hidden"
+          onClick={() => setIsMobileMenuOpen(false)}
+        ></div>
       )}
     </div>
   );
