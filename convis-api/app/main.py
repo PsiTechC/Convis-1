@@ -1,7 +1,14 @@
 import os
 import logging
+from pathlib import Path
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+# Load .env file from the project root
+env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(dotenv_path=env_path)
+
 from app.routes.register import registration_router, verify_email_router, check_user_router
 from app.routes.forgot_password import send_otp_router, verify_otp_router, reset_password_router
 from app.routes.access import login_router, logout_router

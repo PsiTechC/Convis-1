@@ -40,56 +40,26 @@ class WhatsAppService:
     async def send_text_message(self, to: str, message: str) -> Dict[str, Any]:
         """
         Send a text message via WhatsApp
-        Note: Railway API primarily uses templates, but we'll try to send as template
+        Note: WhatsApp Business API does NOT support free-form text messages.
+        Only pre-approved template messages are allowed.
 
         Args:
             to: Recipient phone number with country code (e.g., +1234567890)
             message: Text message content
 
         Returns:
-            API response with message ID
+            Error response - text messages not supported
         """
-        logger.warning("Railway WhatsApp API primarily supports templates. Consider using send_template_message instead.")
+        logger.error("WhatsApp Business API does not support free-form text messages. Only template messages are allowed.")
 
-        # For text messages, we might need a simple text template
-        # This is a fallback - check if your Railway API supports direct text
-        url = f"{self.base_url}/api/send-message"
-
-        payload = {
-            "to_number": to,
-            "whatsapp_request_type": "TEXT",  # Try TEXT type
-            "message": message
+        return {
+            "success": False,
+            "error": "WhatsApp Business API only allows pre-approved template messages. Free-form text messages are not supported. Please use a template instead.",
+            "response": {
+                "message": "Text messages not supported by WhatsApp Business API",
+                "suggestion": "Use a pre-approved template message instead"
+            }
         }
-
-        try:
-            response = requests.post(url, headers=self.headers, json=payload, timeout=30)
-            response.raise_for_status()
-            result = response.json()
-
-            logger.info(f"Text message sent to {to}: {result}")
-
-            # Extract message ID from Railway API response
-            message_id = result.get("metaResponse", {}).get("messages", [{}])[0].get("id")
-
-            return {
-                "success": True,
-                "message_id": message_id,
-                "response": result
-            }
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to send text message to {to}: {str(e)}")
-            error_response = {}
-            if hasattr(e, 'response') and e.response is not None:
-                try:
-                    error_response = e.response.json()
-                except:
-                    error_response = {"error": e.response.text}
-
-            return {
-                "success": False,
-                "error": str(e),
-                "response": error_response
-            }
 
     async def send_template_message(
         self,
@@ -154,24 +124,79 @@ class WhatsAppService:
         Returns:
             List of available templates
         """
-        url = f"{self.base_url}/api/sync-templates"
+        # Try multiple possible endpoints
+        endpoints = [
+            "/api/templates",  # Most common endpoint for fetching templates
+            "/api/get-templates",  # Alternative endpoint
+            "/api/sync-templates",  # Sync endpoint (may only trigger sync)
+        ]
 
-        try:
-            response = requests.get(url, headers=self.headers, timeout=30)
-            response.raise_for_status()
-            result = response.json()
+        for endpoint in endpoints:
+            url = f"{self.base_url}{endpoint}"
 
-            logger.info(f"Templates synced: {result}")
+            try:
+                response = requests.get(url, headers=self.headers, timeout=30)
+                response.raise_for_status()
+                result = response.json()
+
+                logger.info(f"Templates response from {endpoint}: {result}")
+
+                # Railway API might return templates in different formats
+                # Try to extract templates from various possible response structures
+                templates = []
+
+                if isinstance(result, dict):
+                    # Try different possible keys
+                    templates = (
+                        result.get("templates", []) or
+                        result.get("data", []) or
+                        result.get("message_templates", []) or
+                        []
+                    )
+
+                    # If templates is still empty but result has 'data' as dict
+                    if not templates and "data" in result and isinstance(result["data"], list):
+                        templates = result["data"]
+
+                elif isinstance(result, list):
+                    # If the response itself is a list of templates
+                    templates = result
+
+                # If we found templates, use this endpoint
+                if templates:
+                    logger.info(f"Found templates using endpoint: {endpoint}")
+                    break
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Endpoint {endpoint} failed: {str(e)}")
+                continue
+
+        # Normalize template format
+        normalized_templates = []
+        for template in templates:
+            if isinstance(template, dict):
+                # Extract template information
+                normalized_templates.append({
+                    "id": template.get("id") or template.get("name"),
+                    "name": template.get("name"),
+                    "status": template.get("status", "APPROVED"),
+                    "language": template.get("language", "en"),
+                    "category": template.get("category", "UTILITY"),
+                    "components": template.get("components", [])
+                })
+
+        logger.info(f"Normalized {len(normalized_templates)} templates")
+
+        if normalized_templates:
             return {
                 "success": True,
-                "templates": result.get("templates", []),
+                "templates": normalized_templates,
                 "response": result
             }
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Failed to sync templates: {str(e)}")
+        else:
             return {
                 "success": False,
-                "error": str(e),
+                "error": "No templates found. The Railway API may not have a template fetching endpoint, or templates need to be synced first.",
                 "templates": []
             }
 

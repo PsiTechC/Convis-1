@@ -228,15 +228,16 @@ async def update_whatsapp_credential(
     if payload.label:
         update_data["label"] = payload.label
 
-    if payload.access_token:
-        update_data["access_token"] = encryption_service.encrypt(payload.access_token)
+    if payload.bearer_token:
+        update_data["bearer_token"] = encryption_service.encrypt(payload.bearer_token)
 
-    if payload.phone_number_id:
-        update_data["phone_number_id"] = encryption_service.encrypt(payload.phone_number_id)
-        update_data["last_four"] = payload.phone_number_id[-4:] if len(payload.phone_number_id) >= 4 else "****"
+    if payload.api_key:
+        update_data["api_key"] = encryption_service.encrypt(payload.api_key)
+        update_data["last_four"] = payload.api_key[-4:] if len(payload.api_key) >= 4 else "****"
 
-    if payload.business_account_id:
-        update_data["business_account_id"] = encryption_service.encrypt(payload.business_account_id)
+    if payload.api_url:
+        update_data["api_url"] = payload.api_url
+        update_data["api_url_masked"] = "railway.app" if "railway" in payload.api_url.lower() else "custom"
 
     update_data["updated_at"] = datetime.utcnow()
 
@@ -313,14 +314,16 @@ async def verify_whatsapp_credential(
         )
 
     # Decrypt credentials
-    access_token = encryption_service.decrypt(credential["access_token"])
-    phone_number_id = encryption_service.decrypt(credential["phone_number_id"])
+    api_key = encryption_service.decrypt(credential["api_key"])
+    bearer_token = encryption_service.decrypt(credential["bearer_token"])
+    api_url = credential.get("api_url", "https://whatsapp-api-backend-production.up.railway.app")
 
     # Test connection
     try:
         whatsapp_service = WhatsAppService(
-            access_token=access_token,
-            phone_number_id=phone_number_id
+            api_key=api_key,
+            bearer_token=bearer_token,
+            base_url=api_url
         )
 
         result = await whatsapp_service.test_connection()
@@ -335,9 +338,8 @@ async def verify_whatsapp_credential(
             return WhatsAppConnectionTestResponse(
                 success=True,
                 message="Credential is valid and active",
-                phone_number=result.get("phone_number"),
-                display_name=result.get("verified_name"),
-                quality_rating=result.get("quality_rating")
+                templates_count=result.get("templates_count"),
+                api_accessible=True
             )
         else:
             # Update status to error
@@ -348,7 +350,8 @@ async def verify_whatsapp_credential(
 
             return WhatsAppConnectionTestResponse(
                 success=False,
-                message=f"Credential verification failed: {result.get('error')}"
+                message=f"Credential verification failed: {result.get('error')}",
+                api_accessible=False
             )
 
     except Exception as e:
@@ -359,5 +362,6 @@ async def verify_whatsapp_credential(
 
         return WhatsAppConnectionTestResponse(
             success=False,
-            message=f"Verification failed: {str(e)}"
+            message=f"Verification failed: {str(e)}",
+            api_accessible=False
         )
