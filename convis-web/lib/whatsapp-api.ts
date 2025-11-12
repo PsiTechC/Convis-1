@@ -240,6 +240,43 @@ export async function getWhatsAppTemplates(credentialId: string): Promise<WhatsA
   return apiRequest(`/api/whatsapp/templates?credential_id=${credentialId}`);
 }
 
+export interface WhatsAppTemplateCreate {
+  credential_id: string;
+  template_name: string;
+  category: 'UTILITY' | 'MARKETING' | 'AUTHENTICATION';
+  language: string;
+  body_text: string;
+  header_text?: string;
+  footer_text?: string;
+}
+
+/**
+ * Create a new WhatsApp template
+ */
+export async function createWhatsAppTemplate(
+  data: WhatsAppTemplateCreate
+): Promise<{ success: boolean; message: string; template: any }> {
+  const params = new URLSearchParams({
+    credential_id: data.credential_id,
+    template_name: data.template_name,
+    category: data.category,
+    language: data.language,
+    body_text: data.body_text,
+  });
+
+  if (data.header_text) {
+    params.append('header_text', data.header_text);
+  }
+
+  if (data.footer_text) {
+    params.append('footer_text', data.footer_text);
+  }
+
+  return apiRequest(`/api/whatsapp/templates/create?${params}`, {
+    method: 'POST',
+  });
+}
+
 // ============= Stats =============
 
 export interface WhatsAppStats {

@@ -21,7 +21,8 @@ class InboundPostCallProcessor:
         self.db = Database.get_db()
         self.call_logs_collection = self.db['call_logs']
         self.assistants_collection = self.db['assistants']
-        self.inbound_call_logs_collection = self.db.get('inbound_call_logs', self.call_logs_collection)
+        # MongoDB databases don't have .get() method, use direct access
+        self.inbound_call_logs_collection = self.db['call_logs']
         self.openai_api_key = settings.openai_api_key
 
     async def download_recording(self, recording_url: str) -> Optional[bytes]:
@@ -265,6 +266,47 @@ Respond ONLY with the JSON object, no additional text."""
                     )
 
                     logger.info(f"Calendar appointment booked for inbound call {call_sid}")
+
+                    # Step 6a: Send WhatsApp confirmation if phone number available
+                    try:
+                        from app.services.appointment_whatsapp_service import AppointmentWhatsAppService
+
+                        # Get caller's phone number from call logs
+                        call_log = db["call_logs"].find_one({"call_sid": call_sid})
+                        if call_log and call_log.get("from_number"):
+                            caller_phone = call_log["from_number"]
+
+                            # Get customer name from call log or use generic name
+                            customer_name = call_log.get("caller_name", "Customer")
+
+                            # Prepare booking data for WhatsApp
+                            booking_data = {
+                                "_id": call_sid,  # Use call_sid as booking identifier
+                                "customer_name": customer_name,
+                                "start_time": appointment.get("start_iso"),
+                                "location": appointment.get("location", "Phone Call"),
+                                "duration": appointment.get("duration", 30)
+                            }
+
+                            # Send WhatsApp confirmation
+                            whatsapp_result = await AppointmentWhatsAppService.send_appointment_confirmation(
+                                user_id=str(user_id),
+                                booking_data=booking_data,
+                                phone_number=caller_phone
+                            )
+
+                            if whatsapp_result.get("success"):
+                                logger.info(f"WhatsApp confirmation sent to {caller_phone} for call {call_sid}")
+                            else:
+                                logger.warning(f"Failed to send WhatsApp confirmation: {whatsapp_result.get('error')}")
+                        else:
+                            logger.warning(f"No phone number found for call {call_sid}, skipping WhatsApp confirmation")
+
+                    except Exception as whatsapp_error:
+                        logger.error(f"Error sending WhatsApp confirmation: {whatsapp_error}")
+                        # Don't fail the entire process if WhatsApp fails
+                        import traceback
+                        logger.error(traceback.format_exc())
 
                 except ImportError:
                     logger.warning("CalendarService not available")
