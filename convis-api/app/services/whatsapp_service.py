@@ -200,6 +200,118 @@ class WhatsAppService:
                 "templates": []
             }
 
+    async def create_template(
+        self,
+        template_name: str,
+        category: str,
+        language: str,
+        body_text: str,
+        header_text: Optional[str] = None,
+        footer_text: Optional[str] = None,
+        buttons: Optional[List[Dict[str, Any]]] = None
+    ) -> Dict[str, Any]:
+        """
+        Create a new WhatsApp template via Railway API
+
+        Args:
+            template_name: Unique name for the template (lowercase, no spaces)
+            category: Template category (UTILITY, MARKETING, AUTHENTICATION)
+            language: Language code (e.g., 'en', 'en_US')
+            body_text: Main message body (can include {{1}}, {{2}} placeholders)
+            header_text: Optional header text
+            footer_text: Optional footer text
+            buttons: Optional list of button configurations
+
+        Returns:
+            API response with template creation status
+        """
+        # Try multiple possible endpoints for template creation
+        endpoints = [
+            "/api/message-templates",  # Common WhatsApp Business API endpoint
+            "/api/create-template",    # Custom endpoint
+            "/api/templates/create",   # Alternative format
+        ]
+
+        success_response = None
+        last_error = None
+
+        # Build components
+        components = []
+
+        if header_text:
+            components.append({
+                "type": "HEADER",
+                "format": "TEXT",
+                "text": header_text
+            })
+
+        components.append({
+            "type": "BODY",
+            "text": body_text
+        })
+
+        if footer_text:
+            components.append({
+                "type": "FOOTER",
+                "text": footer_text
+            })
+
+        if buttons:
+            components.append({
+                "type": "BUTTONS",
+                "buttons": buttons
+            })
+
+        payload = {
+            "name": template_name,
+            "category": category,
+            "language": language,
+            "components": components
+        }
+
+        # Try each endpoint
+        for endpoint in endpoints:
+            url = f"{self.base_url}{endpoint}"
+
+            try:
+                logger.info(f"Attempting to create template at {url}")
+                response = requests.post(url, headers=self.headers, json=payload, timeout=30)
+
+                # If we get a 2xx response, consider it success
+                if 200 <= response.status_code < 300:
+                    result = response.json()
+                    logger.info(f"Template '{template_name}' created successfully via {endpoint}: {result}")
+
+                    return {
+                        "success": True,
+                        "template": result,
+                        "response": result
+                    }
+                else:
+                    # Not a success, but not necessarily an error - try next endpoint
+                    logger.warning(f"Endpoint {endpoint} returned status {response.status_code}")
+                    last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                    continue
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Endpoint {endpoint} failed: {str(e)}")
+                last_error = str(e)
+                if hasattr(e, 'response') and e.response is not None:
+                    try:
+                        last_error = e.response.json()
+                    except:
+                        last_error = e.response.text[:200] if hasattr(e.response, 'text') else str(e)
+                continue
+
+        # If we get here, none of the endpoints worked
+        logger.error(f"Failed to create template '{template_name}' - all endpoints failed")
+
+        return {
+            "success": False,
+            "error": f"Template creation is not supported by the Railway WhatsApp API. Please create templates directly in WhatsApp Business Manager (https://business.facebook.com/wa/manage/message-templates/). Last error: {last_error}",
+            "response": last_error
+        }
+
     async def get_message_templates(self) -> Dict[str, Any]:
         """
         Get all message templates (alias for sync_templates)

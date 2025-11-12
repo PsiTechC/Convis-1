@@ -24,6 +24,7 @@ from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 import httpx
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
@@ -908,6 +909,23 @@ async def get_user_call_logs(user_id: str, limit: int = 100):
             # Get voice configuration from call log
             voice_config = db_call.get("voice_config", {})
 
+            # Transform recording URL to use proxy endpoint if it's a direct Twilio URL
+            recording_url = db_call.get("recording_url")
+            if recording_url and "api.twilio.com" in recording_url:
+                # Extract recording SID from Twilio URL
+                # URL formats:
+                # - https://api.twilio.com/...../Recordings/RE*****.mp3
+                # - https://account:token@api.twilio.com/.../Recordings/RE*****.mp3
+                # Recording SID format: RE followed by 32 hex characters
+                recording_sid_match = re.search(r'/Recordings/(RE[a-f0-9]{32})', recording_url, re.IGNORECASE)
+                if recording_sid_match:
+                    recording_sid = recording_sid_match.group(1)
+                    recording_url = f"/api/phone-numbers/recording/{recording_sid}?user_id={user_id}"
+                else:
+                    # If we can't extract a valid SID, keep the original URL but log a warning
+                    logger.warning(f"Could not extract recording SID from URL: {recording_url}")
+                    recording_url = None
+
             call_log = CallLogResponse(
                 id=call_sid or str(db_call["_id"]),
                 **{"from": db_call.get("from_number") or "Unknown"},
@@ -928,7 +946,7 @@ async def get_user_call_logs(user_id: str, limit: int = 100):
                 parent_call_sid=None,
                 price=None,
                 price_unit=None,
-                recording_url=db_call.get("recording_url"),
+                recording_url=recording_url,
                 transcription_text=db_call.get("transcription_text"),
                 assistant_id=assistant_info["id"] if assistant_info else None,
                 assistant_name=assistant_info["name"] if assistant_info else None,
@@ -980,6 +998,42 @@ async def get_user_call_logs(user_id: str, limit: int = 100):
                     if call.direction in ['inbound', 'trunking'] and call.to:
                         assistant_info = phone_to_assistant.get(call.to)
 
+                    # Fetch recordings and transcriptions from Twilio
+                    recording_url = None
+                    transcription_text = None
+
+                    try:
+                        # Fetch recordings for this call
+                        recordings = client.recordings.list(call_sid=call.sid, limit=1)
+                        if recordings:
+                            recording = recordings[0]
+                            # Validate recording SID format before using it
+                            if recording.sid and len(recording.sid) == 34 and recording.sid.startswith('RE'):
+                                # Use our proxy endpoint instead of direct Twilio URL
+                                # This prevents browser authentication prompts
+                                recording_url = f"/api/phone-numbers/recording/{recording.sid}?user_id={user_id}"
+                                logger.debug(f"Found recording {recording.sid} for call {call.sid}")
+                            else:
+                                logger.warning(f"Invalid recording SID format: {recording.sid} for call {call.sid}")
+
+                            # Fetch transcriptions for this recording
+                            try:
+                                transcriptions = client.transcriptions.list(recording_sid=recording.sid, limit=1)
+                                if transcriptions and len(transcriptions) > 0:
+                                    transcription = transcriptions[0]
+                                    # Get transcription text, handle if it's empty
+                                    if hasattr(transcription, 'transcription_text') and transcription.transcription_text:
+                                        transcription_text = transcription.transcription_text
+                                        logger.debug(f"Found transcription for recording {recording.sid}: {len(transcription_text)} chars")
+                                    else:
+                                        logger.debug(f"Transcription exists but text is empty for recording {recording.sid}")
+                                else:
+                                    logger.debug(f"No transcription available yet for recording {recording.sid}")
+                            except Exception as trans_err:
+                                logger.debug(f"Error fetching transcription for recording {recording.sid}: {str(trans_err)}")
+                    except Exception as rec_err:
+                        logger.debug(f"No recording found for call {call.sid}: {str(rec_err)}")
+
                     call_log = CallLogResponse(
                         id=call.sid,
                         **{"from": getattr(call, 'from_formatted', None) or from_number or "Unknown"},
@@ -997,8 +1051,8 @@ async def get_user_call_logs(user_id: str, limit: int = 100):
                         parent_call_sid=getattr(call, 'parent_call_sid', None),
                         price=call.price if call.price else None,
                         price_unit=getattr(call, 'price_unit', None) if call.price else None,
-                        recording_url=None,
-                        transcription_text=None,
+                        recording_url=recording_url,
+                        transcription_text=transcription_text,
                         assistant_id=assistant_info["id"] if assistant_info else None,
                         assistant_name=assistant_info["name"] if assistant_info else None,
                         queue_time=getattr(call, 'queue_time', None),
@@ -1524,4 +1578,233 @@ async def add_frejun_phone_number(user_id: str, phone_number: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error adding FreJun number: {str(e)}"
+        )
+
+
+@router.get("/recording/{recording_sid}")
+async def get_call_recording(recording_sid: str, user_id: str):
+    """
+    Proxy endpoint to fetch call recordings from Twilio without exposing credentials
+
+    Args:
+        recording_sid: Twilio recording SID
+        user_id: User ID to verify ownership
+
+    Returns:
+        StreamingResponse: Audio file stream
+    """
+    from fastapi.responses import StreamingResponse
+    import requests
+
+    try:
+        logger.info(f"Fetching recording {recording_sid} for user {user_id}")
+
+        db = Database.get_db()
+        provider_connections_collection = db['provider_connections']
+
+        # Validate user_id
+        try:
+            user_obj_id = ObjectId(user_id)
+        except Exception as e:
+            logger.error(f"Invalid user_id format: {user_id}, error: {str(e)}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        # Get user's Twilio credentials
+        twilio_connection = provider_connections_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "twilio"
+        })
+
+        if not twilio_connection:
+            logger.error(f"Twilio connection not found for user {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Twilio connection not found"
+            )
+
+        account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
+        if not account_sid or not auth_token:
+            logger.error(f"Invalid Twilio credentials for user {user_id}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid Twilio credentials"
+            )
+
+        # Construct Twilio recording URL
+        recording_url = f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
+        logger.info(f"Fetching recording from Twilio: {recording_url}")
+
+        # Fetch recording from Twilio with authentication
+        response = requests.get(
+            recording_url,
+            auth=(account_sid, auth_token),
+            stream=True
+        )
+
+        if response.status_code != 200:
+            logger.error(f"Recording not found at Twilio. Status: {response.status_code}, Recording SID: {recording_sid}")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Recording not found (Twilio returned {response.status_code})"
+            )
+
+        # Stream the recording to the client
+        return StreamingResponse(
+            response.iter_content(chunk_size=8192),
+            media_type="audio/mpeg",
+            headers={
+                "Content-Disposition": f"inline; filename=recording-{recording_sid}.mp3",
+                "Accept-Ranges": "bytes"
+            }
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching recording: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error fetching recording: {str(e)}"
+        )
+
+
+@router.post("/transcribe-recordings/{user_id}")
+async def transcribe_all_recordings(user_id: str):
+    """
+    Manually trigger transcription for all recordings that don't have transcripts yet.
+    Uses OpenAI Whisper API to transcribe recordings.
+
+    Args:
+        user_id: User ID to transcribe recordings for
+
+    Returns:
+        Summary of transcription results
+    """
+    import asyncio
+    from app.services.inbound_post_call_processor import InboundPostCallProcessor
+
+    try:
+        logger.info(f"Starting batch transcription for user {user_id}")
+
+        db = Database.get_db()
+        provider_connections_collection = db['provider_connections']
+        call_logs_collection = db['call_logs']
+
+        # Validate user_id
+        try:
+            user_obj_id = ObjectId(user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        # Get user's Twilio credentials
+        twilio_connection = provider_connections_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "twilio"
+        })
+
+        if not twilio_connection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Twilio connection not found"
+            )
+
+        account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
+        if not account_sid or not auth_token:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Invalid Twilio credentials"
+            )
+
+        # Initialize Twilio client and processor
+        client = Client(account_sid, auth_token)
+        processor = InboundPostCallProcessor()
+
+        # Get all user's call logs without transcriptions
+        call_logs_without_transcription = list(call_logs_collection.find({
+            "user_id": user_obj_id,
+            "$or": [
+                {"transcription_text": {"$exists": False}},
+                {"transcription_text": None},
+                {"transcription_text": ""}
+            ]
+        }).limit(50))  # Limit to 50 to avoid timeout
+
+        logger.info(f"Found {len(call_logs_without_transcription)} calls without transcriptions")
+
+        transcribed_count = 0
+        failed_count = 0
+        skipped_count = 0
+
+        for call_log in call_logs_without_transcription:
+            call_sid = call_log.get("call_sid")
+            if not call_sid:
+                skipped_count += 1
+                continue
+
+            try:
+                # Fetch recordings for this call from Twilio
+                recordings = client.recordings.list(call_sid=call_sid, limit=1)
+
+                if not recordings:
+                    logger.debug(f"No recording found for call {call_sid}")
+                    skipped_count += 1
+                    continue
+
+                recording = recordings[0]
+                recording_url = f"https://api.twilio.com{recording.uri.replace('.json', '.mp3')}"
+
+                # Download recording
+                audio_bytes = await processor.download_recording(recording_url)
+                if not audio_bytes:
+                    logger.error(f"Failed to download recording for call {call_sid}")
+                    failed_count += 1
+                    continue
+
+                # Transcribe audio
+                transcript = await processor.transcribe_audio(audio_bytes)
+                if not transcript:
+                    logger.error(f"Failed to transcribe recording for call {call_sid}")
+                    failed_count += 1
+                    continue
+
+                # Save transcription to database
+                call_logs_collection.update_one(
+                    {"call_sid": call_sid},
+                    {"$set": {
+                        "transcription_text": transcript,
+                        "transcription_status": "completed",
+                        "updated_at": datetime.utcnow()
+                    }}
+                )
+
+                logger.info(f"Transcribed call {call_sid}: {len(transcript)} characters")
+                transcribed_count += 1
+
+            except Exception as e:
+                logger.error(f"Error transcribing call {call_sid}: {str(e)}")
+                failed_count += 1
+
+        return {
+            "status": "success",
+            "transcribed": transcribed_count,
+            "failed": failed_count,
+            "skipped": skipped_count,
+            "total_processed": len(call_logs_without_transcription)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in batch transcription: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error transcribing recordings: {str(e)}"
         )

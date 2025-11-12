@@ -706,6 +706,153 @@ class CalendarService:
             logger.error(traceback.format_exc())
             return None
 
+    async def update_event(self, user_id: str, provider: str, event_id: str, event_data: Dict[str, Any]) -> bool:
+        """
+        Update a calendar event (for rescheduling).
+
+        Args:
+            user_id: User ID
+            provider: "google" or "microsoft"
+            event_id: Event ID to update
+            event_data: New event data with start_iso, end_iso, timezone
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            # Get calendar account
+            account = await self.get_calendar_account(user_id, provider)
+            if not account:
+                logger.error(f"No {provider} calendar account for user {user_id}")
+                return False
+
+            # Get access token
+            access_token = await self.ensure_access_token(account)
+            if not access_token:
+                logger.error("Failed to get valid access token")
+                return False
+
+            # Update event based on provider
+            if provider == "google":
+                async with httpx.AsyncClient() as client:
+                    response = await client.patch(
+                        f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "start": {
+                                "dateTime": event_data.get("start_iso"),
+                                "timeZone": event_data.get("timezone", "America/New_York")
+                            },
+                            "end": {
+                                "dateTime": event_data.get("end_iso"),
+                                "timeZone": event_data.get("timezone", "America/New_York")
+                            }
+                        },
+                        timeout=30.0
+                    )
+                    if response.status_code == 200:
+                        logger.info(f"Google event {event_id} updated successfully")
+                        return True
+                    else:
+                        logger.error(f"Failed to update Google event: {response.status_code} - {response.text}")
+                        return False
+
+            elif provider == "microsoft":
+                async with httpx.AsyncClient() as client:
+                    response = await client.patch(
+                        f"https://graph.microsoft.com/v1.0/me/events/{event_id}",
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json"
+                        },
+                        json={
+                            "start": {
+                                "dateTime": event_data.get("start_iso"),
+                                "timeZone": event_data.get("timezone", "America/New_York")
+                            },
+                            "end": {
+                                "dateTime": event_data.get("end_iso"),
+                                "timeZone": event_data.get("timezone", "America/New_York")
+                            }
+                        },
+                        timeout=30.0
+                    )
+                    if response.status_code == 200:
+                        logger.info(f"Microsoft event {event_id} updated successfully")
+                        return True
+                    else:
+                        logger.error(f"Failed to update Microsoft event: {response.status_code} - {response.text}")
+                        return False
+
+        except Exception as e:
+            logger.error(f"Error updating calendar event: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    async def delete_event(self, user_id: str, provider: str, event_id: str) -> bool:
+        """
+        Delete a calendar event.
+
+        Args:
+            user_id: User ID
+            provider: "google" or "microsoft"
+            event_id: Event ID to delete
+
+        Returns:
+            True if deleted successfully, False otherwise
+        """
+        try:
+            # Get calendar account
+            account = await self.get_calendar_account(user_id, provider)
+            if not account:
+                logger.error(f"No {provider} calendar account for user {user_id}")
+                return False
+
+            # Get access token
+            access_token = await self.ensure_access_token(account)
+            if not access_token:
+                logger.error("Failed to get valid access token")
+                return False
+
+            # Delete event based on provider
+            if provider == "google":
+                async with httpx.AsyncClient() as client:
+                    response = await client.delete(
+                        f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=30.0
+                    )
+                    if response.status_code == 204:
+                        logger.info(f"Google event {event_id} deleted successfully")
+                        return True
+                    else:
+                        logger.error(f"Failed to delete Google event: {response.status_code} - {response.text}")
+                        return False
+
+            elif provider == "microsoft":
+                async with httpx.AsyncClient() as client:
+                    response = await client.delete(
+                        f"https://graph.microsoft.com/v1.0/me/events/{event_id}",
+                        headers={"Authorization": f"Bearer {access_token}"},
+                        timeout=30.0
+                    )
+                    if response.status_code == 204:
+                        logger.info(f"Microsoft event {event_id} deleted successfully")
+                        return True
+                    else:
+                        logger.error(f"Failed to delete Microsoft event: {response.status_code} - {response.text}")
+                        return False
+
+        except Exception as e:
+            logger.error(f"Error deleting calendar event: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
     async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google", calendar_account_id: Optional[str] = None) -> Optional[str]:
         """
         Book an appointment for an inbound call.

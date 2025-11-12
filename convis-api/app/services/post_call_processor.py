@@ -272,12 +272,52 @@ Return ONLY the JSON, no other text."""
             appointment = analysis.get("appointment")
             if appointment and appointment.get("start_iso"):
                 logger.info(f"Appointment detected for lead {lead_id}: {appointment.get('title')}")
-                # TODO: Trigger calendar booking
-                # For now, just log it
                 try:
                     from app.services.calendar_service import CalendarService
+                    from app.services.appointment_whatsapp_service import AppointmentWhatsAppService
+
                     calendar_service = CalendarService()
-                    await calendar_service.book_appointment(lead_id, campaign_id, appointment)
+                    event_id = await calendar_service.book_appointment(lead_id, campaign_id, appointment)
+
+                    # Step 5a: Send WhatsApp confirmation if phone number available and calendar event created
+                    if event_id:
+                        try:
+                            # Get lead details for phone number
+                            lead = leads_collection.find_one({"_id": ObjectId(lead_id)})
+                            if lead and lead.get("phone"):
+                                phone_number = lead["phone"]
+                                customer_name = lead.get("full_name") or lead.get("first_name", "Customer")
+
+                                # Get user_id from campaign
+                                campaigns_collection = db["campaigns"]
+                                campaign = campaigns_collection.find_one({"_id": ObjectId(campaign_id)})
+                                if campaign:
+                                    user_id = str(campaign["user_id"])
+
+                                    # Prepare booking data for WhatsApp
+                                    booking_data = {
+                                        "_id": call_sid,
+                                        "customer_name": customer_name,
+                                        "start_time": appointment.get("start_iso"),
+                                        "location": appointment.get("location", "Phone Call"),
+                                        "duration": appointment.get("duration", 30)
+                                    }
+
+                                    # Send WhatsApp confirmation
+                                    whatsapp_result = await AppointmentWhatsAppService.send_appointment_confirmation(
+                                        user_id=user_id,
+                                        booking_data=booking_data,
+                                        phone_number=phone_number
+                                    )
+
+                                    if whatsapp_result.get("success"):
+                                        logger.info(f"WhatsApp confirmation sent to {phone_number} for outbound call {call_sid}")
+                                    else:
+                                        logger.warning(f"Failed to send WhatsApp confirmation: {whatsapp_result.get('error')}")
+                        except Exception as whatsapp_error:
+                            logger.error(f"Error sending WhatsApp confirmation for outbound call: {whatsapp_error}")
+                            # Don't fail the entire process if WhatsApp fails
+
                 except ImportError:
                     logger.warning("CalendarService not yet implemented")
 

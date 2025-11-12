@@ -1696,9 +1696,19 @@ function PhoneNumbersPageContent() {
                             </td>
                             <td className="px-6 py-4">
                               {call.recording_url ? (
-                                <span className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
-                                  Recording available
-                                </span>
+                                <div className="flex items-center gap-2">
+                                  <svg className="w-4 h-4 text-green-500" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                                  </svg>
+                                  <span className={`text-sm font-medium ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                                    Available
+                                  </span>
+                                  {call.transcription_text && (
+                                    <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" title="Transcription available">
+                                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                                    </svg>
+                                  )}
+                                </div>
                               ) : (
                                 <span className={`text-sm ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
                                   No recording
@@ -2601,24 +2611,85 @@ function PhoneNumbersPageContent() {
 
               {/* Recording Section */}
               {selectedCallLog.recording_url && (
-                <div className={`mb-6 p-4 rounded-xl ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
-                    <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <div className={`mb-6 p-4 rounded-xl ${isDarkMode ? 'bg-gradient-to-br from-green-900/20 to-blue-900/20 border border-green-800' : 'bg-gradient-to-br from-green-50 to-blue-50 border border-green-200'}`}>
+                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-green-300' : 'text-green-900'}`}>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                     </svg>
                     Call Recording
                   </h3>
-                  <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-3`}>
-                    A recording is available for this call. Contact your administrator to access call recordings.
-                  </p>
+
+                  {/* Audio Player */}
+                  <div className={`p-4 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'} mb-3`}>
+                    <audio
+                      controls
+                      className="w-full"
+                      preload="metadata"
+                      style={{
+                        height: '40px',
+                        borderRadius: '8px'
+                      }}
+                    >
+                      <source
+                        src={selectedCallLog.recording_url.startsWith('http')
+                          ? selectedCallLog.recording_url
+                          : `${process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai'}${selectedCallLog.recording_url}`
+                        }
+                        type="audio/mpeg"
+                      />
+                      Your browser does not support the audio element.
+                    </audio>
+                  </div>
+
+                  {/* Download Button */}
+                  <div className="flex gap-2">
+                    <a
+                      href={selectedCallLog.recording_url.startsWith('http')
+                        ? selectedCallLog.recording_url
+                        : `${process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai'}${selectedCallLog.recording_url}`
+                      }
+                      download
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg font-semibold transition-colors ${
+                        isDarkMode
+                          ? 'bg-green-600 hover:bg-green-700 text-white'
+                          : 'bg-green-600 hover:bg-green-700 text-white'
+                      }`}
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                      </svg>
+                      Download Recording
+                    </a>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedCallLog.recording_url || '');
+                      }}
+                      className={`px-4 py-2.5 rounded-lg font-semibold transition-colors ${
+                        isDarkMode
+                          ? 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                          : 'bg-gray-200 hover:bg-gray-300 text-gray-700'
+                      }`}
+                      title="Copy recording URL"
+                    >
+                      <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                      </svg>
+                    </button>
+                  </div>
+
+                  {selectedCallLog.recording_duration && (
+                    <p className={`text-xs mt-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Recording duration: {formatDuration(selectedCallLog.recording_duration)}
+                    </p>
+                  )}
                 </div>
               )}
 
               {/* Transcription Section */}
-              {selectedCallLog.transcription_text && (
-                <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
-                    <svg className="w-5 h-5 text-primary" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              {selectedCallLog.transcription_text ? (
+                <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-gradient-to-br from-blue-900/20 to-purple-900/20 border border-blue-800' : 'bg-gradient-to-br from-blue-50 to-purple-50 border border-blue-200'}`}>
+                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-blue-300' : 'text-blue-900'}`}>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                     Call Transcription
@@ -2629,7 +2700,27 @@ function PhoneNumbersPageContent() {
                     </p>
                   </div>
                 </div>
-              )}
+              ) : selectedCallLog.recording_url ? (
+                <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-gray-700 border border-gray-600' : 'bg-gray-50 border border-gray-200'}`}>
+                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                    Call Transcription
+                  </h3>
+                  <div className={`p-4 rounded-lg text-center ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                    <svg className="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    <p className={`text-sm mb-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Transcription Processing
+                    </p>
+                    <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                      Twilio is automatically processing the transcription. This usually takes 5-10 minutes after the call ends. Please refresh the page to check for updates.
+                    </p>
+                  </div>
+                </div>
+              ) : null}
 
               {/* No Recording/Transcription Message */}
               {!selectedCallLog.recording_url && !selectedCallLog.transcription_text && (
