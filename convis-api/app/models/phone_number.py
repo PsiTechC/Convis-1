@@ -68,6 +68,10 @@ class CallLogResponse(BaseModel):
     # Recording & Transcription
     recording_url: Optional[str] = Field(None, description="Recording URL if available")
     transcription_text: Optional[str] = Field(None, description="Call transcription if available")
+    transcript: Optional[str] = Field(None, description="AI-generated call transcript")
+    summary: Optional[str] = Field(None, description="AI-generated call summary")
+    sentiment: Optional[str] = Field(None, description="Call sentiment: positive, neutral, negative")
+    sentiment_score: Optional[float] = Field(None, description="Sentiment score from -1.0 to 1.0")
 
     # AI Assistant Info (Custom)
     assistant_id: Optional[str] = Field(None, description="AI assistant that handled the call")

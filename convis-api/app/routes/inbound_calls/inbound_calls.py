@@ -1128,6 +1128,26 @@ IMPORTANT:
                                 conversation_history.append({"role": "assistant", "text": transcript_text})
                                 if len(conversation_history) > 30:
                                     conversation_history = conversation_history[-30:]
+
+                                # Save real-time transcript to database
+                                try:
+                                    if call_sid:
+                                        # Build full transcript from conversation history
+                                        full_transcript = "\n\n".join([
+                                            f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['text']}"
+                                            for msg in conversation_history
+                                        ])
+
+                                        db["call_logs"].update_one(
+                                            {"call_sid": call_sid},
+                                            {"$set": {
+                                                "transcript": full_transcript,
+                                                "transcript_updated_at": datetime.utcnow()
+                                            }}
+                                        )
+                                except Exception as transcript_err:
+                                    logger.error(f"Error saving assistant transcript: {transcript_err}")
+
                                 await maybe_schedule_from_conversation("assistant_transcript")
 
                         # Handle interruption when user starts speaking
@@ -1184,6 +1204,26 @@ IMPORTANT:
                                             conversation_history.append({"role": "user", "text": transcript})
                                             if len(conversation_history) > 30:
                                                 conversation_history = conversation_history[-30:]
+
+                                            # Save real-time transcript to database
+                                            try:
+                                                if call_sid:
+                                                    # Build full transcript from conversation history
+                                                    full_transcript = "\n\n".join([
+                                                        f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['text']}"
+                                                        for msg in conversation_history
+                                                    ])
+
+                                                    db["call_logs"].update_one(
+                                                        {"call_sid": call_sid},
+                                                        {"$set": {
+                                                            "transcript": full_transcript,
+                                                            "transcript_updated_at": datetime.utcnow()
+                                                        }}
+                                                    )
+                                            except Exception as transcript_err:
+                                                logger.error(f"Error saving transcript: {transcript_err}")
+
                                             await maybe_schedule_from_conversation("user_transcript")
 
                                             # Search knowledge base

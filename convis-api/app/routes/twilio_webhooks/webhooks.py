@@ -21,6 +21,45 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ==================== Helper Functions ====================
+
+async def _trigger_transcription_after_delay(call_sid: str, delay_seconds: int = 5):
+    """
+    Wait for recording to be ready, then trigger transcription.
+
+    Args:
+        call_sid: Twilio Call SID
+        delay_seconds: Seconds to wait before checking
+    """
+    import asyncio
+    await asyncio.sleep(delay_seconds)
+
+    try:
+        db = Database.get_db()
+        call_logs_collection = db['call_logs']
+
+        # Check if recording URL exists
+        call_log = call_logs_collection.find_one({"call_sid": call_sid})
+        if not call_log:
+            logger.warning(f"Call log not found for transcription: {call_sid}")
+            return
+
+        recording_url = call_log.get("recording_url")
+        if not recording_url:
+            logger.info(f"No recording URL yet for {call_sid}, will transcribe when recording callback arrives")
+            return
+
+        # Trigger transcription
+        from app.services.post_call_processor import PostCallProcessor
+        processor = PostCallProcessor()
+
+        logger.info(f"Starting transcription for call: {call_sid}")
+        await processor.transcribe_and_update_call(call_sid, recording_url)
+
+    except Exception as e:
+        logger.error(f"Error triggering transcription for {call_sid}: {e}")
+
+
 # ==================== Voice Webhook ====================
 
 @router.api_route("/voice", methods=["GET", "POST"])
@@ -119,6 +158,26 @@ async def voice_webhook(
 
         logger.info(f"Routing call to assistant {assistant_id} via {websocket_url}")
 
+        # Enable call recording with callback URL
+        if settings.api_base_url:
+            recording_callback_url = f"{settings.api_base_url}/api/twilio-webhooks/recording?CallSid={{CallSid}}"
+        else:
+            protocol = 'https' if request.url.scheme == 'https' else 'http'
+            host = request.url.hostname
+            if request.url.port and request.url.port not in [80, 443]:
+                host = f"{host}:{request.url.port}"
+            recording_callback_url = f"{protocol}://{host}/api/twilio-webhooks/recording?CallSid={{CallSid}}"
+
+        # Record the call for transcription
+        response.record(
+            recording_status_callback=recording_callback_url,
+            recording_status_callback_event='completed',
+            recording_status_callback_method='POST',
+            max_length=3600,  # 1 hour max
+            timeout=5,  # 5 seconds of silence ends recording
+            transcribe=False  # We use OpenAI Whisper instead
+        )
+
         connect = Connect()
         connect.stream(url=websocket_url)
         response.append(connect)
@@ -194,6 +253,14 @@ async def voice_status_callback(
                 },
                 upsert=True
             )
+
+            # Trigger transcription when call completes
+            if CallStatus == "completed":
+                logger.info(f"Call completed, checking for recording to transcribe: {CallSid}")
+
+                # Wait a few seconds for recording to be ready
+                import asyncio
+                asyncio.create_task(_trigger_transcription_after_delay(CallSid, 5))
 
         return {"message": "Status received"}
 
@@ -510,6 +577,7 @@ async def campaign_recording_callback(
 
         db = Database.get_db()
         call_attempts_collection = db["call_attempts"]
+        call_logs_collection = db["call_logs"]
 
         # Update call attempt with recording info
         update_result = call_attempts_collection.update_one(
@@ -525,21 +593,41 @@ async def campaign_recording_callback(
             }
         )
 
+        # Also update call_logs with recording URL
+        call_logs_collection.update_one(
+            {"call_sid": CallSid},
+            {
+                "$set": {
+                    "recording_url": recording_mp3_url,
+                    "recording_sid": RecordingSid,
+                    "recording_status": RecordingStatus,
+                    "recording_duration": int(RecordingDuration) if RecordingDuration else None,
+                    "updated_at": datetime.utcnow()
+                }
+            }
+        )
+
         if update_result.matched_count > 0:
             logger.info(f"Recording URL saved for CallSid: {CallSid}")
 
-            # Trigger post-call AI processing (async job)
-            if RecordingStatus == "completed" and leadId and campaignId:
-                # TODO: Queue background job for transcription and analysis
-                # For now, we'll create a simple function call
-                try:
+        # Trigger post-call processing for completed recordings
+        if RecordingStatus == "completed" and recording_mp3_url:
+            try:
+                # NOTE: Real-time transcription is now handled by OpenAI Realtime API during the call
+                # Transcripts are saved to database in real-time as the conversation happens
+                # No need for post-call transcription anymore!
+
+                # If this is a campaign call, trigger post-call AI processing (sentiment/summary only)
+                if leadId and campaignId:
                     from app.services.post_call_processor import PostCallProcessor
                     processor = PostCallProcessor()
-                    # Process in background (you can use Celery, or async task)
                     import asyncio
+
+                    logger.info(f"Triggering post-call processing for campaign call: {CallSid}")
                     asyncio.create_task(processor.process_call(CallSid, leadId, campaignId))
-                except ImportError:
-                    logger.warning("PostCallProcessor not yet implemented")
+
+            except Exception as e:
+                logger.error(f"Error triggering post-call processing: {e}")
 
         return {"message": "Recording saved"}
 

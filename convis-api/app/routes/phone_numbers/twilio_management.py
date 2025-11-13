@@ -10,6 +10,7 @@ from typing import Optional, List
 from bson import ObjectId
 from datetime import datetime
 import logging
+from twilio.rest import Client
 
 from app.config.database import Database
 from app.config.settings import settings
@@ -95,6 +96,33 @@ class VerifiedCallerIDsResponse(BaseModel):
     message: str
     verified_caller_ids: List[VerifiedCallerID]
     total: int
+
+
+class InitiateVerificationRequest(BaseModel):
+    user_id: str = Field(..., description="User ID")
+    phone_number: str = Field(..., description="Phone number to verify (E.164 format)")
+    friendly_name: Optional[str] = Field(None, description="Friendly name for the number")
+
+
+class InitiateVerificationResponse(BaseModel):
+    message: str
+    validation_request_sid: str
+    phone_number: str
+    call_placed: bool
+    validation_code: str = Field(..., description="The 6-digit validation code (also spoken in the call)")
+
+
+class ConfirmVerificationRequest(BaseModel):
+    user_id: str = Field(..., description="User ID")
+    validation_request_sid: str = Field(..., description="Validation request SID from initiate call")
+    verification_code: str = Field(..., description="6-digit code received via call")
+
+
+class ConfirmVerificationResponse(BaseModel):
+    message: str
+    verified: bool
+    caller_id_sid: Optional[str] = None
+    phone_number: str
 
 
 # ==================== Endpoints ====================
@@ -631,7 +659,23 @@ async def get_verified_caller_ids(user_id: str):
             for caller in verified_callers
         ]
 
-        logger.info(f"Found {len(caller_ids)} verified caller IDs for user {user_id}")
+        # Also fetch SMS-verified numbers from our database
+        verified_numbers_collection = db['verified_caller_ids']
+        db_verified_numbers = list(verified_numbers_collection.find({"user_id": user_obj_id}))
+
+        for db_number in db_verified_numbers:
+            # Add to the list if not already present
+            phone_num = db_number.get("phone_number")
+            if not any(caller.phone_number == phone_num for caller in caller_ids):
+                caller_ids.append(
+                    VerifiedCallerID(
+                        sid=str(db_number["_id"]),
+                        phone_number=phone_num,
+                        friendly_name=db_number.get("friendly_name", phone_num)
+                    )
+                )
+
+        logger.info(f"Found {len(caller_ids)} verified caller IDs for user {user_id} (including SMS-verified)")
 
         return VerifiedCallerIDsResponse(
             message=f"Found {len(caller_ids)} verified caller ID(s)",
@@ -648,4 +692,293 @@ async def get_verified_caller_ids(user_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error fetching verified caller IDs: {str(e)}"
+        )
+
+
+@router.post("/initiate-verification", response_model=InitiateVerificationResponse)
+def initiate_caller_id_verification(
+    request: InitiateVerificationRequest
+):
+    """
+    Initiate caller ID verification by having Twilio call the phone number
+    with a verification code.
+
+    Args:
+        request: Contains user_id, phone_number (E.164 format), and optional friendly_name
+
+    Returns:
+        InitiateVerificationResponse with validation request SID
+    """
+    try:
+        logger.info(f"Initiating caller ID verification for user {request.user_id}, number {request.phone_number}")
+
+        # Get database connection
+        db = Database.get_db()
+        users_collection = db['users']
+        provider_connections_collection = db['provider_connections']
+
+        # Verify user exists
+        try:
+            user_obj_id = ObjectId(request.user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        user = users_collection.find_one({"_id": user_obj_id})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Get Twilio connection
+        twilio_connection = provider_connections_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "twilio"
+        })
+
+        if not twilio_connection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Twilio connection found. Please connect Twilio first."
+            )
+
+        # Decrypt credentials
+        twilio_account_sid, twilio_auth_token = decrypt_twilio_credentials(twilio_connection)
+        if not twilio_account_sid or not twilio_auth_token:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Stored Twilio credentials are missing or invalid. Please reconnect Twilio."
+            )
+
+        # Initialize Twilio client
+        client = Client(twilio_account_sid, twilio_auth_token)
+
+        # Validate phone number format
+        if not request.phone_number.startswith('+'):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Phone number must be in E.164 format (e.g., +1234567890)"
+            )
+
+        # Use Twilio's official Validation Request API for Caller ID verification
+        # This will make a phone call with a 6-digit code
+        validation_request = client.validation_requests.create(
+            phone_number=request.phone_number,
+            friendly_name=request.friendly_name or request.phone_number
+        )
+
+        validation_code = validation_request.validation_code
+        logger.info(f"Validation request created. Code: {validation_code} for {request.phone_number}")
+
+        # Store the validation code in database temporarily so we can verify it
+        validation_requests_collection = db['validation_requests']
+
+        # Clean up old validation requests for this user/number (expire after 10 minutes)
+        from datetime import timedelta
+        expire_time = datetime.utcnow() - timedelta(minutes=10)
+        validation_requests_collection.delete_many({
+            "user_id": user_obj_id,
+            "phone_number": request.phone_number,
+            "created_at": {"$lt": expire_time}
+        })
+
+        # Store new validation request
+        validation_doc = {
+            "user_id": user_obj_id,
+            "phone_number": request.phone_number,
+            "validation_code": validation_code,
+            "friendly_name": request.friendly_name or request.phone_number,
+            "created_at": datetime.utcnow()
+        }
+        validation_requests_collection.insert_one(validation_doc)
+
+        return InitiateVerificationResponse(
+            message=f"Twilio is calling {request.phone_number}. Your verification code is: {validation_code}",
+            validation_request_sid=request.phone_number,
+            phone_number=request.phone_number,
+            call_placed=True,
+            validation_code=validation_code
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error initiating caller ID verification: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error initiating verification: {str(e)}"
+        )
+
+
+@router.post("/confirm-verification", response_model=ConfirmVerificationResponse)
+def confirm_caller_id_verification(
+    request: ConfirmVerificationRequest
+):
+    """
+    Confirm caller ID verification with the code received via phone call.
+
+    Args:
+        request: Contains user_id, validation_request_sid, and verification_code
+
+    Returns:
+        ConfirmVerificationResponse indicating success/failure
+    """
+    try:
+        logger.info(f"Confirming caller ID verification for user {request.user_id}")
+
+        # Get database connection
+        db = Database.get_db()
+        users_collection = db['users']
+        provider_connections_collection = db['provider_connections']
+
+        # Verify user exists
+        try:
+            user_obj_id = ObjectId(request.user_id)
+        except Exception:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid user_id format"
+            )
+
+        user = users_collection.find_one({"_id": user_obj_id})
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="User not found"
+            )
+
+        # Get Twilio connection
+        twilio_connection = provider_connections_collection.find_one({
+            "user_id": user_obj_id,
+            "provider": "twilio"
+        })
+
+        if not twilio_connection:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No Twilio connection found. Please connect Twilio first."
+            )
+
+        # Decrypt credentials
+        twilio_account_sid, twilio_auth_token = decrypt_twilio_credentials(twilio_connection)
+        if not twilio_account_sid or not twilio_auth_token:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Stored Twilio credentials are missing or invalid. Please reconnect Twilio."
+            )
+
+        # Initialize Twilio client
+        client = Client(twilio_account_sid, twilio_auth_token)
+
+        # Validate the code format (should be 6 digits)
+        if not request.verification_code.isdigit() or len(request.verification_code) != 6:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Verification code must be a 6-digit number"
+            )
+
+        # Retrieve the validation code from our database
+        validation_requests_collection = db['validation_requests']
+        stored_validation = validation_requests_collection.find_one({
+            "user_id": user_obj_id,
+            "phone_number": request.validation_request_sid
+        })
+
+        if not stored_validation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No validation request found for this number. Please initiate verification again."
+            )
+
+        # Verify the code matches
+        if stored_validation.get("validation_code") != request.verification_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code. Please check the code and try again."
+            )
+
+        # Code is correct! Now register it with Twilio as a verified caller ID
+        try:
+            outgoing_caller_id = client.outgoing_caller_ids.create(
+                phone_number=request.validation_request_sid,
+                validation_code=request.verification_code
+            )
+
+            caller_id_sid = outgoing_caller_id.sid
+            logger.info(f"Successfully registered caller ID with Twilio: {caller_id_sid}")
+
+            # Clean up the validation request
+            validation_requests_collection.delete_one({"_id": stored_validation["_id"]})
+
+            # Also store in our database for quick access
+            verified_numbers_collection = db['verified_caller_ids']
+            existing = verified_numbers_collection.find_one({
+                "user_id": user_obj_id,
+                "phone_number": request.validation_request_sid
+            })
+
+            if not existing:
+                verified_number_doc = {
+                    "user_id": user_obj_id,
+                    "phone_number": request.validation_request_sid,
+                    "friendly_name": stored_validation.get("friendly_name", request.validation_request_sid),
+                    "twilio_sid": caller_id_sid,
+                    "verification_method": "voice",
+                    "verified_at": datetime.utcnow(),
+                    "created_at": datetime.utcnow()
+                }
+                verified_numbers_collection.insert_one(verified_number_doc)
+
+            return ConfirmVerificationResponse(
+                message=f"Phone number {request.validation_request_sid} verified successfully! The number is now registered with Twilio.",
+                verified=True,
+                caller_id_sid=caller_id_sid,
+                phone_number=outgoing_caller_id.phone_number
+            )
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(f"Failed to register caller ID with Twilio: {error_msg}")
+
+            # Check if it's already verified
+            if "already been validated" in error_msg.lower() or "already verified" in error_msg.lower():
+                # It's already verified, just return success
+                existing_caller_ids = client.outgoing_caller_ids.list(phone_number=request.validation_request_sid)
+                if existing_caller_ids and len(existing_caller_ids) > 0:
+                    caller_id_sid = existing_caller_ids[0].sid
+                    return ConfirmVerificationResponse(
+                        message=f"Phone number {request.validation_request_sid} is already verified with Twilio!",
+                        verified=True,
+                        caller_id_sid=caller_id_sid,
+                        phone_number=request.validation_request_sid
+                    )
+
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Failed to register with Twilio: {error_msg}"
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error confirming caller ID verification: {error_msg}")
+        import traceback
+        logger.error(traceback.format_exc())
+
+        # Check if it's a Twilio validation error
+        if "validation" in error_msg.lower() or "code" in error_msg.lower():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid verification code. Please check the code and try again."
+            )
+
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error confirming verification: {error_msg}"
         )

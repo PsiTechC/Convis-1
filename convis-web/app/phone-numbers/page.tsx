@@ -51,7 +51,12 @@ interface CallLog {
   recording_url?: string;
   recording_sid?: string;
   recording_duration?: number;
-  transcription_text?: string;
+  transcript?: string;  // OpenAI Whisper transcription
+  transcription_text?: string;  // Legacy Twilio transcription
+  transcription_status?: string;  // processing, completed, failed
+  sentiment?: string;
+  sentiment_score?: number;
+  summary?: string;
   transcription_sid?: string;
   transcription_url?: string;
   assistant_id?: string;
@@ -63,6 +68,22 @@ interface CallLog {
   tts_model?: string;
   llm_provider?: string;
   llm_model?: string;
+  // Cost calculation fields
+  calculated_cost?: {
+    api_cost_usd?: number;
+    api_cost_inr?: number;
+    twilio_cost_usd?: number;
+    twilio_cost_inr?: number;
+    total_usd?: number;
+    total_inr?: number;
+    breakdown?: {
+      asr?: number;
+      llm?: number;
+      tts?: number;
+      twilio?: number;
+      realtime_api?: number;
+    };
+  };
 }
 
 interface ServiceProvider {
@@ -109,6 +130,7 @@ function PhoneNumbersPageContent() {
   const [activeNav, setActiveNav] = useState('Phone Numbers');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [currency, setCurrency] = useState<'USD' | 'INR'>('USD');
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -150,6 +172,19 @@ function PhoneNumbersPageContent() {
   const [activeCallSid, setActiveCallSid] = useState<string | null>(null);
   const [activeCallStatus, setActiveCallStatus] = useState<string>('');
   const [isCallActive, setIsCallActive] = useState(false);
+
+  // Caller ID Verification
+  const [isVerifyModalOpen, setIsVerifyModalOpen] = useState(false);
+  const [verifyPhoneNumber, setVerifyPhoneNumber] = useState('');
+  const [verifyFriendlyName, setVerifyFriendlyName] = useState('');
+  const [verificationCode, setVerificationCode] = useState('');
+  const [validationRequestSid, setValidationRequestSid] = useState('');
+  const [isVerificationStep, setIsVerificationStep] = useState<'input' | 'confirm'>('input');
+  const [isVerifying, setIsVerifying] = useState(false);
+  const [displayedValidationCode, setDisplayedValidationCode] = useState('');
+
+  // Transcription
+  const [isTranscribing, setIsTranscribing] = useState(false);
 
   // API URL with fallback
   const API_URL = process.env.NEXT_PUBLIC_API_URL || 'https://api.convis.ai';
@@ -198,6 +233,11 @@ function PhoneNumbersPageContent() {
     const savedTheme = localStorage.getItem('theme');
     if (savedTheme === 'dark') {
       setIsDarkMode(true);
+    }
+
+    const savedCurrency = localStorage.getItem('currency');
+    if (savedCurrency === 'INR' || savedCurrency === 'USD') {
+      setCurrency(savedCurrency as 'USD' | 'INR');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [router]);
@@ -358,7 +398,24 @@ function PhoneNumbersPageContent() {
       if (response.ok) {
         const data = await response.json();
         console.log('Call logs response:', data);
-        setCallLogs(data.call_logs || []);
+
+        // Fetch costs for each call in parallel
+        const callLogsWithCosts = await Promise.all(
+          (data.call_logs || []).map(async (call: CallLog) => {
+            if (call.call_sid && call.duration) {
+              try {
+                const costData = await fetchCallCost(call.call_sid, currency, token);
+                return { ...call, calculated_cost: costData };
+              } catch (err) {
+                console.error(`Failed to fetch cost for ${call.call_sid}:`, err);
+                return call;
+              }
+            }
+            return call;
+          })
+        );
+
+        setCallLogs(callLogsWithCosts);
         setLastCallLogsRefresh(new Date());
       } else {
         console.error('Failed to fetch call logs:', response.status);
@@ -367,6 +424,30 @@ function PhoneNumbersPageContent() {
       console.error('Error fetching call logs:', error);
     } finally {
       setIsLoadingCalls(false);
+    }
+  };
+
+  const fetchCallCost = async (callSid: string, currency: string, token: string) => {
+    try {
+      const response = await fetch(
+        `${API_URL}/api/phone-numbers/call-cost/${callSid}?currency=${currency}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${token}`,
+            'Content-Type': 'application/json',
+          },
+        }
+      );
+
+      if (response.ok) {
+        return await response.json();
+      } else {
+        console.error(`Failed to fetch cost for call ${callSid}`);
+        return null;
+      }
+    } catch (error) {
+      console.error(`Error fetching cost for call ${callSid}:`, error);
+      return null;
     }
   };
 
@@ -503,6 +584,12 @@ function PhoneNumbersPageContent() {
     const newTheme = !isDarkMode;
     setIsDarkMode(newTheme);
     localStorage.setItem('theme', newTheme ? 'dark' : 'light');
+  };
+
+  const toggleCurrency = () => {
+    const newCurrency = currency === 'USD' ? 'INR' : 'USD';
+    setCurrency(newCurrency);
+    localStorage.setItem('currency', newCurrency);
   };
 
   const handleNavigation = (navItem: NavigationItem) => {
@@ -846,6 +933,165 @@ function PhoneNumbersPageContent() {
     }
   };
 
+  const handleInitiateVerification = async () => {
+    if (!verifyPhoneNumber.trim()) {
+      alert('Please enter a phone number to verify');
+      return;
+    }
+
+    // Ensure E.164 format
+    let formattedNumber = verifyPhoneNumber.trim();
+    if (!formattedNumber.startsWith('+')) {
+      formattedNumber = '+' + formattedNumber;
+    }
+
+    // Basic phone number validation
+    const phoneRegex = /^\+?[1-9]\d{1,14}$/;
+    if (!phoneRegex.test(formattedNumber.replace(/[\s-()]/g, ''))) {
+      alert('Please enter a valid phone number in E.164 format (e.g., +1234567890)');
+      return;
+    }
+
+    try {
+      setIsVerifying(true);
+      const token = localStorage.getItem('token');
+      const userId = user?.id || user?._id || user?.clientId;
+
+      if (!userId) {
+        alert('User ID not found. Please login again.');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/phone-numbers/twilio/initiate-verification`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          phone_number: formattedNumber,
+          friendly_name: verifyFriendlyName.trim() || formattedNumber
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setValidationRequestSid(data.phone_number); // Store phone number for confirmation
+        setDisplayedValidationCode(data.validation_code); // Store the code to display
+
+        // Show the validation code prominently
+        alert(`✅ Verification Call Initiated!\n\nYour verification code is: ${data.validation_code}\n\nTwilio is calling ${data.phone_number}. The code will also be spoken during the call.`);
+
+        setIsVerificationStep('confirm');
+      } else {
+        const error = await response.json();
+        alert(error.detail || 'Failed to initiate verification');
+      }
+    } catch (error) {
+      console.error('Error initiating verification:', error);
+      alert('An error occurred while initiating verification');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleConfirmVerification = async () => {
+    if (!verificationCode.trim() || verificationCode.length !== 6) {
+      alert('Please enter the 6-digit verification code');
+      return;
+    }
+
+    try {
+      setIsVerifying(true);
+      const token = localStorage.getItem('token');
+      const userId = user?.id || user?._id || user?.clientId;
+
+      if (!userId) {
+        alert('User ID not found. Please login again.');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/phone-numbers/twilio/confirm-verification`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          user_id: userId,
+          validation_request_sid: validationRequestSid,
+          verification_code: verificationCode.trim()
+        }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        alert(data.message);
+
+        // Close modal and reset
+        setIsVerifyModalOpen(false);
+        setVerifyPhoneNumber('');
+        setVerifyFriendlyName('');
+        setVerificationCode('');
+        setValidationRequestSid('');
+        setIsVerificationStep('input');
+
+        // Refresh verified caller IDs list
+        if (isCallModalOpen) {
+          fetchVerifiedCallerIds();
+        }
+      } else {
+        const error = await response.json();
+        alert(error.detail || 'Failed to confirm verification');
+      }
+    } catch (error) {
+      console.error('Error confirming verification:', error);
+      alert('An error occurred while confirming verification');
+    } finally {
+      setIsVerifying(false);
+    }
+  };
+
+  const handleTranscribeAllCalls = async () => {
+    if (!user) {
+      alert('Please login to transcribe calls');
+      return;
+    }
+
+    const confirmed = confirm('This will transcribe all past calls that have recordings. This may take a few minutes. Continue?');
+    if (!confirmed) return;
+
+    try {
+      setIsTranscribing(true);
+      const token = localStorage.getItem('token');
+
+      const response = await fetch(`${API_URL}/api/transcription/transcribe-all`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        alert(`✓ Success!\n\n${data.message}\n\nTranscribed: ${data.transcribed}\nFailed: ${data.failed}\n\nRefresh the page to see transcripts.`);
+
+        // Refresh call logs
+        fetchCallLogs();
+      } else {
+        const error = await response.json();
+        alert(`Error: ${error.detail || 'Failed to transcribe calls'}`);
+      }
+    } catch (error) {
+      console.error('Error transcribing calls:', error);
+      alert('An error occurred while transcribing calls');
+    } finally {
+      setIsTranscribing(false);
+    }
+  };
+
   const handlePurchaseNumber = async () => {
     if (!selectedNumber || !selectedAssistant) {
       alert('Please select a number and an AI assistant');
@@ -1063,6 +1309,8 @@ function PhoneNumbersPageContent() {
           onToggleMobileMenu={() => setIsMobileMenuOpen((prev) => !prev)}
           searchPlaceholder="Search phone numbers..."
           collapseSearchOnMobile
+          currency={currency}
+          onCurrencyToggle={toggleCurrency}
         />
 
         <div className="flex-1 overflow-y-auto">
@@ -1078,25 +1326,50 @@ function PhoneNumbersPageContent() {
                 Manage your phone numbers, view call logs, and connect with service providers
               </p>
             </div>
-            <div className="flex gap-3">
-              <button
-                onClick={() => setIsPurchaseModalOpen(true)}
-                className="px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl hover:shadow-lg hover:shadow-green-500/25 transition-all duration-200 flex items-center gap-2 font-semibold"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
-                Purchase Number
-              </button>
-              <button
-                onClick={() => setIsProviderModalOpen(true)}
-                className="px-6 py-3 bg-gradient-to-r from-primary to-primary/80 text-white rounded-xl hover:shadow-lg hover:shadow-primary/25 transition-all duration-200 flex items-center gap-2 font-semibold"
-              >
-                <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                </svg>
-                Connect Provider
-              </button>
+            <div className="flex flex-col gap-3">
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setIsPurchaseModalOpen(true)}
+                  className="px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl hover:shadow-lg hover:shadow-green-500/25 transition-all duration-200 flex items-center gap-2 font-semibold"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  Purchase Number
+                </button>
+                <button
+                  onClick={() => setIsProviderModalOpen(true)}
+                  className="px-6 py-3 bg-gradient-to-r from-primary to-primary/80 text-white rounded-xl hover:shadow-lg hover:shadow-primary/25 transition-all duration-200 flex items-center gap-2 font-semibold"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                  </svg>
+                  Connect Provider
+                </button>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setIsVerifyModalOpen(true);
+                    setIsVerificationStep('input');
+                  }}
+                  className="px-6 py-3 bg-gradient-to-r from-green-500 to-green-600 text-white rounded-xl hover:shadow-lg hover:shadow-green-500/25 transition-all duration-200 flex items-center gap-2 font-semibold"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" />
+                  </svg>
+                  Verify New Number
+                </button>
+                <button
+                  onClick={() => setIsDialPadOpen(true)}
+                  className="px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-200 flex items-center gap-2 font-semibold"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
+                  </svg>
+                  Open Dial Pad
+                </button>
+              </div>
             </div>
           </div>
 
@@ -1208,19 +1481,6 @@ function PhoneNumbersPageContent() {
             </div>
           ) : phoneNumbers.length > 0 ? (
             <>
-              {/* Dial Pad Button */}
-              <div className="mb-6 flex justify-end">
-                <button
-                  onClick={() => setIsDialPadOpen(true)}
-                  className="px-6 py-3 bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-xl hover:shadow-lg hover:shadow-blue-500/25 transition-all duration-200 flex items-center gap-2 font-semibold"
-                >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" />
-                  </svg>
-                  Open Dial Pad
-                </button>
-              </div>
-
               {/* Provider-Categorized Phone Numbers */}
               {['twilio'].map(provider => {
                 const providerNumbers = phoneNumbers.filter(p => p.provider.toLowerCase() === provider);
@@ -1703,7 +1963,7 @@ function PhoneNumbersPageContent() {
                                   <span className={`text-sm font-medium ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
                                     Available
                                   </span>
-                                  {call.transcription_text && (
+                                  {(call.transcript || call.transcription_text) && (
                                     <svg className="w-4 h-4 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" title="Transcription available">
                                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                                     </svg>
@@ -1716,7 +1976,20 @@ function PhoneNumbersPageContent() {
                               )}
                             </td>
                             <td className={`px-6 py-4 text-sm font-semibold ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
-                              {call.price ? `$${Math.abs(parseFloat(call.price)).toFixed(4)}` : '-'}
+                              {call.calculated_cost ? (
+                                <div className="flex flex-col">
+                                  <span className={`font-bold ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                                    {currency === 'USD' ? '$' : '₹'}{currency === 'USD' ? call.calculated_cost.total_usd?.toFixed(4) : call.calculated_cost.total_inr?.toFixed(2)}
+                                  </span>
+                                  <span className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                    Total cost
+                                  </span>
+                                </div>
+                              ) : call.price ? (
+                                `$${Math.abs(parseFloat(call.price)).toFixed(4)}`
+                              ) : (
+                                <span className={isDarkMode ? 'text-gray-500' : 'text-gray-400'}>-</span>
+                              )}
                             </td>
                             <td className="px-6 py-4">
                               <button
@@ -2537,28 +2810,66 @@ function PhoneNumbersPageContent() {
                   </div>
                 )}
 
-                {selectedCallLog.price && (
-                  <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
-                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                      Cost
+                {(selectedCallLog.calculated_cost || selectedCallLog.price) && (
+                  <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-green-900/20 border border-green-800' : 'bg-green-50 border border-green-200'}`}>
+                    <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-green-400' : 'text-green-700'}`}>
+                      Total Cost
                     </p>
-                    <p className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
-                      ${Math.abs(parseFloat(selectedCallLog.price)).toFixed(4)}
-                    </p>
+                    {selectedCallLog.calculated_cost ? (
+                      <div className="space-y-1">
+                        <p className={`text-2xl font-bold ${isDarkMode ? 'text-green-300' : 'text-green-900'}`}>
+                          {currency === 'USD' ? '$' : '₹'}{currency === 'USD' ? selectedCallLog.calculated_cost.total_usd?.toFixed(4) : selectedCallLog.calculated_cost.total_inr?.toFixed(2)}
+                        </p>
+                        <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          API: {currency === 'USD' ? '$' : '₹'}{currency === 'USD' ? selectedCallLog.calculated_cost.api_cost_usd?.toFixed(4) : selectedCallLog.calculated_cost.api_cost_inr?.toFixed(2)} + Twilio: {currency === 'USD' ? '$' : '₹'}{currency === 'USD' ? selectedCallLog.calculated_cost.twilio_cost_usd?.toFixed(4) : selectedCallLog.calculated_cost.twilio_cost_inr?.toFixed(2)}
+                        </p>
+                      </div>
+                    ) : (
+                      <p className={`text-lg font-semibold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                        ${Math.abs(parseFloat(selectedCallLog.price!)).toFixed(4)}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
 
               {/* Voice Configuration Section */}
-              {(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) && (
-                <div className={`mb-6 p-4 rounded-xl ${isDarkMode ? 'bg-purple-900/20 border border-purple-800' : 'bg-purple-50 border border-purple-200'}`}>
-                  <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-purple-300' : 'text-purple-900'}`}>
-                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-                    </svg>
-                    Voice Provider Configuration
-                  </h3>
+              <div className={`mb-6 p-4 rounded-xl ${(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) ? (isDarkMode ? 'bg-purple-900/20 border border-purple-800' : 'bg-purple-50 border border-purple-200') : (isDarkMode ? 'bg-blue-900/20 border border-blue-800' : 'bg-blue-50 border border-blue-200')}`}>
+                <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) ? (isDarkMode ? 'text-purple-300' : 'text-purple-900') : (isDarkMode ? 'text-blue-300' : 'text-blue-900')}`}>
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    {(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) ? (
+                      // Custom Providers Icon
+                      <>
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      </>
+                    ) : (
+                      // Realtime API Icon
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    )}
+                  </svg>
+                  Voice Provider Configuration
+                  <span className={`ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-bold ${(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) ? 'bg-purple-500/20 text-purple-400' : 'bg-blue-500/20 text-blue-400'}`}>
+                    {(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) ? (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 4a2 2 0 114 0v1a1 1 0 001 1h3a1 1 0 011 1v3a1 1 0 01-1 1h-1a2 2 0 100 4h1a1 1 0 011 1v3a1 1 0 01-1 1h-3a1 1 0 01-1-1v-1a2 2 0 10-4 0v1a1 1 0 01-1 1H7a1 1 0 01-1-1v-3a1 1 0 00-1-1H4a2 2 0 110-4h1a1 1 0 001-1V7a1 1 0 011-1h3a1 1 0 001-1V4z" />
+                        </svg>
+                        Custom Providers
+                      </>
+                    ) : (
+                      <>
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                        OpenAI Realtime API
+                      </>
+                    )}
+                  </span>
+                </h3>
+
+                {/* Custom Providers - Show individual components */}
+                {(selectedCallLog.asr_provider || selectedCallLog.tts_provider || selectedCallLog.llm_provider) ? (
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     {selectedCallLog.asr_provider && (
                       <div className={`p-3 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'}`}>
@@ -2606,8 +2917,82 @@ function PhoneNumbersPageContent() {
                       </div>
                     )}
                   </div>
-                </div>
-              )}
+                ) : (
+                  // OpenAI Realtime API - All-in-one solution
+                  <div className={`p-4 rounded-lg ${isDarkMode ? 'bg-gray-800 border border-blue-700/30' : 'bg-white border border-blue-200'}`}>
+                    <div className="flex items-start gap-4">
+                      <div className={`p-3 rounded-xl ${isDarkMode ? 'bg-blue-900/30' : 'bg-blue-50'}`}>
+                        <svg className="w-8 h-8 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                        </svg>
+                      </div>
+                      <div className="flex-1">
+                        <h4 className={`text-sm font-bold mb-2 ${isDarkMode ? 'text-blue-300' : 'text-blue-900'}`}>
+                          OpenAI Realtime API
+                        </h4>
+                        <p className={`text-xs mb-3 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          All-in-one voice solution with integrated ASR, LLM, and TTS in a single WebSocket connection
+                        </p>
+                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                          <div className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-gray-900/50' : 'bg-gray-50'}`}>
+                            <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              Speech-to-Text
+                            </p>
+                            <p className={`text-sm font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                              Whisper-1
+                            </p>
+                            <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              Built-in ASR
+                            </p>
+                          </div>
+                          <div className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-gray-900/50' : 'bg-gray-50'}`}>
+                            <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              Language Model
+                            </p>
+                            <p className={`text-sm font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                              GPT-4o Realtime
+                            </p>
+                            <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              ~300ms latency
+                            </p>
+                          </div>
+                          <div className={`px-3 py-2 rounded-lg ${isDarkMode ? 'bg-gray-900/50' : 'bg-gray-50'}`}>
+                            <p className={`text-xs font-semibold uppercase tracking-wider mb-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              Text-to-Speech
+                            </p>
+                            <p className={`text-sm font-semibold ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                              {selectedCallLog.voice || 'Alloy'}
+                            </p>
+                            <p className={`text-xs mt-0.5 ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
+                              OpenAI TTS
+                            </p>
+                          </div>
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-green-900/30 text-green-400' : 'bg-green-100 text-green-700'}`}>
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            Free Transcription
+                          </span>
+                          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-blue-900/30 text-blue-400' : 'bg-blue-100 text-blue-700'}`}>
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            Sub-300ms Latency
+                          </span>
+                          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium ${isDarkMode ? 'bg-purple-900/30 text-purple-400' : 'bg-purple-100 text-purple-700'}`}>
+                            <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+                              <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                            </svg>
+                            Single WebSocket
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
 
               {/* Recording Section */}
               {selectedCallLog.recording_url && (
@@ -2686,17 +3071,54 @@ function PhoneNumbersPageContent() {
               )}
 
               {/* Transcription Section */}
-              {selectedCallLog.transcription_text ? (
+              {(selectedCallLog.transcript || selectedCallLog.transcription_text) ? (
                 <div className={`p-4 rounded-xl ${isDarkMode ? 'bg-gradient-to-br from-blue-900/20 to-purple-900/20 border border-blue-800' : 'bg-gradient-to-br from-blue-50 to-purple-50 border border-blue-200'}`}>
                   <h3 className={`text-lg font-bold mb-4 flex items-center gap-2 ${isDarkMode ? 'text-blue-300' : 'text-blue-900'}`}>
                     <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                     </svg>
                     Call Transcription
+                    {selectedCallLog.transcript && (
+                      <span className={`text-xs px-2 py-1 rounded-full ${isDarkMode ? 'bg-green-900/40 text-green-300' : 'bg-green-100 text-green-800'}`}>
+                        AI Generated
+                      </span>
+                    )}
                   </h3>
+
+                  {/* Show summary if available */}
+                  {selectedCallLog.summary && (
+                    <div className={`mb-4 p-3 rounded-lg ${isDarkMode ? 'bg-blue-900/30' : 'bg-blue-50'}`}>
+                      <h4 className={`text-sm font-semibold mb-2 ${isDarkMode ? 'text-blue-300' : 'text-blue-900'}`}>
+                        Summary:
+                      </h4>
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                        {selectedCallLog.summary}
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Show sentiment if available */}
+                  {selectedCallLog.sentiment && (
+                    <div className="mb-4 flex items-center gap-2">
+                      <span className={`text-xs font-semibold ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        Sentiment:
+                      </span>
+                      <span className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                        selectedCallLog.sentiment === 'positive'
+                          ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-300'
+                          : selectedCallLog.sentiment === 'negative'
+                          ? 'bg-red-100 text-red-800 dark:bg-red-900/40 dark:text-red-300'
+                          : 'bg-gray-100 text-gray-800 dark:bg-gray-700 dark:text-gray-300'
+                      }`}>
+                        {selectedCallLog.sentiment}
+                        {selectedCallLog.sentiment_score !== undefined && ` (${(selectedCallLog.sentiment_score * 100).toFixed(0)}%)`}
+                      </span>
+                    </div>
+                  )}
+
                   <div className={`p-4 rounded-lg ${isDarkMode ? 'bg-gray-800' : 'bg-white'} max-h-96 overflow-y-auto`}>
                     <p className={`text-sm leading-relaxed whitespace-pre-wrap ${isDarkMode ? 'text-gray-300' : 'text-neutral-dark'}`}>
-                      {selectedCallLog.transcription_text}
+                      {selectedCallLog.transcript || selectedCallLog.transcription_text}
                     </p>
                   </div>
                 </div>
@@ -2716,14 +3138,14 @@ function PhoneNumbersPageContent() {
                       Transcription Processing
                     </p>
                     <p className={`text-xs ${isDarkMode ? 'text-gray-500' : 'text-gray-500'}`}>
-                      Twilio is automatically processing the transcription. This usually takes 5-10 minutes after the call ends. Please refresh the page to check for updates.
+                      AI transcription is being generated using OpenAI Whisper. This usually takes 30-60 seconds after the recording is complete. Please refresh the page to check for updates.
                     </p>
                   </div>
                 </div>
               ) : null}
 
               {/* No Recording/Transcription Message */}
-              {!selectedCallLog.recording_url && !selectedCallLog.transcription_text && (
+              {!selectedCallLog.recording_url && !selectedCallLog.transcript && !selectedCallLog.transcription_text && (
                 <div className={`p-6 rounded-xl text-center ${isDarkMode ? 'bg-gray-700' : 'bg-gray-50'}`}>
                   <svg className="w-12 h-12 mx-auto mb-3 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
@@ -2863,20 +3285,8 @@ function PhoneNumbersPageContent() {
                       No Verified Caller IDs
                     </p>
                     <p className={`text-xs ${isDarkMode ? 'text-yellow-300' : 'text-yellow-800'}`}>
-                      You need to verify caller IDs in your Twilio Console before making outbound calls.
+                      You need to verify caller IDs before making outbound calls.
                     </p>
-                    <a
-                      href="https://console.twilio.com/us1/develop/phone-numbers/manage/verified"
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={`inline-block mt-3 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                        isDarkMode
-                          ? 'bg-yellow-800 hover:bg-yellow-700 text-yellow-200'
-                          : 'bg-yellow-600 hover:bg-yellow-700 text-white'
-                      }`}
-                    >
-                      Verify Numbers in Twilio →
-                    </a>
                   </div>
                 )}
               </div>
@@ -2932,6 +3342,207 @@ function PhoneNumbersPageContent() {
                     </svg>
                     Make Call
                   </div>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Verify Caller ID Modal */}
+      {isVerifyModalOpen && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4 animate-fadeIn">
+          <div className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl max-w-md w-full shadow-2xl`}>
+            {/* Modal Header */}
+            <div className={`px-6 py-5 border-b ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} flex items-center justify-between`}>
+              <div>
+                <h2 className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                  Verify Caller ID
+                </h2>
+                <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                  {isVerificationStep === 'input'
+                    ? 'Enter the phone number you want to verify'
+                    : 'Enter the verification code you received'}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setIsVerifyModalOpen(false);
+                  setVerifyPhoneNumber('');
+                  setVerifyFriendlyName('');
+                  setVerificationCode('');
+                  setValidationRequestSid('');
+                  setIsVerificationStep('input');
+                  setDisplayedValidationCode('');
+                }}
+                className={`p-2 rounded-xl ${isDarkMode ? 'hover:bg-gray-700' : 'hover:bg-neutral-light'} transition-colors`}
+              >
+                <svg className={`w-6 h-6 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-6">
+              {isVerificationStep === 'input' ? (
+                <>
+                  {/* Phone Number Input */}
+                  <div className="mb-4">
+                    <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Phone Number *
+                    </label>
+                    <input
+                      type="tel"
+                      value={verifyPhoneNumber}
+                      onChange={(e) => setVerifyPhoneNumber(e.target.value)}
+                      placeholder="+1234567890"
+                      className={`w-full px-4 py-3 rounded-xl border-2 transition-colors ${
+                        isDarkMode
+                          ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-primary'
+                          : 'bg-white border-gray-300 text-neutral-dark placeholder-gray-400 focus:border-primary'
+                      } outline-none`}
+                    />
+                    <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Must be in E.164 format (e.g., +1234567890)
+                    </p>
+                  </div>
+
+                  {/* Friendly Name Input */}
+                  <div className="mb-6">
+                    <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Friendly Name (Optional)
+                    </label>
+                    <input
+                      type="text"
+                      value={verifyFriendlyName}
+                      onChange={(e) => setVerifyFriendlyName(e.target.value)}
+                      placeholder="My Mobile"
+                      className={`w-full px-4 py-3 rounded-xl border-2 transition-colors ${
+                        isDarkMode
+                          ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-primary'
+                          : 'bg-white border-gray-300 text-neutral-dark placeholder-gray-400 focus:border-primary'
+                      } outline-none`}
+                    />
+                  </div>
+
+                  {/* Info Box */}
+                  <div className={`p-4 rounded-xl mb-6 ${isDarkMode ? 'bg-blue-900/20 border border-blue-800' : 'bg-blue-50 border border-blue-200'}`}>
+                    <div className="flex items-start gap-2">
+                      <svg className="w-5 h-5 text-blue-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <div>
+                        <p className={`text-xs ${isDarkMode ? 'text-blue-300' : 'text-blue-800'}`}>
+                          Twilio will call this number with a 6-digit verification code. Make sure you can answer the call.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
+                  {/* Display the validation code prominently */}
+                  {displayedValidationCode && (
+                    <div className={`mb-6 p-6 rounded-xl text-center ${isDarkMode ? 'bg-gradient-to-r from-green-900/40 to-blue-900/40 border-2 border-green-500' : 'bg-gradient-to-r from-green-50 to-blue-50 border-2 border-green-500'}`}>
+                      <p className={`text-sm font-semibold mb-2 ${isDarkMode ? 'text-green-300' : 'text-green-700'}`}>
+                        YOUR VERIFICATION CODE
+                      </p>
+                      <p className={`text-5xl font-bold font-mono tracking-wider ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                        {displayedValidationCode}
+                      </p>
+                      <p className={`text-xs mt-2 ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        This code will also be spoken during the Twilio call
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Verification Code Input */}
+                  <div className="mb-6">
+                    <label className={`block text-sm font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                      Verification Code *
+                    </label>
+                    <input
+                      type="text"
+                      value={verificationCode}
+                      onChange={(e) => setVerificationCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                      placeholder="123456"
+                      maxLength={6}
+                      className={`w-full px-4 py-3 rounded-xl border-2 transition-colors text-center text-2xl font-mono tracking-widest ${
+                        isDarkMode
+                          ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400 focus:border-primary'
+                          : 'bg-white border-gray-300 text-neutral-dark placeholder-gray-400 focus:border-primary'
+                      } outline-none`}
+                    />
+                    <p className={`text-xs mt-1 text-center ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      Enter the 6-digit code from above (or from the phone call)
+                    </p>
+                  </div>
+
+                  {/* Info Box */}
+                  <div className={`p-4 rounded-xl mb-6 ${isDarkMode ? 'bg-green-900/20 border border-green-800' : 'bg-green-50 border border-green-200'}`}>
+                    <div className="flex items-start gap-2">
+                      <svg className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <div>
+                        <p className={`text-xs ${isDarkMode ? 'text-green-300' : 'text-green-800'}`}>
+                          Phone number: <strong>{validationRequestSid}</strong>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Back Button */}
+                  <button
+                    onClick={() => {
+                      setIsVerificationStep('input');
+                      setVerificationCode('');
+                    }}
+                    className={`w-full mb-3 px-4 py-2 rounded-xl text-sm transition-colors ${
+                      isDarkMode
+                        ? 'text-gray-400 hover:text-gray-300 hover:bg-gray-700'
+                        : 'text-gray-600 hover:text-gray-800 hover:bg-gray-100'
+                    }`}
+                  >
+                    ← Back to phone number input
+                  </button>
+                </>
+              )}
+            </div>
+
+            {/* Modal Footer */}
+            <div className={`px-6 py-4 border-t ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'} flex gap-3`}>
+              <button
+                onClick={() => {
+                  setIsVerifyModalOpen(false);
+                  setVerifyPhoneNumber('');
+                  setVerifyFriendlyName('');
+                  setVerificationCode('');
+                  setValidationRequestSid('');
+                  setIsVerificationStep('input');
+                  setDisplayedValidationCode('');
+                }}
+                className={`flex-1 px-4 py-3 rounded-xl ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-white' : 'bg-neutral-light hover:bg-neutral-mid/20 text-neutral-dark'} transition-colors font-semibold`}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={isVerificationStep === 'input' ? handleInitiateVerification : handleConfirmVerification}
+                disabled={isVerifying || (isVerificationStep === 'input' ? !verifyPhoneNumber.trim() : verificationCode.length !== 6)}
+                className={`flex-1 px-4 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                  isVerifying || (isVerificationStep === 'input' ? !verifyPhoneNumber.trim() : verificationCode.length !== 6)
+                    ? 'bg-gray-400 cursor-not-allowed text-gray-600'
+                    : 'bg-gradient-to-r from-primary to-primary-dark text-white hover:shadow-lg hover:shadow-primary/25'
+                }`}
+              >
+                {isVerifying ? (
+                  <div className="flex items-center justify-center gap-2">
+                    <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                    {isVerificationStep === 'input' ? 'Calling...' : 'Verifying...'}
+                  </div>
+                ) : (
+                  isVerificationStep === 'input' ? 'Send Verification Call' : 'Verify Code'
                 )}
               </button>
             </div>

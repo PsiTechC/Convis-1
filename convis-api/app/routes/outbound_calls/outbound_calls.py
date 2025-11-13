@@ -506,6 +506,8 @@ async def make_outbound_call(assistant_id: str, request: OutboundCallRequest):
         domain = re.sub(r'(^\w+:|^)\/\/|\/+$', '', settings.api_base_url)
 
         # Create TwiML to connect to media stream with custom parameters
+        # Note: Recording with transcription is enabled via the record parameter in calls.create()
+        # and will be handled by the recording_status_callback
         outbound_twiml = (
             f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<Response>'
@@ -527,9 +529,9 @@ async def make_outbound_call(assistant_id: str, request: OutboundCallRequest):
             twiml=outbound_twiml,
             record=True,  # Enable call recording
             recording_status_callback=f'{settings.api_base_url}/api/outbound-calls/recording-status',
-            recording_status_callback_method='POST'
-            # Note: transcribe parameter has been deprecated in newer Twilio SDK versions
-            # Transcription can be requested separately via the Recordings API if needed
+            recording_status_callback_method='POST',
+            recording_status_callback_event=['completed']  # Get callback when recording is complete
+            # Note: Transcription will be requested via Recordings API in the recording-status callback
         )
 
         logger.info(f"Call created with SID: {call.sid}")
@@ -1561,6 +1563,26 @@ IMPORTANT:
                                 conversation_history.append({"role": "assistant", "text": transcript_text})
                                 if len(conversation_history) > 30:
                                     conversation_history = conversation_history[-30:]
+
+                                # Save real-time transcript to database
+                                try:
+                                    if call_sid:
+                                        # Build full transcript from conversation history
+                                        full_transcript = "\n\n".join([
+                                            f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['text']}"
+                                            for msg in conversation_history
+                                        ])
+
+                                        db["call_logs"].update_one(
+                                            {"call_sid": call_sid},
+                                            {"$set": {
+                                                "transcript": full_transcript,
+                                                "transcript_updated_at": datetime.utcnow()
+                                            }}
+                                        )
+                                except Exception as transcript_err:
+                                    logger.error(f"Error saving assistant transcript: {transcript_err}")
+
                                 await maybe_schedule_from_conversation("assistant_transcript")
 
                         # Handle interruption when user starts speaking
@@ -1616,6 +1638,26 @@ IMPORTANT:
                                             conversation_history.append({"role": "user", "text": transcript})
                                             if len(conversation_history) > 30:
                                                 conversation_history = conversation_history[-30:]
+
+                                            # Save real-time transcript to database
+                                            try:
+                                                if call_sid:
+                                                    # Build full transcript from conversation history
+                                                    full_transcript = "\n\n".join([
+                                                        f"{'User' if msg['role'] == 'user' else 'Assistant'}: {msg['text']}"
+                                                        for msg in conversation_history
+                                                    ])
+
+                                                    db["call_logs"].update_one(
+                                                        {"call_sid": call_sid},
+                                                        {"$set": {
+                                                            "transcript": full_transcript,
+                                                            "transcript_updated_at": datetime.utcnow()
+                                                        }}
+                                                    )
+                                            except Exception as transcript_err:
+                                                logger.error(f"Error saving transcript: {transcript_err}")
+
                                             await maybe_schedule_from_conversation("user_transcript")
 
                                             # Search knowledge base
@@ -1734,6 +1776,11 @@ async def handle_outbound_recording_status(request: Request):
 
             if result.modified_count > 0:
                 logger.info(f"Updated outbound call log with recording URL for call {call_sid}")
+
+                # Note: Twilio native transcription is NOT available for outbound calls using <Stream>
+                # Twilio transcription only works with <Record> verb, which is incompatible with <Stream>
+                # For outbound call transcription, use OpenAI Whisper via the transcription API endpoints
+                # The twilio_webhooks handler will trigger automatic transcription if enabled
             else:
                 logger.warning(f"Outbound call log not found for call_sid: {call_sid}")
 
