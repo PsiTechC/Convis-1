@@ -27,6 +27,7 @@ from app.routes.campaign_twilio_callbacks import router as campaign_twilio_route
 from app.routes.dashboard import router as dashboard_router
 from app.routes.frejun import router as frejun_router
 from app.routes.whatsapp import credentials_router, messages_router, webhooks_router
+from app.routes.transcription import transcription_router
 from app.config.database import Database
 from app.config.settings import settings
 from app.services.campaign_scheduler import campaign_scheduler
@@ -126,12 +127,64 @@ app.include_router(credentials_router, prefix="/api/whatsapp", tags=["WhatsApp"]
 app.include_router(messages_router, prefix="/api/whatsapp", tags=["WhatsApp"])
 app.include_router(webhooks_router, prefix="/api/whatsapp", tags=["WhatsApp Webhooks"])
 
+# Transcription Management
+app.include_router(transcription_router, prefix="/api/transcription", tags=["Transcription"])
+
+
+async def transcribe_existing_recordings():
+    """Background task to transcribe all existing recordings on startup"""
+    import asyncio
+    await asyncio.sleep(10)  # Wait 10 seconds for server to fully start
+
+    try:
+        from app.services.post_call_processor import PostCallProcessor
+
+        db = Database.get_db()
+        call_logs = db['call_logs']
+
+        # Find calls with recordings but no transcripts (or failed transcriptions)
+        query = {
+            'recording_url': {'$ne': None, '$exists': True},
+            '$or': [
+                {'transcript': {'$exists': False}},
+                {'transcript': None},
+                {'transcript': ''},
+                {'transcript': '[Transcription unavailable]'}
+            ]
+        }
+
+        calls_to_transcribe = list(call_logs.find(query).limit(50))  # Limit to 50 at a time
+
+        if len(calls_to_transcribe) > 0:
+            logging.info(f"🎙️  Found {len(calls_to_transcribe)} calls to transcribe - starting background transcription...")
+
+            processor = PostCallProcessor()
+            for call in calls_to_transcribe:
+                try:
+                    await processor.transcribe_and_update_call(
+                        call['call_sid'],
+                        call['recording_url']
+                    )
+                    logging.info(f"✓ Transcribed {call['call_sid']}")
+                    await asyncio.sleep(2)  # Rate limiting
+                except Exception as e:
+                    logging.error(f"Failed to transcribe {call.get('call_sid')}: {e}")
+
+            logging.info(f"✓ Background transcription complete!")
+    except Exception as e:
+        logging.error(f"Error in background transcription: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
-    """Connect to database on startup"""    
+    """Connect to database on startup"""
     Database.connect()
     logging.info("Connected to MongoDB")
     await campaign_scheduler.start()
+
+    # Start background transcription task
+    import asyncio
+    asyncio.create_task(transcribe_existing_recordings())
 
 @app.on_event("shutdown")
 async def shutdown_event():

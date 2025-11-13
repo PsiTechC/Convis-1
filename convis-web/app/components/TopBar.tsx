@@ -16,6 +16,8 @@ interface TopBarProps {
   rightContentBefore?: ReactNode;
   rightContentAfter?: ReactNode;
   showNotifications?: boolean;
+  currency?: 'USD' | 'INR';
+  onCurrencyToggle?: () => void;
 }
 
 export function TopBar({
@@ -32,6 +34,8 @@ export function TopBar({
   rightContentBefore,
   rightContentAfter,
   showNotifications = true,
+  currency = 'USD',
+  onCurrencyToggle,
 }: TopBarProps) {
   const searchWrapperClasses = collapseSearchOnMobile
     ? 'hidden sm:block flex-1 max-w-xl'
@@ -74,6 +78,17 @@ export function TopBar({
 
         <div className="flex items-center gap-2">
           {rightContentBefore}
+
+          {onCurrencyToggle && (
+            <button
+              onClick={onCurrencyToggle}
+              title={`Switch to ${currency === 'USD' ? 'INR' : 'USD'}`}
+              className={`px-3 py-2 rounded-xl ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-neutral-light hover:bg-neutral-mid/20 text-neutral-dark'} transition-all font-semibold text-sm flex items-center gap-1.5`}
+            >
+              <span className="text-xs font-bold">{currency === 'USD' ? '$' : '₹'}</span>
+              <span>{currency}</span>
+            </button>
+          )}
 
           <button
             onClick={toggleTheme}

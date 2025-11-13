@@ -72,6 +72,9 @@ async def send_session_update(
         "instructions": system_message,
         "modalities": ["audio", "text"],
         "temperature": temperature,
+        "input_audio_transcription": {
+            "model": "whisper-1"
+        }
     }
 
     # Add max_response_output_tokens if specified

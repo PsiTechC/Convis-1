@@ -23,20 +23,24 @@ class PostCallProcessor:
         if not self.openai_api_key:
             logger.warning("OPENAI_API_KEY not set - post-call processing will be limited")
 
-    async def download_recording(self, recording_url: str) -> Optional[bytes]:
+    async def download_recording(self, recording_url: str, account_sid: str = None, auth_token: str = None) -> Optional[bytes]:
         """
         Download recording file from Twilio.
 
         Args:
             recording_url: URL to the recording (with .mp3 extension)
+            account_sid: Twilio Account SID (optional, will use env if not provided)
+            auth_token: Twilio Auth Token (optional, will use env if not provided)
 
         Returns:
             Recording bytes or None
         """
         try:
-            # Twilio basic auth
-            account_sid = os.getenv("TWILIO_ACCOUNT_SID")
-            auth_token = os.getenv("TWILIO_AUTH_TOKEN")
+            # Use provided credentials or fall back to environment variables
+            if not account_sid:
+                account_sid = os.getenv("TWILIO_ACCOUNT_SID")
+            if not auth_token:
+                auth_token = os.getenv("TWILIO_AUTH_TOKEN")
 
             if not account_sid or not auth_token:
                 logger.error("Twilio credentials not configured")
@@ -327,3 +331,113 @@ Return ONLY the JSON, no other text."""
             logger.error(f"Error in post-call processing: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    async def transcribe_and_update_call(self, call_sid: str, recording_url: str):
+        """
+        Transcribe a call recording and update call_logs with the transcript.
+        This is used for regular (non-campaign) calls.
+
+        Args:
+            call_sid: Twilio Call SID
+            recording_url: URL to the recording (with .mp3 extension)
+        """
+        try:
+            logger.info(f"Transcribing call {call_sid}")
+
+            db = Database.get_db()
+            call_logs_collection = db["call_logs"]
+
+            # Get the call to find the user_id
+            call = call_logs_collection.find_one({"call_sid": call_sid})
+            if not call:
+                logger.error(f"Call {call_sid} not found in database")
+                return
+
+            user_id = call.get("user_id")
+            if not user_id:
+                logger.error(f"No user_id for call {call_sid}")
+                return
+
+            # Get user's Twilio credentials from provider_connections
+            from bson import ObjectId
+            from app.utils.twilio_helpers import decrypt_twilio_credentials
+
+            provider_connections = db["provider_connections"]
+            twilio_connection = provider_connections.find_one({
+                "user_id": user_id if isinstance(user_id, ObjectId) else ObjectId(user_id),
+                "provider": "twilio"
+            })
+
+            if not twilio_connection:
+                logger.error(f"No Twilio connection found for user {user_id}")
+                return
+
+            account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
+            if not account_sid or not auth_token:
+                logger.error(f"Invalid Twilio credentials for user {user_id}")
+                return
+
+            # Step 1: Download recording
+            logger.info(f"Downloading recording from {recording_url}")
+            audio_bytes = await self.download_recording(recording_url, account_sid, auth_token)
+            if not audio_bytes:
+                logger.error(f"Failed to download recording for {call_sid}")
+                return
+
+            # Step 2: Transcribe
+            logger.info("Transcribing audio using OpenAI Whisper...")
+            transcript = await self.transcribe_audio(audio_bytes)
+            if not transcript:
+                logger.warning(f"Transcription failed or empty for {call_sid}")
+                transcript = "[Transcription unavailable]"
+
+            # Step 3: Analyze
+            logger.info("Analyzing transcript...")
+            analysis = await self.analyze_transcript(transcript)
+            if not analysis:
+                analysis = {
+                    "sentiment": "neutral",
+                    "sentiment_score": 0.0,
+                    "summary": "Unable to analyze call.",
+                    "appointment": None
+                }
+
+            # Step 4: Update call log with transcript and analysis
+            call_logs_collection.update_one(
+                {"call_sid": call_sid},
+                {
+                    "$set": {
+                        "transcript": transcript,
+                        "transcription_status": "completed",
+                        "analysis": analysis,
+                        "sentiment": analysis.get("sentiment", "neutral"),
+                        "sentiment_score": analysis.get("sentiment_score", 0.0),
+                        "summary": analysis.get("summary", ""),
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+
+            logger.info(f"Transcription completed for call {call_sid}: {len(transcript)} characters")
+
+        except Exception as e:
+            logger.error(f"Error transcribing call {call_sid}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+
+            # Update with error status
+            try:
+                db = Database.get_db()
+                call_logs_collection = db["call_logs"]
+                call_logs_collection.update_one(
+                    {"call_sid": call_sid},
+                    {
+                        "$set": {
+                            "transcription_status": "failed",
+                            "transcription_error": str(e),
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+            except Exception:
+                pass

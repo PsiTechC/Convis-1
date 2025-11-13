@@ -5,6 +5,13 @@ import { useRouter } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
 import { TopBar } from '../components/TopBar';
+import {
+  ENHANCED_TTS_VOICES,
+  ENHANCED_ASR_MODELS,
+  ENHANCED_TTS_MODELS,
+  ENHANCED_LLM_MODELS,
+  TWILIO_COST_PER_MIN
+} from './provider-config';
 
 type SupportedProvider = 'openai' | 'anthropic' | 'azure_openai' | 'google' | 'custom';
 
@@ -185,133 +192,17 @@ const VOICE_OPTIONS: VoiceOption[] = [
   { value: 'verse', label: 'Verse', gender: 'Male', accent: 'American', description: 'Conversational and natural' },
 ];
 
-// ASR Provider Models from convis-api/app/providers/asr.py
-const ASR_MODELS = {
-  deepgram: [
-    { value: 'nova-2', label: 'Nova-2', cost: 0.0043, latency: 75 },
-    { value: 'nova-3', label: 'Nova-3', cost: 0.0059, latency: 80 }
-  ],
-  openai: [
-    { value: 'whisper-1', label: 'Whisper-1', cost: 0.006, latency: 250 }
-  ],
-  azure: [
-    { value: 'en-US', label: 'Azure Speech', cost: 0.0048, latency: 100 }
-  ],
-  sarvam: [
-    { value: 'saarika:v1', label: 'Saarika V1 (Indian Languages)', cost: 0.004, latency: 120 }
-  ],
-  assembly: [
-    { value: 'best', label: 'Best (Highest Accuracy)', cost: 0.005, latency: 150 },
-    { value: 'nano', label: 'Nano (Fastest)', cost: 0.003, latency: 90 }
-  ],
-  google: [
-    { value: 'default', label: 'Google Speech-to-Text', cost: 0.0048, latency: 130 }
-  ]
-};
+// ASR Provider Models from provider-config.ts (imported as ENHANCED_ASR_MODELS)
+const ASR_MODELS = ENHANCED_ASR_MODELS;
 
-// TTS Provider Voices and Models from convis-api/app/providers/tts.py
-const TTS_VOICES = {
-  cartesia: [
-    { value: 'sonic', label: 'Sonic - Fast, natural voice' },
-    { value: 'stella', label: 'Stella - Warm, friendly female' },
-    { value: 'marcus', label: 'Marcus - Professional male' }
-  ],
-  elevenlabs: [
-    { value: 'rachel', label: 'Rachel - Young female American' },
-    { value: 'domi', label: 'Domi - Strong female American' },
-    { value: 'bella', label: 'Bella - Soft young American female' },
-    { value: 'antoni', label: 'Antoni - Well-rounded male' },
-    { value: 'josh', label: 'Josh - Deep American male' },
-    { value: 'arnold', label: 'Arnold - Crisp American male' }
-  ],
-  openai: [
-    { value: 'alloy', label: 'Alloy - Neutral, balanced' },
-    { value: 'echo', label: 'Echo - Male voice' },
-    { value: 'fable', label: 'Fable - British male' },
-    { value: 'onyx', label: 'Onyx - Deep male' },
-    { value: 'nova', label: 'Nova - Female voice' },
-    { value: 'shimmer', label: 'Shimmer - Soft female' }
-  ],
-  sarvam: [
-    { value: 'Manisha', label: 'Manisha - Female Hindi/English' },
-    { value: 'Hitesh', label: 'Hitesh - Male Hindi/English' },
-    { value: 'Abhilash', label: 'Abhilash - Male Hindi' },
-    { value: 'Karun', label: 'Karun - Male Hindi' },
-    { value: 'Anushka', label: 'Anushka - Female Hindi' },
-    { value: 'Vidya', label: 'Vidya - Female Hindi' },
-    { value: 'Arya', label: 'Arya - Female Hindi' }
-  ],
-  azuretts: [
-    { value: 'en-US-JennyNeural', label: 'Jenny (US Female)' },
-    { value: 'en-US-GuyNeural', label: 'Guy (US Male)' },
-    { value: 'en-IN-NeerjaNeural', label: 'Neerja (Indian Female)' },
-    { value: 'en-IN-PrabhatNeural', label: 'Prabhat (Indian Male)' }
-  ]
-};
+// TTS Provider Voices from provider-config.ts (imported as ENHANCED_TTS_VOICES)
+const TTS_VOICES = ENHANCED_TTS_VOICES;
 
-const TTS_MODELS = {
-  cartesia: [
-    { value: 'sonic-english', label: 'Sonic English', cost: 0.005, latency: 100 }
-  ],
-  elevenlabs: [
-    { value: 'eleven_turbo_v2', label: 'Eleven Turbo V2', cost: 0.018, latency: 150 },
-    { value: 'eleven_monolingual_v1', label: 'Eleven Monolingual V1', cost: 0.022, latency: 180 }
-  ],
-  openai: [
-    { value: 'tts-1', label: 'TTS-1 (Fast)', cost: 0.015, latency: 250 },
-    { value: 'tts-1-hd', label: 'TTS-1-HD (Quality)', cost: 0.030, latency: 300 }
-  ],
-  sarvam: [
-    { value: 'bulbul:v1', label: 'Bulbul V1', cost: 0.005, latency: 120 },
-    { value: 'bulbul:v2', label: 'Bulbul V2 (Better Quality)', cost: 0.006, latency: 130 }
-  ],
-  azuretts: [
-    { value: 'neural', label: 'Neural TTS', cost: 0.016, latency: 140 }
-  ]
-};
+// TTS Models from provider-config.ts (imported as ENHANCED_TTS_MODELS)
+const TTS_MODELS = ENHANCED_TTS_MODELS;
 
-// LLM Provider Models
-const LLM_MODELS = {
-  openai: [
-    { value: 'gpt-4o', label: 'GPT-4O (Most Capable)', cost: 0.005, latency: 800 },
-    { value: 'gpt-4o-mini', label: 'GPT-4O Mini (Fast & Cheap)', cost: 0.00015, latency: 400 },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo', cost: 0.01, latency: 1000 },
-    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (Fastest)', cost: 0.0005, latency: 300 }
-  ],
-  'openai-realtime': [
-    { value: 'gpt-4o-realtime-preview', label: 'GPT-4O Realtime Preview (Highest Quality, Fast)', cost: 0.006, latency: 320 },
-    { value: 'gpt-4o-realtime-preview-2025-10-06', label: 'GPT-4O Realtime 2025-10-06 (Preview)', cost: 0.006, latency: 320 },
-    { value: 'gpt-4o-realtime', label: 'GPT-4O Realtime (Very Good Balance, Very Fast)', cost: 0.004, latency: 280 },
-    { value: 'gpt-4o-mini-realtime-preview', label: 'GPT-4O Mini Realtime Preview (Good Quality, Ultra Fast, Lowest Cost)', cost: 0.0006, latency: 200 },
-    { value: 'gpt-4o-mini-realtime-preview-2025-06-03', label: 'GPT-4O Mini Realtime 2025-06-03 (Preview)', cost: 0.0006, latency: 200 },
-    { value: 'gpt-4o-mini-realtime', label: 'GPT-4O Mini Realtime (Stable Version, Ultra Fast, Lowest Cost)', cost: 0.0006, latency: 200 }
-  ],
-  azure: [
-    { value: 'gpt-4o', label: 'Azure GPT-4O', cost: 0.005, latency: 850 },
-    { value: 'gpt-4', label: 'Azure GPT-4', cost: 0.01, latency: 1000 },
-    { value: 'gpt-35-turbo', label: 'Azure GPT-3.5 Turbo', cost: 0.0005, latency: 320 }
-  ],
-  anthropic: [
-    { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet (Best)', cost: 0.003, latency: 900 },
-    { value: 'claude-3-opus-20240229', label: 'Claude 3 Opus', cost: 0.015, latency: 1200 },
-    { value: 'claude-3-sonnet-20240229', label: 'Claude 3 Sonnet', cost: 0.003, latency: 800 },
-    { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Fast)', cost: 0.00025, latency: 500 }
-  ],
-  groq: [
-    { value: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B (Best)', cost: 0.00059, latency: 150 },
-    { value: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', cost: 0.00024, latency: 120 },
-    { value: 'llama-3.1-70b-versatile', label: 'Llama 3.1 70B', cost: 0.00059, latency: 150 }
-  ],
-  deepseek: [
-    { value: 'deepseek-chat', label: 'Deepseek Chat', cost: 0.00014, latency: 600 },
-    { value: 'deepseek-coder', label: 'Deepseek Coder', cost: 0.00014, latency: 650 }
-  ],
-  openrouter: [
-    { value: 'auto', label: 'Auto-select Best Model', cost: 0.002, latency: 700 },
-    { value: 'openai/gpt-4o', label: 'GPT-4O (via OpenRouter)', cost: 0.005, latency: 850 },
-    { value: 'anthropic/claude-3.5-sonnet', label: 'Claude 3.5 Sonnet (via OpenRouter)', cost: 0.003, latency: 950 }
-  ]
-};
+// LLM Provider Models from provider-config.ts (imported as ENHANCED_LLM_MODELS)
+const LLM_MODELS = ENHANCED_LLM_MODELS;
 
 const ASR_LANGUAGES = [
   { value: 'auto', label: 'Auto-detect (Multilingual)' },
@@ -459,6 +350,17 @@ export default function AIAgentPage() {
     bot_language: 'en',
   });
   const [providerMode, setProviderMode] = useState<'realtime' | 'custom'>('realtime');
+  const [currency, setCurrency] = useState<'USD' | 'INR'>('USD');
+  const [estimatedCost, setEstimatedCost] = useState<{
+    total_usd: number;
+    total_inr: number;
+    breakdown: { asr: number; llm: number; tts: number; twilio: number };
+    asr_cost_usd: number;
+    llm_cost_usd: number;
+    tts_cost_usd: number;
+    twilio_cost_usd: number;
+  } | null>(null);
+  const [isCalculatingCost, setIsCalculatingCost] = useState(false);
   const [databaseConfig, setDatabaseConfig] = useState({
     enabled: false,
     type: 'postgresql',
@@ -632,7 +534,58 @@ export default function AIAgentPage() {
     }
   }, [apiKeys, isEditMode, formData.api_key_id]);
 
-  
+  // Cost calculation function
+  const calculateEstimatedCost = useCallback(async () => {
+    if (providerMode !== 'custom') {
+      setEstimatedCost(null);
+      return;
+    }
+
+    try {
+      setIsCalculatingCost(true);
+
+      // Build query parameters
+      const params = new URLSearchParams({
+        voice_mode: 'custom',
+        duration_minutes: '1.0',
+        currency: currency,
+        asr_provider: formData.asr_provider,
+        asr_model: formData.asr_model,
+        llm_provider: formData.llm_provider,
+        llm_model: formData.llm_model,
+        tts_provider: formData.tts_provider,
+        tts_model: formData.tts_model,
+      });
+
+      const response = await fetch(`${API_URL}/api/phone-numbers/estimate-cost?${params.toString()}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to calculate cost estimate');
+      }
+
+      const data = await response.json();
+      setEstimatedCost(data);
+    } catch (err) {
+      console.error('Cost calculation error:', err);
+      setEstimatedCost(null);
+    } finally {
+      setIsCalculatingCost(false);
+    }
+  }, [providerMode, currency, formData.asr_provider, formData.asr_model, formData.llm_provider, formData.llm_model, formData.tts_provider, formData.tts_model, API_URL]);
+
+  // Calculate cost whenever provider settings change
+  useEffect(() => {
+    if (providerMode === 'custom') {
+      calculateEstimatedCost();
+    } else {
+      setEstimatedCost(null);
+    }
+  }, [providerMode, formData.asr_provider, formData.asr_model, formData.llm_provider, formData.llm_model, formData.tts_provider, formData.tts_model, currency, calculateEstimatedCost]);
 
   const handleCreateAssistant = async () => {
     const token = localStorage.getItem('token');
@@ -2434,41 +2387,96 @@ export default function AIAgentPage() {
                         </p>
                       </div>
                     </div>
+                  </button>
 
-                    {/* Custom Provider Details (only shown when selected) */}
-                    {providerMode === 'custom' && (
-                      <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-200'} space-y-4`} onClick={(e) => e.stopPropagation()}>
-                        {/* Ultra-Fast Preset Button */}
-                        <div className="flex items-center gap-2 mb-4">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setFormData({
-                                ...formData,
-                                asr_provider: 'deepgram',
-                                asr_model: 'nova-3',
-                                asr_language: 'en',
-                                llm_provider: 'groq',
-                                llm_model: 'llama-3.3-70b-versatile',
-                                llm_max_tokens: 100,
-                                tts_provider: 'cartesia',
-                                tts_voice: 'sonic',
-                                tts_model: 'sonic-english'
-                              });
-                            }}
-                            className={`px-4 py-2 text-sm font-medium rounded-lg border transition-all ${
-                              isDarkMode
-                                ? 'bg-green-900/20 border-green-700 text-green-400 hover:bg-green-900/30'
-                                : 'bg-green-50 border-green-300 text-green-700 hover:bg-green-100'
-                            }`}
-                          >
-                            ⚡ Ultra-Fast Preset (~800ms latency)
-                          </button>
-                          <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            Deepgram Nova-3 + Groq Llama 3.3 + Cartesia Sonic
-                          </span>
+                  {/* Custom Provider Details (only shown when selected) */}
+                  {providerMode === 'custom' && (
+                    <div className={`mt-4`}>
+                      {/* Real-time Cost Display */}
+                      {isCalculatingCost ? (
+                        <div className={`p-3 rounded-lg border ${isDarkMode ? 'bg-gray-800/50 border-gray-600' : 'bg-gray-50 border-gray-200'}`}>
+                          <div className="flex items-center justify-center gap-2">
+                            <div className="w-4 h-4 border-2 border-t-transparent rounded-full animate-spin" style={{ borderColor: '#10b981', borderTopColor: 'transparent' }}></div>
+                            <span className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>Calculating cost...</span>
+                          </div>
                         </div>
+                      ) : estimatedCost ? (
+                        <div className={`p-4 rounded-lg border ${isDarkMode ? 'bg-green-900/10 border-green-700/50' : 'bg-green-50 border-green-300'}`}>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                              <div>
+                                <div className={`text-xs font-medium ${isDarkMode ? 'text-gray-400' : 'text-gray-600'} mb-1`}>
+                                  Estimated Cost per Minute
+                                </div>
+                                <div className="flex items-baseline gap-2">
+                                  <span className={`text-2xl font-bold ${isDarkMode ? 'text-green-400' : 'text-green-600'}`}>
+                                    {currency === 'USD' ? '$' : '₹'}
+                                    {currency === 'USD'
+                                      ? estimatedCost.total_usd.toFixed(4)
+                                      : estimatedCost.total_inr.toFixed(2)
+                                    }
+                                  </span>
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setCurrency(currency === 'USD' ? 'INR' : 'USD');
+                                    }}
+                                    className={`text-xs px-2 py-1 rounded ${isDarkMode ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' : 'bg-white hover:bg-gray-100 text-gray-700'} transition-colors font-semibold border ${isDarkMode ? 'border-gray-600' : 'border-gray-300'}`}
+                                    title={`Switch to ${currency === 'USD' ? 'INR' : 'USD'}`}
+                                  >
+                                    {currency === 'USD' ? 'USD' : 'INR'}
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                            <div className={`flex gap-4 text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                              <div className="text-center">
+                                <div className="font-medium mb-1">ASR</div>
+                                <div className={`font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                  {currency === 'USD' ? '$' : '₹'}
+                                  {currency === 'USD'
+                                    ? estimatedCost.asr_cost_usd.toFixed(4)
+                                    : (estimatedCost.asr_cost_usd * 83).toFixed(2)
+                                  }
+                                </div>
+                              </div>
+                              <div className="text-center">
+                                <div className="font-medium mb-1">LLM</div>
+                                <div className={`font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                  {currency === 'USD' ? '$' : '₹'}
+                                  {currency === 'USD'
+                                    ? estimatedCost.llm_cost_usd.toFixed(4)
+                                    : (estimatedCost.llm_cost_usd * 83).toFixed(2)
+                                  }
+                                </div>
+                              </div>
+                              <div className="text-center">
+                                <div className="font-medium mb-1">TTS</div>
+                                <div className={`font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                  {currency === 'USD' ? '$' : '₹'}
+                                  {currency === 'USD'
+                                    ? estimatedCost.tts_cost_usd.toFixed(4)
+                                    : (estimatedCost.tts_cost_usd * 83).toFixed(2)
+                                  }
+                                </div>
+                              </div>
+                              <div className="text-center">
+                                <div className="font-medium mb-1">Twilio</div>
+                                <div className={`font-bold ${isDarkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                                  {currency === 'USD' ? '$' : '₹'}
+                                  {currency === 'USD'
+                                    ? estimatedCost.twilio_cost_usd.toFixed(4)
+                                    : (estimatedCost.twilio_cost_usd * 83).toFixed(2)
+                                  }
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      ) : null}
 
+                      <div className={`mt-4 pt-4 border-t ${isDarkMode ? 'border-gray-600' : 'border-gray-200'} space-y-4`}>
                         {/* ASR Section */}
                         <div>
                           <div className="flex items-center gap-2 mb-3">
@@ -2543,10 +2551,10 @@ export default function AIAgentPage() {
                           </div>
                           <div className="flex items-center gap-3 mt-2 text-xs">
                             <span className="flex items-center gap-1 text-yellow-600">
-                              ⚡ Cost: ${ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.[0]?.cost || '0.006'}/min
+                              Cost: ${ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.find(m => m.value === formData.asr_model)?.cost || '0.006'}/min
                             </span>
                             <span className="flex items-center gap-1 text-green-600">
-                              🚀 Latency: {ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.[0]?.latency || '250'}ms
+                              Latency: {ASR_MODELS[formData.asr_provider as keyof typeof ASR_MODELS]?.find(m => m.value === formData.asr_model)?.latency || '250'}ms
                             </span>
                           </div>
                         </div>
@@ -2626,10 +2634,10 @@ export default function AIAgentPage() {
                           </div>
                           <div className="flex items-center gap-3 mt-2 text-xs">
                             <span className="flex items-center gap-1 text-yellow-600">
-                              ⚡ Cost: ${TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.cost || '0.015'}/min
+                              Cost: ${TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.cost || '0.015'}/min
                             </span>
                             <span className="flex items-center gap-1 text-green-600">
-                              🚀 Latency: {TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.latency || '250'}ms
+                              Latency: {TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.latency || '250'}ms
                             </span>
                           </div>
                         </div>
@@ -2707,16 +2715,16 @@ export default function AIAgentPage() {
                           </div>
                           <div className="flex items-center gap-3 mt-2 text-xs">
                             <span className="flex items-center gap-1 text-yellow-600">
-                              ⚡ Cost: ${LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.cost || '0.001'}/1k tokens
+                              Cost: ${LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.cost || '0.001'}/1k tokens
                             </span>
                             <span className="flex items-center gap-1 text-green-600">
-                              🚀 Latency: {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.latency || '500'}ms
+                              Latency: {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.latency || '500'}ms
                             </span>
                           </div>
                         </div>
                       </div>
-                    )}
-                  </button>
+                    </div>
+                  )}
                 </div>
               </div>
 

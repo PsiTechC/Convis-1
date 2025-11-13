@@ -17,6 +17,7 @@ from app.config.settings import settings
 from app.utils.encryption import encryption_service
 from app.utils.twilio_helpers import decrypt_twilio_credentials
 from app.utils.frejun_helpers import decrypt_frejun_credentials
+from app.utils.pricing import PricingCalculator
 from bson import ObjectId
 from datetime import datetime
 from typing import Any, List, Optional, Set
@@ -947,7 +948,11 @@ async def get_user_call_logs(user_id: str, limit: int = 100):
                 price=None,
                 price_unit=None,
                 recording_url=recording_url,
-                transcription_text=db_call.get("transcription_text"),
+                transcription_text=db_call.get("transcription_text") or db_call.get("transcript"),
+                transcript=db_call.get("transcript"),
+                summary=db_call.get("summary"),
+                sentiment=db_call.get("sentiment"),
+                sentiment_score=db_call.get("sentiment_score"),
                 assistant_id=assistant_info["id"] if assistant_info else None,
                 assistant_name=assistant_info["name"] if assistant_info else None,
                 queue_time=None,
@@ -1807,4 +1812,158 @@ async def transcribe_all_recordings(user_id: str):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error transcribing recordings: {str(e)}"
+        )
+
+
+@router.get("/call-cost/{call_sid}")
+async def calculate_call_cost(call_sid: str, currency: str = "USD"):
+    """
+    Calculate the cost for a specific call based on its configuration and duration
+
+    Args:
+        call_sid: Call SID to calculate cost for
+        currency: Currency to display cost in ("USD" or "INR", default: "USD")
+
+    Returns:
+        Dict with cost breakdown including API cost, Twilio cost, and total
+    """
+    try:
+        db = Database.get_db()
+        call_logs_collection = db['call_logs']
+
+        # Get call log from database
+        call_log = call_logs_collection.find_one({"call_sid": call_sid})
+        if not call_log:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Call log not found for call_sid: {call_sid}"
+            )
+
+        # Get call duration in minutes
+        duration_seconds = call_log.get("duration", 0)
+        if duration_seconds is None:
+            duration_seconds = 0
+        duration_minutes = duration_seconds / 60.0
+
+        # Initialize pricing calculator
+        calculator = PricingCalculator(currency=currency.upper())
+
+        # Check if call used custom providers or OpenAI Realtime
+        is_custom_mode = (
+            call_log.get("asr_provider") or
+            call_log.get("llm_provider") or
+            call_log.get("tts_provider")
+        )
+
+        if is_custom_mode:
+            # Custom provider pipeline cost
+            cost_breakdown = calculator.calculate_custom_pipeline_cost(
+                asr_provider=call_log.get("asr_provider", "deepgram"),
+                asr_model=call_log.get("asr_model", "nova-2"),
+                llm_provider=call_log.get("llm_provider", "openai"),
+                llm_model=call_log.get("llm_model", "gpt-4o-mini"),
+                tts_provider=call_log.get("tts_provider", "openai"),
+                tts_model=call_log.get("tts_model", "tts-1"),
+                duration_minutes=duration_minutes,
+                estimated_tokens_in=call_log.get("estimated_tokens_in", 500),
+                estimated_tokens_out=call_log.get("estimated_tokens_out", 300),
+                estimated_tts_chars=call_log.get("estimated_tts_chars", 1000)
+            )
+        else:
+            # OpenAI Realtime API cost
+            voice_config = call_log.get("voice_config", {})
+            model = voice_config.get("model", "gpt-4o-realtime")
+
+            cost_breakdown = calculator.calculate_realtime_api_cost(
+                model=model,
+                duration_minutes=duration_minutes
+            )
+
+        # Add call metadata
+        cost_breakdown["call_sid"] = call_sid
+        cost_breakdown["call_direction"] = call_log.get("direction", "unknown")
+        cost_breakdown["call_status"] = call_log.get("status", "unknown")
+
+        return cost_breakdown
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error calculating call cost: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error calculating call cost: {str(e)}"
+        )
+
+
+@router.get("/estimate-cost")
+async def estimate_call_cost(
+    voice_mode: str = "realtime",
+    duration_minutes: float = 1.0,
+    currency: str = "USD",
+    model: Optional[str] = None,
+    asr_provider: Optional[str] = None,
+    asr_model: Optional[str] = None,
+    llm_provider: Optional[str] = None,
+    llm_model: Optional[str] = None,
+    tts_provider: Optional[str] = None,
+    tts_model: Optional[str] = None
+):
+    """
+    Estimate the cost for a call based on configuration
+
+    Args:
+        voice_mode: "realtime" or "custom"
+        duration_minutes: Call duration in minutes (default: 1.0)
+        currency: Currency to display cost in ("USD" or "INR", default: "USD")
+        model: OpenAI Realtime model (for realtime mode)
+        asr_provider: ASR provider (for custom mode)
+        asr_model: ASR model (for custom mode)
+        llm_provider: LLM provider (for custom mode)
+        llm_model: LLM model (for custom mode)
+        tts_provider: TTS provider (for custom mode)
+        tts_model: TTS model (for custom mode)
+
+    Returns:
+        Dict with estimated cost breakdown
+    """
+    try:
+        calculator = PricingCalculator(currency=currency.upper())
+
+        is_realtime = voice_mode.lower() == "realtime"
+
+        cost_estimate = calculator.get_per_minute_estimate(
+            is_realtime=is_realtime,
+            model=model,
+            asr_provider=asr_provider,
+            asr_model=asr_model,
+            llm_provider=llm_provider,
+            llm_model=llm_model,
+            tts_provider=tts_provider,
+            tts_model=tts_model
+        )
+
+        # Adjust for requested duration if not 1 minute
+        if duration_minutes != 1.0:
+            for key in ["api_cost_usd", "api_cost_inr", "twilio_cost_usd", "twilio_cost_inr", "total_usd", "total_inr", "total"]:
+                if key in cost_estimate:
+                    cost_estimate[key] = round(cost_estimate[key] * duration_minutes, 4)
+
+            if "breakdown" in cost_estimate:
+                for key in cost_estimate["breakdown"]:
+                    cost_estimate["breakdown"][key] = round(cost_estimate["breakdown"][key] * duration_minutes, 4)
+
+        cost_estimate["estimated_duration_minutes"] = duration_minutes
+
+        return cost_estimate
+
+    except Exception as e:
+        logger.error(f"Error estimating call cost: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error estimating call cost: {str(e)}"
         )
