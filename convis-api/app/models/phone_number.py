@@ -88,6 +88,14 @@ class CallLogResponse(BaseModel):
     llm_provider: Optional[str] = Field(None, description="LLM provider used")
     llm_model: Optional[str] = Field(None, description="LLM model used")
 
+    # Calculated Cost Fields
+    cost_total: Optional[float] = Field(None, description="Total call cost including API + Twilio")
+    cost_api: Optional[float] = Field(None, description="API costs (ASR + LLM + TTS or Realtime API)")
+    cost_twilio: Optional[float] = Field(None, description="Twilio costs (calling + recording)")
+    cost_currency: Optional[str] = Field(None, description="Currency for costs (USD or INR)")
+    cost_calculated: Optional[bool] = Field(None, description="Whether cost has been calculated")
+    is_realtime_api: Optional[bool] = Field(None, description="Whether OpenAI Realtime API was used")
+
     class Config:
         populate_by_name = True
         from_attributes = True

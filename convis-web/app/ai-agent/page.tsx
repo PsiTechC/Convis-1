@@ -44,6 +44,7 @@ interface AIAssistant {
   name: string;
   system_message: string;
   voice: string;
+  voice_mode?: 'realtime' | 'custom';
   temperature: number;
   call_greeting: string;
   has_api_key: boolean;
@@ -60,12 +61,30 @@ interface AIAssistant {
   last_calendar_used_index?: number;
   frejun_flow_token: string;
   frejun_flow_url: string;
+
+  // Provider configuration
   asr_provider?: string;
+  asr_model?: string;
+  asr_language?: string;
+  asr_keywords?: string[];
+
   tts_provider?: string;
+  tts_model?: string;
   tts_voice?: string;
+  tts_speed?: number;
+
   llm_provider?: string;
   llm_model?: string;
   llm_max_tokens?: number;
+
+  // Additional settings
+  enable_precise_transcript?: boolean;
+  interruption_threshold?: number;
+  response_rate?: string;
+  check_user_online?: boolean;
+  audio_buffer_size?: number;
+  bot_language?: string;
+
   created_at: string;
   updated_at: string;
 }
@@ -332,6 +351,7 @@ export default function AIAgentPage() {
     name: '',
     system_message: '',
     voice: 'alloy',
+    voice_mode: 'realtime' as 'realtime' | 'custom',
     temperature: 0.5,
     api_key_id: '',
     call_greeting: DEFAULT_CALL_GREETING,
@@ -627,6 +647,7 @@ export default function AIAgentPage() {
             name: formData.name,
             system_message: formData.system_message,
             voice: formData.voice,
+            voice_mode: formData.voice_mode || (providerMode === 'custom' ? 'custom' : 'realtime'),
             temperature: formData.temperature,
             api_key_id: formData.api_key_id,
             call_greeting: formData.call_greeting,
@@ -681,6 +702,7 @@ export default function AIAgentPage() {
             name: formData.name,
             system_message: formData.system_message,
             voice: formData.voice,
+            voice_mode: formData.voice_mode || (providerMode === 'custom' ? 'custom' : 'realtime'),
             temperature: formData.temperature,
             api_key_id: formData.api_key_id,
             call_greeting: formData.call_greeting,
@@ -742,6 +764,7 @@ export default function AIAgentPage() {
         name: '',
         system_message: '',
         voice: 'alloy',
+        voice_mode: 'realtime',
         temperature: 0.8,
         api_key_id: '',
         call_greeting: DEFAULT_CALL_GREETING,
@@ -1104,6 +1127,7 @@ export default function AIAgentPage() {
       name: '',
       system_message: '',
       voice: 'alloy',
+      voice_mode: 'realtime',
       temperature: 0.8,
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
@@ -1129,12 +1153,18 @@ export default function AIAgentPage() {
       (LLM_MODELS[llmProvider as keyof typeof LLM_MODELS]?.[0]?.value || 'gpt-4o-mini');
     const llmMaxTokens = assistant.llm_max_tokens ?? 150;
 
-    // Set provider mode based on current providers
-    if (asr === 'openai' && tts === 'openai') {
-      setProviderMode('realtime');
-    } else {
-      setProviderMode('custom');
-    }
+    // Set provider mode based on stored voice_mode or provider selection
+    const normalizedVoiceMode =
+      assistant.voice_mode === 'custom'
+        ? 'custom'
+        : assistant.voice_mode === 'realtime'
+        ? 'realtime'
+        : undefined;
+    const resolvedVoiceMode =
+      normalizedVoiceMode ||
+      ((asr === 'openai' && tts === 'openai') ? 'realtime' : 'custom');
+
+    setProviderMode(resolvedVoiceMode);
 
     // Set default models/voices based on provider
     const defaultAsrModel = ASR_MODELS[asr as keyof typeof ASR_MODELS]?.[0]?.value || 'whisper-1';
@@ -1156,6 +1186,7 @@ export default function AIAgentPage() {
       name: assistant.name,
       system_message: assistant.system_message,
       voice: assistant.voice,
+      voice_mode: resolvedVoiceMode,
       temperature: assistant.temperature,
       api_key_id: assistant.api_key_id || '',
       call_greeting: assistant.call_greeting || DEFAULT_CALL_GREETING,
@@ -1212,6 +1243,7 @@ export default function AIAgentPage() {
       name: template.name,
       system_message: template.system_message,
       voice: template.voice,
+      voice_mode: 'realtime',
       temperature: template.temperature,
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
@@ -1234,6 +1266,7 @@ export default function AIAgentPage() {
       name: '',
       system_message: '',
       voice: 'alloy',
+      voice_mode: 'realtime',
       temperature: 0.8,
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
@@ -2090,13 +2123,14 @@ export default function AIAgentPage() {
                       onClick={() => {
                         setProviderMode('realtime');
                         const defaultRealtimeModel = LLM_MODELS['openai-realtime'][0].value;
-                        setFormData({
-                          ...formData,
+                        setFormData((prev) => ({
+                          ...prev,
+                          voice_mode: 'realtime',
                           asr_provider: 'openai',
                           tts_provider: 'openai',
                           llm_provider: 'openai-realtime',
                           llm_model: defaultRealtimeModel,
-                        });
+                        }));
                       }}
                       className="w-full text-left"
                     >
@@ -2337,20 +2371,25 @@ export default function AIAgentPage() {
                     type="button"
                     onClick={() => {
                       setProviderMode('custom');
-                      // Set default custom providers if currently using realtime
-                      if (formData.asr_provider === 'openai' && formData.tts_provider === 'openai') {
-                        setFormData({
-                          ...formData,
-                          asr_provider: 'deepgram',
-                          asr_model: 'nova-2',
-                          asr_language: 'en',
-                          tts_provider: 'cartesia',
-                          tts_voice: 'sonic',
-                          tts_model: 'sonic-english',
-                          llm_provider: 'openai',
-                          llm_model: 'gpt-4-turbo'
-                        });
-                      }
+                      setFormData((prev) => {
+                        const shouldApplyDefaults = prev.asr_provider === 'openai' && prev.tts_provider === 'openai';
+                        return {
+                          ...prev,
+                          voice_mode: 'custom',
+                          ...(shouldApplyDefaults
+                            ? {
+                                asr_provider: 'deepgram',
+                                asr_model: 'nova-2',
+                                asr_language: 'en',
+                                tts_provider: 'cartesia',
+                                tts_voice: 'sonic',
+                                tts_model: 'sonic-english',
+                                llm_provider: 'openai',
+                                llm_model: 'gpt-4-turbo'
+                              }
+                            : {}),
+                        };
+                      });
                     }}
                     className={`w-full p-4 rounded-lg border-2 transition-all ${
                       providerMode === 'custom'
@@ -2496,7 +2535,7 @@ export default function AIAgentPage() {
                                 name="asr_provider"
                                 value={formData.asr_provider}
                                 onChange={(e) => {
-                                  const provider = e.target.value as 'deepgram' | 'openai' | 'azure' | 'sarvam' | 'assembly' | 'google';
+                                  const provider = e.target.value as 'deepgram' | 'openai' | 'sarvam' | 'google';
                                   const defaultModel = ASR_MODELS[provider][0].value;
                                   setFormData({
                                     ...formData,
@@ -2508,9 +2547,7 @@ export default function AIAgentPage() {
                               >
                                 <option value="deepgram">Deepgram Nova</option>
                                 <option value="openai">OpenAI Whisper</option>
-                                <option value="azure">Azure Speech</option>
                                 <option value="sarvam">Sarvam AI (Indian Languages)</option>
-                                <option value="assembly">AssemblyAI</option>
                                 <option value="google">Google Speech-to-Text</option>
                               </select>
                             </div>
@@ -2578,7 +2615,7 @@ export default function AIAgentPage() {
                                 name="tts_provider"
                                 value={formData.tts_provider}
                                 onChange={(e) => {
-                                  const provider = e.target.value as 'cartesia' | 'elevenlabs' | 'openai' | 'sarvam' | 'azuretts';
+                                  const provider = e.target.value as 'cartesia' | 'elevenlabs' | 'openai' | 'sarvam';
                                   const defaultVoice = TTS_VOICES[provider][0].value;
                                   const defaultModel = TTS_MODELS[provider][0].value;
                                   setFormData({
@@ -2594,7 +2631,6 @@ export default function AIAgentPage() {
                                 <option value="elevenlabs">ElevenLabs</option>
                                 <option value="openai">OpenAI TTS</option>
                                 <option value="sarvam">Sarvam AI (Indian Voices)</option>
-                                <option value="azuretts">Azure TTS</option>
                               </select>
                             </div>
                             <div>
@@ -2661,7 +2697,7 @@ export default function AIAgentPage() {
                                 name="llm_provider"
                                 value={formData.llm_provider}
                                 onChange={(e) => {
-                                  const provider = e.target.value as 'openai' | 'openai-realtime' | 'azure' | 'anthropic' | 'groq' | 'deepseek' | 'openrouter';
+                                  const provider = e.target.value as 'openai' | 'openai-realtime';
                                   const defaultModel = LLM_MODELS[provider][0].value;
                                   setFormData({
                                     ...formData,
@@ -2669,15 +2705,10 @@ export default function AIAgentPage() {
                                     llm_model: defaultModel
                                   });
                                 }}
-                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white' : 'bg-white border-gray-300 text-gray-900'} focus:outline-none focus:ring-2 focus:ring-primary/20`}
+                                disabled
+                                className={`w-full px-3 py-2 text-sm rounded-lg border ${isDarkMode ? 'bg-gray-700 border-gray-600 text-white opacity-60' : 'bg-white border-gray-300 text-gray-900 opacity-60'} focus:outline-none focus:ring-2 focus:ring-primary/20 cursor-not-allowed`}
                               >
-                                <option value="openai">OpenAI GPT</option>
-                                <option value="openai-realtime">OpenAI Realtime API (Voice Optimized)</option>
-                                <option value="azure">Azure OpenAI</option>
-                                <option value="anthropic">Anthropic Claude</option>
-                                <option value="groq">Groq (Ultra-Fast)</option>
-                                <option value="deepseek">Deepseek (Cost-Effective)</option>
-                                <option value="openrouter">OpenRouter (Multi-Model)</option>
+                                <option value="openai">OpenAI GPT (Only Supported)</option>
                               </select>
                             </div>
                             <div>
@@ -2713,13 +2744,20 @@ export default function AIAgentPage() {
                               />
                             </div>
                           </div>
-                          <div className="flex items-center gap-3 mt-2 text-xs">
-                            <span className="flex items-center gap-1 text-yellow-600">
-                              Cost: ${LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.cost || '0.001'}/1k tokens
-                            </span>
-                            <span className="flex items-center gap-1 text-green-600">
-                              Latency: {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.latency || '500'}ms
-                            </span>
+                          <div className={`mt-3 p-3 rounded-lg border ${isDarkMode ? 'bg-blue-900/10 border-blue-700/30' : 'bg-blue-50 border-blue-200'}`}>
+                            <div className="flex items-center justify-between text-xs">
+                              <div className="flex items-center gap-4">
+                                <span className={`flex items-center gap-1 ${isDarkMode ? 'text-yellow-400' : 'text-yellow-600'} font-semibold`}>
+                                  💰 Cost: ${LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.cost || '0.001'}/1K tokens
+                                </span>
+                                <span className={`flex items-center gap-1 ${isDarkMode ? 'text-green-400' : 'text-green-600'} font-semibold`}>
+                                  ⚡ Speed: {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.speed || 'Fast'}
+                                </span>
+                                <span className={`flex items-center gap-1 ${isDarkMode ? 'text-purple-400' : 'text-purple-600'} font-semibold`}>
+                                  ⏱️ {LLM_MODELS[formData.llm_provider as keyof typeof LLM_MODELS]?.find(m => m.value === formData.llm_model)?.latency || '500'}ms
+                                </span>
+                              </div>
+                            </div>
                           </div>
                         </div>
                       </div>

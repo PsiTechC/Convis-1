@@ -62,7 +62,7 @@ export default function DashboardPage() {
   const [activeNav, setActiveNav] = useState('Dashboard');
   const [isDarkMode, setIsDarkMode] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isLoadingStats, setIsLoadingStats] = useState(true);
+  const [isLoadingStats, setIsLoadingStats] = useState(false);
   const [stats, setStats] = useState({
     totalCalls: 0,
     inboundCalls: 0,
@@ -75,7 +75,7 @@ export default function DashboardPage() {
   });
   const [selectedSummaryRange, setSelectedSummaryRange] = useState<RangeOption>('total');
   const [assistantSummary, setAssistantSummary] = useState<DashboardAssistantSummary | null>(null);
-  const [isSummaryLoading, setIsSummaryLoading] = useState(true);
+  const [isSummaryLoading, setIsSummaryLoading] = useState(false);
   const [summaryError, setSummaryError] = useState<string | null>(null);
 
   const rangeOptions: { label: string; value: RangeOption }[] = [
@@ -103,7 +103,11 @@ export default function DashboardPage() {
       setUser(parsedUser);
       const resolvedUserId = parsedUser.id || parsedUser._id || parsedUser.clientId;
       if (resolvedUserId) {
-        fetchCallLogs(resolvedUserId);
+        // Fetch both API calls in parallel for faster loading
+        Promise.all([
+          fetchCallLogs(resolvedUserId),
+          fetchAssistantSummary(resolvedUserId, selectedSummaryRange)
+        ]).catch(err => console.error('Error loading dashboard data:', err));
       }
     }
 
@@ -118,7 +122,7 @@ export default function DashboardPage() {
     const resolvedUserId = user.id || user._id || user.clientId;
     if (!resolvedUserId) return;
     fetchAssistantSummary(resolvedUserId, selectedSummaryRange);
-  }, [user, selectedSummaryRange]);
+  }, [selectedSummaryRange]);
 
   const fetchAssistantSummary = async (userId: string, range: RangeOption) => {
     try {
@@ -161,7 +165,7 @@ export default function DashboardPage() {
     try {
       setIsLoadingStats(true);
       const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/phone-numbers/call-logs/user/${userId}?limit=500`, {
+      const response = await fetch(`${API_URL}/api/phone-numbers/call-logs/user/${userId}?limit=100`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
@@ -358,12 +362,7 @@ export default function DashboardPage() {
           </div>
 
           {/* Dashboard Stats */}
-          {isLoadingStats ? (
-            <div className="flex items-center justify-center min-h-[400px]">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary"></div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
               {/* Total Calls */}
               <div className={`${isDarkMode ? 'bg-gradient-to-br from-purple-500/20 to-purple-600/20 border-purple-500/30' : 'bg-gradient-to-br from-purple-50 to-purple-100 border-purple-200'} rounded-2xl p-6 border shadow-sm hover:shadow-md transition-all`}>
                 <div className="flex items-center justify-between mb-4">
@@ -435,8 +434,7 @@ export default function DashboardPage() {
                 </h3>
                 <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>Answer Rate</p>
               </div>
-            </div>
-          )}
+          </div>
 
           {/* AI Agent Spend & Sentiment Summary */}
           <section className={`${isDarkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl p-6 mt-8 shadow-sm`}> 

@@ -254,13 +254,23 @@ async def voice_status_callback(
                 upsert=True
             )
 
-            # Trigger transcription when call completes
+            # Trigger transcription and cost calculation when call completes
             if CallStatus == "completed":
                 logger.info(f"Call completed, checking for recording to transcribe: {CallSid}")
 
                 # Wait a few seconds for recording to be ready
                 import asyncio
                 asyncio.create_task(_trigger_transcription_after_delay(CallSid, 5))
+
+                # Calculate and store call cost
+                try:
+                    from app.services.cost_calculator import calculate_and_store_call_cost
+                    duration_seconds = int(CallDuration) if CallDuration else 0
+                    if duration_seconds > 0:
+                        asyncio.create_task(calculate_and_store_call_cost(CallSid, duration_seconds))
+                        logger.info(f"[COST] Triggered cost calculation for call: {CallSid}")
+                except Exception as cost_error:
+                    logger.error(f"[COST] Failed to trigger cost calculation: {cost_error}")
 
         return {"message": "Status received"}
 
@@ -532,6 +542,18 @@ async def campaign_call_status(
         process_call_status(CallSid, CallStatus, CallDuration, leadId, campaignId)
         logger.info(f"[WEBHOOK] Successfully processed call status for CallSid: {CallSid}")
 
+        # Calculate cost for completed calls
+        if CallStatus == "completed" and CallDuration:
+            try:
+                from app.services.cost_calculator import calculate_and_store_call_cost
+                import asyncio
+                duration_seconds = int(CallDuration)
+                if duration_seconds > 0:
+                    asyncio.create_task(calculate_and_store_call_cost(CallSid, duration_seconds))
+                    logger.info(f"[COST] Triggered cost calculation for campaign call: {CallSid}")
+            except Exception as cost_error:
+                logger.error(f"[COST] Failed to trigger cost calculation: {cost_error}")
+
         return {"message": "Status updated"}
 
     except Exception as error:
@@ -613,16 +635,17 @@ async def campaign_recording_callback(
         # Trigger post-call processing for completed recordings
         if RecordingStatus == "completed" and recording_mp3_url:
             try:
-                # NOTE: Real-time transcription is now handled by OpenAI Realtime API during the call
-                # Transcripts are saved to database in real-time as the conversation happens
-                # No need for post-call transcription anymore!
+                from app.services.post_call_processor import PostCallProcessor
+                processor = PostCallProcessor()
+                import asyncio
 
-                # If this is a campaign call, trigger post-call AI processing (sentiment/summary only)
+                # Always trigger transcription for all calls (both realtime and custom provider modes)
+                # Twilio native transcription doesn't work with <Stream> verb used by WebSocket calls
+                logger.info(f"Triggering automatic transcription for call: {CallSid}")
+                asyncio.create_task(processor.transcribe_and_update_call(CallSid, recording_mp3_url))
+
+                # If this is a campaign call, also trigger post-call AI processing (sentiment/summary)
                 if leadId and campaignId:
-                    from app.services.post_call_processor import PostCallProcessor
-                    processor = PostCallProcessor()
-                    import asyncio
-
                     logger.info(f"Triggering post-call processing for campaign call: {CallSid}")
                     asyncio.create_task(processor.process_call(CallSid, leadId, campaignId))
 

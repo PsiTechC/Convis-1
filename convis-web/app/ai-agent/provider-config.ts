@@ -110,12 +110,15 @@ export const ENHANCED_TTS_MODELS = {
 };
 
 // Enhanced LLM Models with accurate per-token costs
+// For Custom Provider: Only OpenAI supported (5 best models from cheapest to expensive)
 export const ENHANCED_LLM_MODELS = {
   openai: [
-    { value: 'gpt-4o', label: 'GPT-4O (Most Capable)', costInput: 2.50, costOutput: 10.00, latency: 800, costPer1kTokens: 0.00625 },
-    { value: 'gpt-4o-mini', label: 'GPT-4O Mini (Fast & Cheap)', costInput: 0.15, costOutput: 0.60, latency: 400, costPer1kTokens: 0.000375 },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo', costInput: 10.00, costOutput: 30.00, latency: 1000, costPer1kTokens: 0.02 },
-    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo (Fastest)', costInput: 0.50, costOutput: 1.50, latency: 300, costPer1kTokens: 0.001 }
+    // Sorted from cheapest/fastest to most expensive/capable
+    { value: 'gpt-4o-mini', label: 'GPT-4O Mini - Cheapest & Fastest ($0.38/1M tokens)', costInput: 0.15, costOutput: 0.60, latency: 400, cost: '0.00038', speed: 'Fastest' },
+    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo - Very Fast ($1.00/1M tokens)', costInput: 0.50, costOutput: 1.50, latency: 300, cost: '0.001', speed: 'Very Fast' },
+    { value: 'gpt-4o', label: 'GPT-4O - Balanced Performance ($6.25/1M tokens)', costInput: 2.50, costOutput: 10.00, latency: 800, cost: '0.00625', speed: 'Fast' },
+    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo - High Quality ($20/1M tokens)', costInput: 10.00, costOutput: 30.00, latency: 1000, cost: '0.02', speed: 'Moderate' },
+    { value: 'o1-mini', label: 'O1 Mini - Most Expensive ($15/1M tokens)', costInput: 3.00, costOutput: 12.00, latency: 1200, cost: '0.015', speed: 'Advanced Reasoning' }
   ],
   'openai-realtime': [
     { value: 'gpt-4o-realtime-preview', label: 'GPT-4O Realtime Preview', cost: 0.30, latency: 320, costPerMin: 0.30 },

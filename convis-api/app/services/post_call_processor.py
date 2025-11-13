@@ -353,6 +353,30 @@ Return ONLY the JSON, no other text."""
                 logger.error(f"Call {call_sid} not found in database")
                 return
 
+            # Check if a real-time transcript already exists (from OpenAI Realtime API or custom provider)
+            existing_transcript = call.get("transcript")
+            if existing_transcript and existing_transcript not in ["", "[Transcription unavailable]", "Unable to analyze call."]:
+                logger.info(f"Call {call_sid} already has a real-time transcript ({len(existing_transcript)} chars). Skipping post-call transcription.")
+                # Still run analysis on existing transcript if not done
+                if not call.get("summary") or call.get("summary") == "Unable to analyze call.":
+                    logger.info("Running analysis on existing transcript...")
+                    analysis = await self.analyze_transcript(existing_transcript)
+                    if analysis:
+                        call_logs_collection.update_one(
+                            {"call_sid": call_sid},
+                            {
+                                "$set": {
+                                    "analysis": analysis,
+                                    "sentiment": analysis.get("sentiment", "neutral"),
+                                    "sentiment_score": analysis.get("sentiment_score", 0.0),
+                                    "summary": analysis.get("summary", ""),
+                                    "updated_at": datetime.utcnow()
+                                }
+                            }
+                        )
+                        logger.info(f"Analysis completed for existing transcript of {call_sid}")
+                return
+
             user_id = call.get("user_id")
             if not user_id:
                 logger.error(f"No user_id for call {call_sid}")
@@ -419,6 +443,67 @@ Return ONLY the JSON, no other text."""
             )
 
             logger.info(f"Transcription completed for call {call_sid}: {len(transcript)} characters")
+
+            # Step 5: Update calendar event with call summary if appointment was booked
+            try:
+                call_log = call_logs_collection.find_one({"call_sid": call_sid})
+                if call_log and call_log.get("appointment_booked"):
+                    from app.services.calendar_service import CalendarService
+                    calendar_service = CalendarService()
+
+                    summary = analysis.get("summary", "Call completed")
+                    recording_url = call_log.get("recording_url")
+
+                    await calendar_service.update_calendar_event_with_call_summary(
+                        call_sid=call_sid,
+                        call_summary=summary,
+                        recording_url=recording_url
+                    )
+                    logger.info(f"Calendar event updated with call summary for {call_sid}")
+
+                    # Step 6: Send email with call summary
+                    try:
+                        from app.services.email_service import EmailService
+                        email_service = EmailService()
+
+                        # Get appointment details
+                        appointments_collection = db["appointments"]
+                        appointment = appointments_collection.find_one({"call_sid": call_sid})
+
+                        if appointment:
+                            # Get user email
+                            users_collection = db["users"]
+                            user = users_collection.find_one({"_id": appointment.get("user_id")})
+
+                            if user and user.get("email"):
+                                email_sent = email_service.send_meeting_summary_email(
+                                    to_email=user.get("email"),
+                                    meeting_title=appointment.get("title", "Meeting"),
+                                    call_summary=summary,
+                                    meeting_date=appointment.get("start"),
+                                    recording_url=recording_url,
+                                    call_sid=call_sid,
+                                    attendee_name=user.get("name") or user.get("email").split("@")[0]
+                                )
+
+                                if email_sent:
+                                    logger.info(f"Call summary email sent to {user.get('email')}")
+                                else:
+                                    logger.warning("Failed to send call summary email")
+                            else:
+                                logger.warning(f"No email found for user {appointment.get('user_id')}")
+                        else:
+                            logger.warning(f"No appointment found for call {call_sid}")
+
+                    except Exception as e:
+                        logger.error(f"Failed to send call summary email: {e}")
+                        # Don't fail if email fails
+                        pass
+
+            except Exception as e:
+                logger.error(f"Failed to update calendar event: {e}")
+                # Don't fail the whole process if calendar update fails
+                pass
 
         except Exception as e:
             logger.error(f"Error transcribing call {call_sid}: {e}")

@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request
 from fastapi.responses import Response
+from app.middleware.rate_limiter import limiter, get_rate_limit
 from app.models.ai_assistant import (
     AIAssistantCreate,
     AIAssistantUpdate,
@@ -192,7 +193,8 @@ def resolve_calendar_account_metadata(calendar_accounts_collection, calendar_acc
     }
 
 @router.post("/", response_model=AIAssistantResponse, status_code=status.HTTP_201_CREATED)
-async def create_assistant(assistant_data: AIAssistantCreate):
+@limiter.limit(get_rate_limit("assistant_create"))
+async def create_assistant(request: Request, assistant_data: AIAssistantCreate):
     """
     Create a new AI assistant for a user
 
@@ -318,6 +320,14 @@ async def create_assistant(assistant_data: AIAssistantCreate):
                         detail=f"Invalid calendar_account_id format: {cal_id}"
                     )
 
+        # Determine requested voice mode (defaults to realtime)
+        requested_voice_mode = (assistant_data.voice_mode or "realtime").lower()
+        if requested_voice_mode not in ("realtime", "custom"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="voice_mode must be either 'realtime' or 'custom'"
+            )
+
         # Create assistant document
         now = datetime.utcnow()
         frejun_token = generate_unique_frejun_token(assistants_collection)
@@ -333,6 +343,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             "calendar_account_ids": calendar_account_obj_ids,
             "calendar_enabled": assistant_data.calendar_enabled if assistant_data.calendar_enabled is not None else False,
             "last_calendar_used_index": -1,
+            "voice_mode": requested_voice_mode,
             "asr_provider": assistant_data.asr_provider or "openai",
             "tts_provider": assistant_data.tts_provider or "openai",
             # ASR Configuration
@@ -403,6 +414,7 @@ async def create_assistant(assistant_data: AIAssistantCreate):
             last_calendar_used_index=-1,
             frejun_flow_token=frejun_token,
             frejun_flow_url=build_frejun_flow_url(frejun_token),
+            voice_mode=requested_voice_mode,
             asr_provider=assistant_data.asr_provider or "openai",
             tts_provider=assistant_data.tts_provider or "openai",
             # ASR Configuration
@@ -545,6 +557,7 @@ async def get_user_assistants(user_id: str):
                 calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
                 frejun_flow_token=frejun_token,
                 frejun_flow_url=frejun_flow_url,
+                voice_mode=assistant.get('voice_mode', 'realtime'),
                 asr_provider=assistant.get('asr_provider', 'openai'),
                 tts_provider=assistant.get('tts_provider', 'openai'),
                 # ASR Configuration
@@ -692,6 +705,7 @@ async def get_assistant(assistant_id: str):
             last_calendar_used_index=assistant.get('last_calendar_used_index', -1),
             frejun_flow_token=frejun_token,
             frejun_flow_url=frejun_flow_url,
+            voice_mode=assistant.get('voice_mode', 'realtime'),
             asr_provider=assistant.get('asr_provider', 'openai'),
             tts_provider=assistant.get('tts_provider', 'openai'),
             # ASR Configuration
@@ -773,6 +787,15 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
 
         # Build update document
         update_doc = {"updated_at": datetime.utcnow()}
+
+        if update_data.voice_mode is not None:
+            normalized_voice_mode = (update_data.voice_mode or "realtime").lower()
+            if normalized_voice_mode not in ("realtime", "custom"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="voice_mode must be either 'realtime' or 'custom'"
+                )
+            update_doc["voice_mode"] = normalized_voice_mode
 
         if update_data.name is not None:
             update_doc["name"] = update_data.name
@@ -970,11 +993,12 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
             has_knowledge_base=len(kb_files) > 0,
             calendar_account_id=calendar_metadata.get("id") if calendar_metadata else None,
             calendar_account_email=calendar_metadata.get("email") if calendar_metadata else None,
-            calendar_account_ids=[str(obj_id) for obj_id in assistant.get('calendar_account_ids', [])],
-            calendar_enabled=assistant.get('calendar_enabled', False),
-            last_calendar_used_index=assistant.get('last_calendar_used_index', -1),
+            calendar_account_ids=[str(obj_id) for obj_id in updated_assistant.get('calendar_account_ids', [])],
+            calendar_enabled=updated_assistant.get('calendar_enabled', False),
+            last_calendar_used_index=updated_assistant.get('last_calendar_used_index', -1),
             frejun_flow_token=frejun_token,
             frejun_flow_url=frejun_flow_url,
+            voice_mode=updated_assistant.get('voice_mode', 'realtime'),
             asr_provider=updated_assistant.get('asr_provider', 'openai'),
             tts_provider=updated_assistant.get('tts_provider', 'openai'),
             # ASR Configuration

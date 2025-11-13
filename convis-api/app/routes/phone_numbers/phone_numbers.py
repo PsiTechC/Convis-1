@@ -1815,6 +1815,40 @@ async def transcribe_all_recordings(user_id: str):
         )
 
 
+@router.post("/recalculate-costs/{user_id}")
+async def recalculate_user_call_costs(user_id: str, limit: int = 100):
+    """
+    Recalculate costs for all calls that don't have cost data yet
+
+    Args:
+        user_id: User ID to recalculate costs for
+        limit: Maximum number of calls to process (default: 100)
+
+    Returns:
+        Summary of recalculation results
+    """
+    try:
+        from app.services.cost_calculator import recalculate_all_call_costs
+
+        logger.info(f"Starting cost recalculation for user {user_id}, limit={limit}")
+        result = await recalculate_all_call_costs(user_id=user_id, limit=limit)
+
+        return {
+            "message": "Cost recalculation completed",
+            "user_id": user_id,
+            "results": result
+        }
+
+    except Exception as e:
+        logger.error(f"Error in cost recalculation: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error recalculating costs: {str(e)}"
+        )
+
+
 @router.get("/call-cost/{call_sid}")
 async def calculate_call_cost(call_sid: str, currency: str = "USD"):
     """
