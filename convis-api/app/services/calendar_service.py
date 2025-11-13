@@ -853,6 +853,134 @@ class CalendarService:
             logger.error(traceback.format_exc())
             return False
 
+    async def update_calendar_event_with_call_summary(self, call_sid: str, call_summary: str, recording_url: Optional[str] = None) -> bool:
+        """
+        Update calendar event with call summary and recording link after call ends.
+
+        Args:
+            call_sid: Twilio call SID
+            call_summary: Summary of the call
+            recording_url: URL to call recording (optional)
+
+        Returns:
+            True if updated successfully, False otherwise
+        """
+        try:
+            # Find appointment by call_sid
+            appointment = self.appointments_collection.find_one({"call_sid": call_sid})
+            if not appointment:
+                logger.warning(f"No appointment found for call {call_sid}")
+                return False
+
+            provider = appointment.get("provider")
+            provider_event_id = appointment.get("provider_event_id")
+            user_id = appointment.get("user_id")
+
+            if not provider_event_id:
+                logger.error(f"No provider event ID for appointment {appointment.get('_id')}")
+                return False
+
+            # Get calendar account
+            account = await self.get_calendar_account(str(user_id), provider)
+            if not account:
+                logger.error(f"No calendar account found for user {user_id}")
+                return False
+
+            # Get access token
+            access_token = await self.ensure_access_token(account)
+            if not access_token:
+                logger.error("Failed to get access token")
+                return False
+
+            # Build description with call summary and recording link
+            frontend_url = os.getenv("FRONTEND_URL", "https://convis.ai")
+            call_log_url = f"{frontend_url}/call-logs?call_sid={call_sid}"
+
+            description = f"""📞 Call Summary:
+{call_summary}
+
+{'🎙️ Recording: ' + recording_url if recording_url else ''}
+
+📊 View Full Call Details:
+{call_log_url}
+
+Click the link above to listen to the recording, view the full transcript, and see all call analytics.
+"""
+
+            # Update event based on provider
+            if provider == "google":
+                return await self._update_google_event(access_token, provider_event_id, description)
+            elif provider == "microsoft":
+                return await self._update_microsoft_event(access_token, provider_event_id, description)
+
+            return False
+
+        except Exception as e:
+            logger.error(f"Error updating calendar event with call summary: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
+
+    async def _update_google_event(self, access_token: str, event_id: str, description: str) -> bool:
+        """Update Google Calendar event description."""
+        try:
+            async with httpx.AsyncClient() as client:
+                # First, get the existing event
+                get_response = await client.get(
+                    f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+                    headers={"Authorization": f"Bearer {access_token}"},
+                    timeout=30.0
+                )
+                get_response.raise_for_status()
+                existing_event = get_response.json()
+
+                # Update with new description
+                existing_event["description"] = description
+
+                # Patch the event
+                response = await client.patch(
+                    f"https://www.googleapis.com/calendar/v3/calendars/primary/events/{event_id}",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json=existing_event,
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                logger.info(f"Google event {event_id} updated with call summary")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error updating Google event: {e}")
+            return False
+
+    async def _update_microsoft_event(self, access_token: str, event_id: str, description: str) -> bool:
+        """Update Microsoft Calendar event description."""
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.patch(
+                    f"https://graph.microsoft.com/v1.0/me/events/{event_id}",
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json"
+                    },
+                    json={
+                        "body": {
+                            "contentType": "Text",
+                            "content": description
+                        }
+                    },
+                    timeout=30.0
+                )
+                response.raise_for_status()
+                logger.info(f"Microsoft event {event_id} updated with call summary")
+                return True
+
+        except Exception as e:
+            logger.error(f"Error updating Microsoft event: {e}")
+            return False
+
     async def book_inbound_appointment(self, call_sid: str, user_id: str, assistant_id: str, appointment: Dict[str, Any], provider: str = "google", calendar_account_id: Optional[str] = None) -> Optional[str]:
         """
         Book an appointment for an inbound call.
@@ -895,13 +1023,28 @@ class CalendarService:
                 logger.error("[BOOK_INBOUND] Failed to get valid access token")
                 return
 
+            # Add initial description with placeholder for call summary
+            frontend_url = os.getenv("FRONTEND_URL", "https://convis.ai")
+            call_log_url = f"{frontend_url}/call-logs?call_sid={call_sid}"
+
+            initial_description = f"""{appointment.get('notes', '')}
+
+📊 Call Details:
+This appointment was scheduled during a call. The call summary and recording will be added here automatically after the call ends.
+
+View Call Log: {call_log_url}
+"""
+
+            # Add description to appointment data
+            appointment_with_description = {**appointment, "notes": initial_description}
+
             # Create calendar event
             logger.info(f"[BOOK_INBOUND] Creating {provider} calendar event...")
             event_id = None
             if provider == "google":
-                event_id = await self.create_google_event(access_token, appointment)
+                event_id = await self.create_google_event(access_token, appointment_with_description)
             elif provider == "microsoft":
-                event_id = await self.create_microsoft_event(access_token, appointment)
+                event_id = await self.create_microsoft_event(access_token, appointment_with_description)
 
             if not event_id:
                 logger.error("[BOOK_INBOUND] Failed to create calendar event - no event ID returned")
@@ -931,6 +1074,51 @@ class CalendarService:
                 {"call_sid": call_sid},
                 {"$set": {"appointment_booked": True, "updated_at": datetime.utcnow()}}
             )
+
+            # Send email notification about scheduled meeting
+            try:
+                from app.services.email_service import EmailService
+                email_service = EmailService()
+
+                # Get user email
+                users_collection = self.db["users"]
+                user = users_collection.find_one({"_id": ObjectId(user_id)})
+
+                if user and user.get("email"):
+                    # Format meeting time
+                    start_dt = datetime.fromisoformat(appointment.get("start_iso"))
+                    end_dt = datetime.fromisoformat(appointment.get("end_iso"))
+                    meeting_time = f"{start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')}"
+
+                    # Get caller information from call log
+                    call_log = call_logs.find_one({"call_sid": call_sid})
+                    caller_name = None
+                    if call_log:
+                        # Try to extract name from call metadata or use phone number
+                        caller_name = call_log.get("caller_name") or call_log.get("from_number")
+
+                    email_sent = email_service.send_meeting_scheduled_email(
+                        to_email=user.get("email"),
+                        meeting_title=appointment.get("title", "Inbound Call Appointment"),
+                        meeting_date=start_dt,
+                        meeting_time=meeting_time,
+                        timezone=appointment.get("timezone", "America/New_York"),
+                        notes=appointment.get("notes", ""),
+                        call_sid=call_sid,
+                        attendee_name=user.get("name") or user.get("email").split("@")[0]
+                    )
+
+                    if email_sent:
+                        logger.info(f"[BOOK_INBOUND] Meeting notification email sent to {user.get('email')}")
+                    else:
+                        logger.warning(f"[BOOK_INBOUND] Failed to send meeting notification email")
+                else:
+                    logger.warning(f"[BOOK_INBOUND] No email found for user {user_id}")
+
+            except Exception as e:
+                logger.error(f"[BOOK_INBOUND] Error sending meeting email: {e}")
+                # Don't fail the whole process if email fails
+                pass
 
             logger.info(f"[BOOK_INBOUND] ✓ Appointment booked successfully for call {call_sid}: event_id={event_id}")
             return event_id

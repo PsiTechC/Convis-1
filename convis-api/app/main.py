@@ -2,8 +2,9 @@ import os
 import logging
 from pathlib import Path
 from dotenv import load_dotenv
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
 
 # Load .env file from the project root
 env_path = Path(__file__).resolve().parent.parent / ".env"
@@ -25,12 +26,12 @@ from app.routes.campaigns import router as campaigns_router
 from app.routes.twilio_webhooks import router as twilio_webhooks_router
 from app.routes.campaign_twilio_callbacks import router as campaign_twilio_router
 from app.routes.dashboard import router as dashboard_router
-from app.routes.frejun import router as frejun_router
 from app.routes.whatsapp import credentials_router, messages_router, webhooks_router
 from app.routes.transcription import transcription_router
 from app.config.database import Database
 from app.config.settings import settings
 from app.services.campaign_scheduler import campaign_scheduler
+from app.middleware.rate_limiter import limiter, custom_rate_limit_exceeded_handler
 
 # Configure logging
 logging.basicConfig(
@@ -47,6 +48,10 @@ app = FastAPI(
     description="Python backend for user registration with OTP verification",
     version="1.0.0"
 )
+
+# Add rate limiting state and error handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
 
 # Configure CORS
 # Build list of allowed origins from environment
@@ -119,9 +124,6 @@ app.include_router(calendar_router, prefix="/api/calendar", tags=["Calendar"])
 app.include_router(twilio_webhooks_router, prefix="/api/twilio-webhooks", tags=["Twilio Webhooks"])
 app.include_router(campaign_twilio_router, tags=["Campaign Webhooks"])
 
-# FreJun Integration
-app.include_router(frejun_router, prefix="/api/frejun", tags=["FreJun Calls"])
-
 # WhatsApp Integration
 app.include_router(credentials_router, prefix="/api/whatsapp", tags=["WhatsApp"])
 app.include_router(messages_router, prefix="/api/whatsapp", tags=["WhatsApp"])
@@ -180,6 +182,15 @@ async def startup_event():
     """Connect to database on startup"""
     Database.connect()
     logging.info("Connected to MongoDB")
+
+    # Create database indexes for production performance
+    try:
+        from app.services.database_indexes import create_all_indexes
+        create_all_indexes()
+        logging.info("Database indexes created/verified")
+    except Exception as e:
+        logging.warning(f"Failed to create database indexes (non-critical): {e}")
+
     await campaign_scheduler.start()
 
     # Start background transcription task

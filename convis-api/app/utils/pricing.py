@@ -13,10 +13,8 @@ USD_TO_INR = 83.0  # 1 USD = 83 INR (approximate, can be updated)
 # TWILIO PRICING
 # ============================================================================
 TWILIO_PRICING = {
-    "call_per_minute_usd": 0.0140,  # $0.014/min for US calls
-    "call_per_minute_inr": 5.5,     # ₹5.5/min (as specified)
+    "call_per_minute_usd": 0.0140,       # $0.014/min for US calls
     "recording_per_minute_usd": 0.0025,  # $0.0025/min
-    "recording_per_minute_inr": 0.21,    # ~₹0.21/min
 }
 
 # ============================================================================
@@ -283,9 +281,9 @@ class PricingCalculator:
         # Realtime API pricing is per minute for audio
         api_cost_usd = pricing["total_per_min_estimate"] * duration_minutes
 
-        # Add Twilio cost
+        # Add Twilio cost (convert from USD so USD/INR stay in sync)
         twilio_cost_usd = TWILIO_PRICING["call_per_minute_usd"] * duration_minutes
-        twilio_cost_inr = TWILIO_PRICING["call_per_minute_inr"] * duration_minutes
+        twilio_cost_inr = twilio_cost_usd * self.usd_to_inr
 
         total_usd = api_cost_usd + twilio_cost_usd
         total_inr = (api_cost_usd * self.usd_to_inr) + twilio_cost_inr
@@ -369,9 +367,9 @@ class PricingCalculator:
         # Total API cost
         api_cost_usd = asr_cost_usd + llm_cost_usd + tts_cost_usd
 
-        # Twilio cost
+        # Twilio cost (keep USD as source of truth)
         twilio_cost_usd = TWILIO_PRICING["call_per_minute_usd"] * duration_minutes
-        twilio_cost_inr = TWILIO_PRICING["call_per_minute_inr"] * duration_minutes
+        twilio_cost_inr = twilio_cost_usd * self.usd_to_inr
 
         total_usd = api_cost_usd + twilio_cost_usd
         total_inr = (api_cost_usd * self.usd_to_inr) + twilio_cost_inr

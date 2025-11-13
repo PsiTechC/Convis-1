@@ -259,11 +259,19 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 
         logger.info(f"[INBOUND] Voice mode: {voice_mode}")
 
+        # Resolve OpenAI API key for the assistant (needed for both modes)
+        try:
+            openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+        except HTTPException as exc:
+            logger.error(f"Failed to resolve OpenAI API key: {exc.detail}")
+            await websocket.close(code=1008, reason=f"API key configuration error: {exc.detail}")
+            return
+
         # Route to appropriate handler based on voice mode
         if voice_mode == 'custom':
-            # Use custom provider pipeline (ASR -> LLM -> TTS)
-            logger.info("[INBOUND] Using custom provider mode")
-            from app.utils.custom_provider_handler import CustomProviderHandler
+            # Use advanced streaming voice pipeline (WebSocket-based ASR -> LLM -> TTS)
+            logger.info("[INBOUND] Using advanced streaming pipeline for custom provider mode")
+            from app.voice_pipeline.pipeline import StreamProviderHandler
 
             # Get API keys from environment variables
             import os
@@ -297,17 +305,18 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             if os.getenv('AZURE_OPENAI_ENDPOINT'):
                 assistant['azure_openai_endpoint'] = os.getenv('AZURE_OPENAI_ENDPOINT')
 
-            # Initialize custom handler
-            handler = CustomProviderHandler(websocket, assistant, api_keys)
+            # Initialize streaming handler with voice pipeline
+            handler = StreamProviderHandler(websocket, assistant, api_keys, db=db)
 
-            # Handle WebSocket messages
+            # Handle Twilio WebSocket messages
             try:
                 async for message in websocket.iter_text():
                     data = json.loads(message)
                     await handler.handle_twilio_message(data)
             except Exception as e:
-                logger.error(f"[CUSTOM_HANDLER_ERROR] {e}", exc_info=True)
+                logger.error(f"[STREAM_PIPELINE_ERROR] {e}", exc_info=True)
             finally:
+                await handler.cleanup()
                 await websocket.close()
             return
 

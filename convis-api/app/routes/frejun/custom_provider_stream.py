@@ -57,6 +57,10 @@ class CustomProviderStreamHandler:
         self.is_running = False
         self.audio_buffer = bytearray()
 
+        # Twilio-specific state
+        self.stream_sid = None  # Required for Twilio audio streaming
+        self.call_sid = None
+
         # API keys
         self.provider_keys = provider_keys or assistant_config.get("provider_keys") or {}
         if openai_api_key:
@@ -273,7 +277,7 @@ class CustomProviderStreamHandler:
             # Generate greeting audio
             greeting_audio = await self.tts_provider.synthesize(self.greeting)
 
-            # Convert audio if needed (FreJun expects 8kHz PCM)
+            # Convert audio if needed
             if len(greeting_audio) > 0:
                 # Determine input sample rate based on TTS provider
                 input_sample_rate = 8000  # Default for Cartesia
@@ -282,18 +286,27 @@ class CustomProviderStreamHandler:
                 elif self.tts_provider_name == 'openai':
                     input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
 
-                # Only resample if input is not already 8kHz
+                # Step 1: Resample to 8kHz if needed
                 if input_sample_rate != 8000:
                     try:
                         converted_audio, _ = audioop.ratecv(greeting_audio, 2, 1, input_sample_rate, 8000, None)
-                        logger.info(f"[CUSTOM] Converted audio from {input_sample_rate}Hz to 8kHz for FreJun")
+                        logger.info(f"[CUSTOM] Resampled audio from {input_sample_rate}Hz to 8kHz")
                     except Exception as conv_error:
-                        logger.warning(f"[CUSTOM] Audio conversion failed, using original: {conv_error}")
+                        logger.warning(f"[CUSTOM] Audio resampling failed: {conv_error}")
                         converted_audio = greeting_audio
                 else:
-                    # Cartesia already outputs at 8kHz, no conversion needed
                     converted_audio = greeting_audio
-                    logger.info(f"[CUSTOM] Audio already at 8kHz, no conversion needed")
+
+                # Step 2: Encode to μ-law for Twilio, keep PCM for FreJun
+                if self.platform == "twilio":
+                    try:
+                        # Convert PCM to μ-law (G.711) for Twilio
+                        converted_audio = audioop.lin2ulaw(converted_audio, 2)
+                        logger.info(f"[CUSTOM] Encoded audio to μ-law for Twilio ({len(converted_audio)} bytes)")
+                    except Exception as enc_error:
+                        logger.error(f"[CUSTOM] μ-law encoding failed: {enc_error}")
+                        # Fall back to PCM (won't work but at least won't crash)
+                        pass
 
                 # Send audio in platform-specific format
                 audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
@@ -305,13 +318,17 @@ class CustomProviderStreamHandler:
                         "audio_b64": audio_b64
                     })
                 else:
-                    # Twilio format
-                    await self.websocket.send_json({
-                        "event": "media",
-                        "media": {
-                            "payload": audio_b64
-                        }
-                    })
+                    # Twilio format (requires streamSid)
+                    if not self.stream_sid:
+                        logger.warning("[CUSTOM] Missing streamSid for Twilio audio, waiting for start event")
+                    else:
+                        await self.websocket.send_json({
+                            "event": "media",
+                            "streamSid": self.stream_sid,
+                            "media": {
+                                "payload": audio_b64
+                            }
+                        })
 
                 logger.info(f"[CUSTOM] Greeting sent to {self.platform} ({len(converted_audio)} bytes)")
 
@@ -378,7 +395,7 @@ class CustomProviderStreamHandler:
             logger.info(f"[CUSTOM] Synthesizing speech...")
             response_audio = await self.tts_provider.synthesize(response_text)
 
-            # Convert audio format if needed (FreJun expects 8kHz)
+            # Convert audio format if needed
             # Determine input sample rate based on TTS provider
             input_sample_rate = 8000  # Default for Cartesia
             if self.tts_provider_name == 'elevenlabs':
@@ -386,17 +403,27 @@ class CustomProviderStreamHandler:
             elif self.tts_provider_name == 'openai':
                 input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
 
-            # Only resample if input is not already 8kHz
+            # Step 1: Resample to 8kHz if needed
             if input_sample_rate != 8000:
                 try:
                     converted_audio, _ = audioop.ratecv(response_audio, 2, 1, input_sample_rate, 8000, None)
-                    logger.info(f"[CUSTOM] Converted audio from {input_sample_rate}Hz to 8kHz for FreJun")
+                    logger.info(f"[CUSTOM] Resampled audio from {input_sample_rate}Hz to 8kHz")
                 except Exception as conv_error:
-                    logger.warning(f"[CUSTOM] Audio conversion failed: {conv_error}")
+                    logger.warning(f"[CUSTOM] Audio resampling failed: {conv_error}")
                     converted_audio = response_audio
             else:
-                # Cartesia already outputs at 8kHz, no conversion needed
                 converted_audio = response_audio
+
+            # Step 2: Encode to μ-law for Twilio, keep PCM for FreJun
+            if self.platform == "twilio":
+                try:
+                    # Convert PCM to μ-law (G.711) for Twilio
+                    converted_audio = audioop.lin2ulaw(converted_audio, 2)
+                    logger.info(f"[CUSTOM] Encoded audio to μ-law for Twilio ({len(converted_audio)} bytes)")
+                except Exception as enc_error:
+                    logger.error(f"[CUSTOM] μ-law encoding failed: {enc_error}")
+                    # Fall back to PCM (won't work but at least won't crash)
+                    pass
 
             # Send audio in platform-specific format
             audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
@@ -408,13 +435,17 @@ class CustomProviderStreamHandler:
                     "audio_b64": audio_b64
                 })
             else:
-                # Twilio format
-                await self.websocket.send_json({
-                    "event": "media",
-                    "media": {
-                        "payload": audio_b64
-                    }
-                })
+                # Twilio format (requires streamSid)
+                if not self.stream_sid:
+                    logger.warning("[CUSTOM] Missing streamSid for Twilio audio, waiting for start event")
+                else:
+                    await self.websocket.send_json({
+                        "event": "media",
+                        "streamSid": self.stream_sid,
+                        "media": {
+                            "payload": audio_b64
+                        }
+                    })
 
             logger.info(f"[CUSTOM] Response audio sent to {self.platform} ({len(converted_audio)} bytes)")
 
@@ -493,8 +524,12 @@ class CustomProviderStreamHandler:
                 await self.websocket.close(code=1011, reason="Provider initialization failed")
                 return
 
-            # Send greeting
-            await self.send_greeting()
+            # For Twilio, wait for start event before sending greeting
+            # For FreJun, send greeting immediately
+            greeting_sent = False
+            if self.platform != "twilio":
+                await self.send_greeting()
+                greeting_sent = True
 
             # Main message loop
             while self.is_running:
@@ -538,12 +573,30 @@ class CustomProviderStreamHandler:
                             payload = media.get("payload")
 
                             if payload:
-                                # Decode base64 audio
+                                # Decode base64 audio (Twilio sends μ-law encoded)
                                 audio_data = base64.b64decode(payload)
+
+                                # Convert μ-law to PCM for ASR processing
+                                try:
+                                    audio_data = audioop.ulaw2lin(audio_data, 2)
+                                    logger.debug(f"[CUSTOM] Decoded μ-law to PCM ({len(audio_data)} bytes)")
+                                except Exception as decode_error:
+                                    logger.error(f"[CUSTOM] Failed to decode μ-law audio: {decode_error}")
+                                    continue
+
                                 await self.process_audio_chunk(audio_data)
 
                         elif event == "start":
-                            logger.info(f"[CUSTOM] Twilio stream started: {message}")
+                            # Extract streamSid and callSid from start event
+                            start_data = message.get("start", {})
+                            self.stream_sid = start_data.get("streamSid")
+                            self.call_sid = start_data.get("callSid")
+                            logger.info(f"[CUSTOM] Twilio stream started - StreamSID: {self.stream_sid}, CallSID: {self.call_sid}")
+
+                            # Send greeting now that we have streamSid
+                            if not greeting_sent:
+                                await self.send_greeting()
+                                greeting_sent = True
 
                         elif event == "stop":
                             logger.info(f"[CUSTOM] Twilio stream stopped")

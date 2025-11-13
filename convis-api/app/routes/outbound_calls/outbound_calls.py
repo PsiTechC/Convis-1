@@ -11,6 +11,7 @@ from fastapi.websockets import WebSocketDisconnect
 from twilio.rest import Client
 from twilio.base.exceptions import TwilioRestException
 from bson import ObjectId
+from app.middleware.rate_limiter import limiter, get_rate_limit
 from app.config.database import Database
 from app.config.settings import settings
 from app.utils.assistant_keys import resolve_assistant_api_key
@@ -376,7 +377,8 @@ async def check_phone_number(user_id: str, phone_number: str):
         )
 
 @router.post("/make-call/{assistant_id}", response_model=OutboundCallResponse, status_code=status.HTTP_200_OK)
-async def make_outbound_call(assistant_id: str, request: OutboundCallRequest):
+@limiter.limit(get_rate_limit("outbound_call"))
+async def make_outbound_call(req: Request, assistant_id: str, request: OutboundCallRequest):
     """
     Initiate an outbound call using the specified AI assistant.
 
@@ -664,11 +666,19 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 
         logger.info(f"[OUTBOUND] Voice mode: {voice_mode}")
 
+        # Resolve OpenAI API key for the assistant (needed for both modes)
+        try:
+            openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+        except HTTPException as exc:
+            logger.error(f"Failed to resolve OpenAI API key: {exc.detail}")
+            await websocket.close(code=1008, reason=f"API key configuration error: {exc.detail}")
+            return
+
         # Route to appropriate handler based on voice mode
         if voice_mode == 'custom':
-            # Use custom provider pipeline (ASR -> LLM -> TTS)
-            logger.info("[OUTBOUND] Using custom provider mode")
-            from app.utils.custom_provider_handler import CustomProviderHandler
+            # Use advanced streaming voice pipeline (WebSocket-based ASR -> LLM -> TTS)
+            logger.info("[OUTBOUND] Using advanced streaming pipeline for custom provider mode")
+            from app.voice_pipeline.pipeline import StreamProviderHandler
 
             # Get API keys from environment variables
             import os
@@ -702,17 +712,18 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             if os.getenv('AZURE_OPENAI_ENDPOINT'):
                 assistant['azure_openai_endpoint'] = os.getenv('AZURE_OPENAI_ENDPOINT')
 
-            # Initialize custom handler
-            handler = CustomProviderHandler(websocket, assistant, api_keys)
+            # Initialize streaming handler with voice pipeline
+            handler = StreamProviderHandler(websocket, assistant, api_keys, db=db)
 
-            # Handle WebSocket messages
+            # Handle Twilio WebSocket messages
             try:
                 async for message in websocket.iter_text():
                     data = json.loads(message)
                     await handler.handle_twilio_message(data)
             except Exception as e:
-                logger.error(f"[CUSTOM_HANDLER_ERROR] {e}", exc_info=True)
+                logger.error(f"[STREAM_PIPELINE_ERROR] {e}", exc_info=True)
             finally:
+                await handler.cleanup()
                 await websocket.close()
             return
 
@@ -1777,10 +1788,18 @@ async def handle_outbound_recording_status(request: Request):
             if result.modified_count > 0:
                 logger.info(f"Updated outbound call log with recording URL for call {call_sid}")
 
-                # Note: Twilio native transcription is NOT available for outbound calls using <Stream>
-                # Twilio transcription only works with <Record> verb, which is incompatible with <Stream>
-                # For outbound call transcription, use OpenAI Whisper via the transcription API endpoints
-                # The twilio_webhooks handler will trigger automatic transcription if enabled
+                # Trigger automatic transcription for outbound calls
+                # Note: Twilio native transcription is NOT available with <Stream> verb
+                # We use OpenAI Whisper for all call transcriptions (both custom provider and realtime modes)
+                try:
+                    from app.services.post_call_processor import PostCallProcessor
+                    import asyncio
+
+                    processor = PostCallProcessor()
+                    logger.info(f"Triggering automatic transcription for outbound call: {call_sid}")
+                    asyncio.create_task(processor.transcribe_and_update_call(call_sid, recording_url))
+                except Exception as e:
+                    logger.error(f"Error triggering transcription for outbound call {call_sid}: {e}")
             else:
                 logger.warning(f"Outbound call log not found for call_sid: {call_sid}")
 

@@ -169,13 +169,13 @@ export default function WhatsAppPage() {
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'active':
-        return 'text-green-600 bg-green-100';
+        return isDarkMode ? 'text-green-400 bg-green-900/30' : 'text-green-600 bg-green-100';
       case 'disconnected':
-        return 'text-gray-600 bg-gray-100';
+        return isDarkMode ? 'text-gray-400 bg-gray-700/30' : 'text-gray-600 bg-gray-100';
       case 'error':
-        return 'text-red-600 bg-red-100';
+        return isDarkMode ? 'text-red-400 bg-red-900/30' : 'text-red-600 bg-red-100';
       default:
-        return 'text-gray-600 bg-gray-100';
+        return isDarkMode ? 'text-gray-400 bg-gray-700/30' : 'text-gray-600 bg-gray-100';
     }
   };
 
@@ -306,59 +306,59 @@ export default function WhatsAppPage() {
           {/* Stats Cards */}
           {stats && (
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-mid/10">
+              <div className={`${isDarkMode ? 'bg-gray-800/90 border-gray-700' : 'bg-white border-neutral-mid/10'} rounded-2xl p-6 shadow-sm border`}>
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-green-100 flex items-center justify-center">
-                    <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className={`w-12 h-12 rounded-xl ${isDarkMode ? 'bg-green-900/30' : 'bg-green-100'} flex items-center justify-center`}>
+                    <svg className={`w-6 h-6 ${isDarkMode ? 'text-green-400' : 'text-green-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                     </svg>
                   </div>
                   <div>
-                    <p className="text-sm text-neutral-mid">Total Messages</p>
-                    <p className="text-2xl font-bold text-neutral-dark">{stats.total_messages}</p>
+                    <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>Total Messages</p>
+                    <p className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>{stats.total_messages}</p>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-mid/10">
+              <div className={`${isDarkMode ? 'bg-gray-800/90 border-gray-700' : 'bg-white border-neutral-mid/10'} rounded-2xl p-6 shadow-sm border`}>
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-blue-100 flex items-center justify-center">
-                    <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className={`w-12 h-12 rounded-xl ${isDarkMode ? 'bg-blue-900/30' : 'bg-blue-100'} flex items-center justify-center`}>
+                    <svg className={`w-6 h-6 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
                     </svg>
                   </div>
                   <div>
-                    <p className="text-sm text-neutral-mid">Delivered</p>
-                    <p className="text-2xl font-bold text-neutral-dark">{stats.delivered}</p>
+                    <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>Delivered</p>
+                    <p className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>{stats.delivered}</p>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-mid/10">
+              <div className={`${isDarkMode ? 'bg-gray-800/90 border-gray-700' : 'bg-white border-neutral-mid/10'} rounded-2xl p-6 shadow-sm border`}>
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-purple-100 flex items-center justify-center">
-                    <svg className="w-6 h-6 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className={`w-12 h-12 rounded-xl ${isDarkMode ? 'bg-purple-900/30' : 'bg-purple-100'} flex items-center justify-center`}>
+                    <svg className={`w-6 h-6 ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
                     </svg>
                   </div>
                   <div>
-                    <p className="text-sm text-neutral-mid">Read</p>
-                    <p className="text-2xl font-bold text-neutral-dark">{stats.read}</p>
+                    <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>Read</p>
+                    <p className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>{stats.read}</p>
                   </div>
                 </div>
               </div>
 
-              <div className="bg-white rounded-2xl p-6 shadow-sm border border-neutral-mid/10">
+              <div className={`${isDarkMode ? 'bg-gray-800/90 border-gray-700' : 'bg-white border-neutral-mid/10'} rounded-2xl p-6 shadow-sm border`}>
                 <div className="flex items-center gap-3">
-                  <div className="w-12 h-12 rounded-xl bg-orange-100 flex items-center justify-center">
-                    <svg className="w-6 h-6 text-orange-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className={`w-12 h-12 rounded-xl ${isDarkMode ? 'bg-orange-900/30' : 'bg-orange-100'} flex items-center justify-center`}>
+                    <svg className={`w-6 h-6 ${isDarkMode ? 'text-orange-400' : 'text-orange-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
                     </svg>
                   </div>
                   <div>
-                    <p className="text-sm text-neutral-mid">Active Accounts</p>
-                    <p className="text-2xl font-bold text-neutral-dark">{stats.active_credentials}/{stats.credentials_count}</p>
+                    <p className={`text-sm ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>Active Accounts</p>
+                    <p className={`text-2xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>{stats.active_credentials}/{stats.credentials_count}</p>
                   </div>
                 </div>
               </div>
@@ -366,8 +366,8 @@ export default function WhatsAppPage() {
           )}
 
           {/* Tabs */}
-          <div className="bg-white rounded-2xl shadow-sm border border-neutral-mid/10 mb-6">
-            <div className="border-b border-neutral-mid/10">
+          <div className={`${isDarkMode ? 'bg-gray-800/90 border-gray-700' : 'bg-white border-neutral-mid/10'} rounded-2xl shadow-sm border mb-6`}>
+            <div className={`border-b ${isDarkMode ? 'border-gray-700' : 'border-neutral-mid/10'}`}>
               <div className="flex gap-4 px-6">
                 <button
                   onClick={() => setActiveTab('credentials')}
@@ -408,8 +408,8 @@ export default function WhatsAppPage() {
                 <div>
                   <div className="flex justify-between items-center mb-6">
                     <div>
-                      <h2 className="text-xl font-bold text-neutral-dark">WhatsApp Business Accounts</h2>
-                      <p className="text-sm text-neutral-mid mt-1">
+                      <h2 className={`text-xl font-bold ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>WhatsApp Business Accounts</h2>
+                      <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                         Connect your WhatsApp Business accounts to send messages
                       </p>
                     </div>
@@ -427,7 +427,7 @@ export default function WhatsAppPage() {
                   {loading ? (
                     <div className="text-center py-12">
                       <div className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid border-primary border-r-transparent"></div>
-                      <p className="text-neutral-mid mt-4">Loading credentials...</p>
+                      <p className={`mt-4 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>Loading credentials...</p>
                     </div>
                   ) : error ? (
                     <div className="text-center py-12">
@@ -435,13 +435,13 @@ export default function WhatsAppPage() {
                     </div>
                   ) : credentials.length === 0 ? (
                     <div className="text-center py-12">
-                      <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                        <svg className="w-10 h-10 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${isDarkMode ? 'bg-green-900/30' : 'bg-green-100'}`}>
+                        <svg className={`w-10 h-10 ${isDarkMode ? 'text-green-400' : 'text-green-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
                         </svg>
                       </div>
-                      <h3 className="text-lg font-semibold text-neutral-dark mb-2">No WhatsApp accounts connected</h3>
-                      <p className="text-neutral-mid mb-6">
+                      <h3 className={`text-lg font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>No WhatsApp accounts connected</h3>
+                      <p className={`mb-6 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                         Add your first WhatsApp Business account to start sending messages
                       </p>
                       <button
@@ -456,19 +456,19 @@ export default function WhatsAppPage() {
                       {credentials.map((credential) => (
                         <div
                           key={credential.id}
-                          className="bg-gradient-to-br from-white to-green-50/30 border border-neutral-mid/20 rounded-2xl p-6 hover:shadow-lg transition-all duration-200"
+                          className={`${isDarkMode ? 'bg-gray-700/50 border-gray-600' : 'bg-gradient-to-br from-white to-green-50/30 border-neutral-mid/20'} border rounded-2xl p-6 hover:shadow-lg transition-all duration-200`}
                         >
                           <div className="flex justify-between items-start mb-4">
                             <div>
-                              <h3 className="font-semibold text-neutral-dark text-lg">{credential.label}</h3>
-                              <p className="text-sm text-neutral-mid mt-1">{credential.api_url_masked}</p>
+                              <h3 className={`font-semibold text-lg ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>{credential.label}</h3>
+                              <p className={`text-sm mt-1 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>{credential.api_url_masked}</p>
                             </div>
                             <span className={`px-3 py-1 rounded-full text-xs font-medium ${getStatusColor(credential.status)}`}>
                               {getStatusIcon(credential.status)} {credential.status}
                             </span>
                           </div>
 
-                          <div className="text-xs text-neutral-mid mb-4">
+                          <div className={`text-xs mb-4 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                             API Key: ••••{credential.last_four}
                           </div>
 
@@ -476,20 +476,20 @@ export default function WhatsAppPage() {
                             <button
                               onClick={() => handleSendMessage(credential.id)}
                               disabled={credential.status !== 'active'}
-                              className="flex-1 px-3 py-2 rounded-lg bg-green-100 text-green-700 hover:bg-green-200 disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium transition-colors"
+                              className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${isDarkMode ? 'bg-green-900/40 text-green-300 hover:bg-green-900/60' : 'bg-green-100 text-green-700 hover:bg-green-200'}`}
                             >
                               Send
                             </button>
                             <button
                               onClick={() => handleViewHistory(credential.id)}
-                              className="flex-1 px-3 py-2 rounded-lg bg-blue-100 text-blue-700 hover:bg-blue-200 text-sm font-medium transition-colors"
+                              className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${isDarkMode ? 'bg-blue-900/40 text-blue-300 hover:bg-blue-900/60' : 'bg-blue-100 text-blue-700 hover:bg-blue-200'}`}
                             >
                               History
                             </button>
                             <button
                               onClick={() => handleVerifyCredential(credential.id)}
                               disabled={verifyingId === credential.id}
-                              className="px-3 py-2 rounded-lg bg-purple-100 text-purple-700 hover:bg-purple-200 disabled:opacity-50 text-sm font-medium transition-colors"
+                              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${isDarkMode ? 'bg-purple-900/40 text-purple-300 hover:bg-purple-900/60' : 'bg-purple-100 text-purple-700 hover:bg-purple-200'}`}
                               title="Verify connection"
                             >
                               {verifyingId === credential.id ? '...' : '✓'}
@@ -497,7 +497,7 @@ export default function WhatsAppPage() {
                             <button
                               onClick={() => handleDeleteCredential(credential.id, credential.label)}
                               disabled={deletingId === credential.id}
-                              className="px-3 py-2 rounded-lg bg-red-100 text-red-700 hover:bg-red-200 disabled:opacity-50 text-sm font-medium transition-colors"
+                              className={`px-3 py-2 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 ${isDarkMode ? 'bg-red-900/40 text-red-300 hover:bg-red-900/60' : 'bg-red-100 text-red-700 hover:bg-red-200'}`}
                               title="Delete"
                             >
                               {deletingId === credential.id ? '...' : '✕'}
@@ -513,13 +513,13 @@ export default function WhatsAppPage() {
               {/* Messages Tab */}
               {activeTab === 'messages' && (
                 <div className="text-center py-12">
-                  <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg className="w-10 h-10 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${isDarkMode ? 'bg-blue-900/30' : 'bg-blue-100'}`}>
+                    <svg className={`w-10 h-10 ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
                     </svg>
                   </div>
-                  <h3 className="text-lg font-semibold text-neutral-dark mb-2">Message Center</h3>
-                  <p className="text-neutral-mid mb-6">
+                  <h3 className={`text-lg font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>Message Center</h3>
+                  <p className={`mb-6 ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                     Select a credential from the Credentials tab to send messages
                   </p>
                   {credentials.length > 0 && (
@@ -536,13 +536,13 @@ export default function WhatsAppPage() {
               {/* Analytics Tab */}
               {activeTab === 'analytics' && (
                 <div className="text-center py-12">
-                  <div className="w-20 h-20 bg-purple-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <svg className="w-10 h-10 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <div className={`w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4 ${isDarkMode ? 'bg-purple-900/30' : 'bg-purple-100'}`}>
+                    <svg className={`w-10 h-10 ${isDarkMode ? 'text-purple-400' : 'text-purple-600'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
                     </svg>
                   </div>
-                  <h3 className="text-lg font-semibold text-neutral-dark mb-2">Advanced Analytics</h3>
-                  <p className="text-neutral-mid">
+                  <h3 className={`text-lg font-semibold mb-2 ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>Advanced Analytics</h3>
+                  <p className={`${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
                     Detailed analytics and insights coming soon
                   </p>
                 </div>
