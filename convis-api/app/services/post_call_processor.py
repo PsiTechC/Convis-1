@@ -442,7 +442,10 @@ Return ONLY the JSON, no other text."""
                 # Still run analysis on existing transcript if not done
                 if not call.get("summary") or call.get("summary") == "Unable to analyze call.":
                     logger.info("Running analysis on existing transcript...")
-                    analysis = await self.analyze_transcript(existing_transcript)
+                    # Resolve OpenAI API key for analysis
+                    call_attempt = {"call_sid": call_sid}
+                    openai_key = self._resolve_openai_api_key(call_attempt)
+                    analysis = await self.analyze_transcript(existing_transcript, openai_key)
                     if analysis:
                         call_logs_collection.update_one(
                             {"call_sid": call_sid},
@@ -490,16 +493,20 @@ Return ONLY the JSON, no other text."""
                 logger.error(f"Failed to download recording for {call_sid}")
                 return
 
-            # Step 2: Transcribe
+            # Step 2: Resolve OpenAI API key
+            call_attempt = {"call_sid": call_sid}
+            openai_key = self._resolve_openai_api_key(call_attempt)
+
+            # Step 3: Transcribe
             logger.info("Transcribing audio using OpenAI Whisper...")
-            transcript = await self.transcribe_audio(audio_bytes)
+            transcript = await self.transcribe_audio(audio_bytes, openai_key)
             if not transcript:
                 logger.warning(f"Transcription failed or empty for {call_sid}")
                 transcript = "[Transcription unavailable]"
 
-            # Step 3: Analyze
+            # Step 4: Analyze
             logger.info("Analyzing transcript...")
-            analysis = await self.analyze_transcript(transcript)
+            analysis = await self.analyze_transcript(transcript, openai_key)
             if not analysis:
                 analysis = {
                     "sentiment": "neutral",

@@ -26,7 +26,9 @@ WORKDIR /app
 COPY requirements.txt .
 
 # Install Python dependencies
+# Install PyTorch CPU packages first with explicit index URL
 RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir --extra-index-url https://download.pytorch.org/whl/cpu torch torchaudio && \
     pip install --no-cache-dir -r requirements.txt
 
 # Production stage

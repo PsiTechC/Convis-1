@@ -164,6 +164,8 @@ def resolve_provider_keys(db, assistant: dict, user_id: ObjectId) -> Dict[str, s
         env_var_map = {
             'openai': 'OPENAI_API_KEY',
             'deepgram': 'DEEPGRAM_API_KEY',
+            'sarvam': 'SARVAM_API_KEY',
+            'google': 'GOOGLE_API_KEY',
             'cartesia': 'CARTESIA_API_KEY',
             'elevenlabs': 'ELEVENLABS_API_KEY',
             'groq': 'GROQ_API_KEY',
@@ -227,6 +229,8 @@ def resolve_user_provider_key(
     env_var_map = {
         'openai': 'OPENAI_API_KEY',
         'deepgram': 'DEEPGRAM_API_KEY',
+        'sarvam': 'SARVAM_API_KEY',
+        'google': 'GOOGLE_API_KEY',
         'cartesia': 'CARTESIA_API_KEY',
         'elevenlabs': 'ELEVENLABS_API_KEY',
         'groq': 'GROQ_API_KEY',

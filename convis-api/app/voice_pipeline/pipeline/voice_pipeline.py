@@ -12,7 +12,7 @@ from datetime import datetime
 from app.voice_pipeline.helpers.logger_config import configure_logger
 from app.voice_pipeline.helpers.utils import create_ws_data_packet, timestamp_ms
 from app.voice_pipeline.helpers.mark_event_meta_data import MarkEventMetaData
-from app.voice_pipeline.transcriber import DeepgramTranscriber, SarvamTranscriber, GoogleTranscriber
+from app.voice_pipeline.transcriber import DeepgramTranscriber, SarvamTranscriber, GoogleTranscriber, OpenAITranscriber
 from app.voice_pipeline.llm import OpenAiLLM
 from app.voice_pipeline.synthesizer import ElevenlabsSynthesizer, CartesiaSynthesizer, OpenAISynthesizer, SarvamSynthesizer
 
@@ -100,6 +100,17 @@ class VoicePipeline:
                 endpointing='400',  # 400ms VAD endpointing
                 transcriber_key=self.api_keys.get('google')
             )
+        elif transcriber_provider == 'openai':
+            logger.info("[VOICE_PIPELINE] Creating OpenAI Whisper transcriber (buffered with VAD)")
+            return OpenAITranscriber(
+                telephony_provider='twilio',  # Twilio uses μ-law 8kHz
+                input_queue=self.audio_input_queue,
+                output_queue=self.transcriber_output_queue,
+                model=self.assistant_config.get('transcriber', {}).get('model', 'whisper-1'),
+                language=self.assistant_config.get('transcriber', {}).get('language', 'en'),
+                endpointing='400',  # 400ms silence detection for VAD
+                transcriber_key=self.api_keys.get('openai')
+            )
         else:
             raise ValueError(f"Unsupported transcriber provider: {transcriber_provider}")
 
@@ -140,6 +151,7 @@ class VoicePipeline:
         elif synthesizer_provider == 'cartesia':
             logger.info("[VOICE_PIPELINE] Creating Cartesia synthesizer (WebSocket streaming)")
             return CartesiaSynthesizer(
+                voice=self.assistant_config.get('synthesizer', {}).get('voice', 'default'),
                 voice_id=self.assistant_config.get('synthesizer', {}).get('voice_id'),
                 model=self.assistant_config.get('synthesizer', {}).get('model', 'sonic-english'),
                 synthesizer_key=self.api_keys.get('cartesia'),
