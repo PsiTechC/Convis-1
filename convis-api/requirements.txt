@@ -62,7 +62,8 @@ soundfile>=0.12.1
 scipy>=1.11.0
 aiohttp>=3.9.0
 
-# PyTorch and audio processing
-# Note: Install with: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
-torch>=2.0.0
-torchaudio>=2.0.0
+# PyTorch and audio processing (DISABLED - using scipy for resampling instead)
+# Note: torch/torchaudio are heavy dependencies and scipy provides adequate audio resampling
+# If needed in future, install with: pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+# torch>=2.0.0
+# torchaudio>=2.0.0

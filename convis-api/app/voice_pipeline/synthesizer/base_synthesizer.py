@@ -1,8 +1,10 @@
 import io
-import torchaudio
 from app.voice_pipeline.helpers.logger_config import configure_logger
 import asyncio
 import re
+import numpy as np
+from scipy.io import wavfile
+from scipy.signal import resample as scipy_resample
 
 logger = configure_logger(__name__)
 
@@ -66,15 +68,40 @@ class BaseSynthesizer:
         return re.sub(r'\s+', ' ', s.strip())
 
     def resample(self, audio_bytes):
-        audio_buffer = io.BytesIO(audio_bytes)
-        waveform, orig_sample_rate = torchaudio.load(audio_buffer)
-        resampler = torchaudio.transforms.Resample(orig_sample_rate, 8000)
-        audio_waveform = resampler(waveform)
-        audio_buffer = io.BytesIO()
-        torchaudio.save(audio_buffer, audio_waveform, 8000, format="wav")
-        audio_buffer.seek(0)
-        audio_data = audio_buffer.read()
-        return audio_data
+        """
+        Resample audio to 8kHz for telephony using scipy.
+        Falls back to original audio if resampling fails.
+        """
+        try:
+            # Read WAV audio using scipy
+            audio_buffer = io.BytesIO(audio_bytes)
+            orig_sample_rate, audio_data = wavfile.read(audio_buffer)
+
+            # Check if resampling is needed
+            if orig_sample_rate == 8000:
+                logger.debug("Audio already at 8kHz, no resampling needed")
+                return audio_bytes
+
+            # Resample to 8000 Hz
+            target_sample_rate = 8000
+            num_samples = int(len(audio_data) * target_sample_rate / orig_sample_rate)
+            resampled_data = scipy_resample(audio_data, num_samples)
+
+            # Convert back to int16 and clip values
+            resampled_data = np.clip(resampled_data, -32768, 32767).astype(np.int16)
+
+            # Save back as WAV
+            output_buffer = io.BytesIO()
+            wavfile.write(output_buffer, target_sample_rate, resampled_data)
+            output_buffer.seek(0)
+            audio_data = output_buffer.read()
+
+            logger.debug(f"Resampled audio from {orig_sample_rate}Hz to 8kHz")
+            return audio_data
+
+        except Exception as e:
+            logger.warning(f"Error resampling audio: {e}. Returning original audio.")
+            return audio_bytes
 
     def get_engine(self):
         return "default"
