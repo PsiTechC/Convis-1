@@ -679,34 +679,21 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             # Use advanced streaming voice pipeline (WebSocket-based ASR -> LLM -> TTS)
             logger.info("[OUTBOUND] Using advanced streaming pipeline for custom provider mode")
             from app.voice_pipeline.pipeline import StreamProviderHandler
+            from app.utils.assistant_keys import resolve_provider_keys
 
-            # Get API keys from environment variables
-            import os
+            # Get user ID for API key resolution
+            assistant_user_id = assistant.get('user_id')
+            if isinstance(assistant_user_id, str):
+                from bson import ObjectId
+                assistant_user_id = ObjectId(assistant_user_id)
 
-            api_keys = {
-                # ASR providers
-                'openai': openai_api_key or os.getenv('OPENAI_API_KEY'),
-                'deepgram': os.getenv('DEEPGRAM_API_KEY'),
-                'azure': os.getenv('AZURE_SPEECH_KEY'),
-                'sarvam': os.getenv('SARVAM_API_KEY'),
-                'assembly': os.getenv('ASSEMBLYAI_API_KEY'),
-                'google': os.getenv('GOOGLE_SPEECH_API_KEY'),
+            # Resolve API keys from database (user's stored keys) with environment fallback
+            api_keys = resolve_provider_keys(db, assistant, assistant_user_id)
 
-                # LLM providers
-                'anthropic': os.getenv('ANTHROPIC_API_KEY'),
-                'deepseek': os.getenv('DEEPSEEK_API_KEY'),
-                'openrouter': os.getenv('OPENROUTER_API_KEY'),
-                'groq': os.getenv('GROQ_API_KEY'),
-
-                # TTS providers
-                'cartesia': os.getenv('CARTESIA_API_KEY'),
-                'elevenlabs': os.getenv('ELEVENLABS_API_KEY'),
-            }
-
-            # Remove None values
-            api_keys = {k: v for k, v in api_keys.items() if v is not None}
+            logger.info(f"[OUTBOUND] Resolved API keys for providers: {list(api_keys.keys())}")
 
             # Add Azure region to assistant config if available
+            import os
             if os.getenv('AZURE_SPEECH_REGION'):
                 assistant['azure_region'] = os.getenv('AZURE_SPEECH_REGION')
             if os.getenv('AZURE_OPENAI_ENDPOINT'):
