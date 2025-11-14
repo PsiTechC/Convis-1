@@ -83,3 +83,4 @@ htmlcov/
 _build/
 site/
 bolna-master
+.env
