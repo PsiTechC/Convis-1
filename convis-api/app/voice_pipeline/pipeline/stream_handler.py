@@ -45,6 +45,8 @@ class StreamProviderHandler:
             # Map database field names to pipeline config format
             assistant_config = {
                 'assistant_name': self.assistant.get('name', 'Convis Assistant'),
+                'greeting_message': self.assistant.get('call_greeting') or self.assistant.get('greeting_message') or self.assistant.get('greeting'),
+                'system_message': self.assistant.get('system_message', 'You are a helpful AI assistant.'),
                 'transcriber': {
                     'provider': self.assistant.get('asr_provider', 'deepgram'),
                     'model': self.assistant.get('asr_model', 'nova-2'),
@@ -71,6 +73,7 @@ class StreamProviderHandler:
                 api_keys=self.api_keys,
                 twilio_ws=self.websocket,
                 call_sid=self.call_sid,
+                stream_sid=self.stream_sid,
                 db=self.db,
                 conversation_history=self.conversation_history
             )
@@ -103,7 +106,7 @@ class StreamProviderHandler:
 
             elif event == 'mark':
                 # Mark events are acknowledgments of audio playback
-                logger.debug(f"[STREAM_HANDLER] Mark event received: {message.get('mark', {}).get('name')}")
+                await self._handle_mark(message)
 
             else:
                 logger.debug(f"[STREAM_HANDLER] Unhandled event type: {event}")
@@ -124,15 +127,8 @@ class StreamProviderHandler:
         logger.info(f"[STREAM_HANDLER] Media format: {start_data.get('mediaFormat', {})}")
 
         # Start the voice pipeline
+        # (Greeting will be sent automatically if configured in assistant)
         await self.start_pipeline()
-
-        # Optionally send initial greeting
-        greeting = self.assistant.get('greeting_message')
-        if greeting:
-            logger.info(f"[STREAM_HANDLER] Sending greeting: {greeting}")
-            # TODO: Queue greeting to synthesizer
-            # For now, just log it
-            pass
 
     async def _handle_media(self, message: Dict[str, Any]):
         """Handle incoming audio from Twilio"""
@@ -151,6 +147,25 @@ class StreamProviderHandler:
             await self.pipeline.feed_audio(audio_bytes)
         else:
             logger.warning("[STREAM_HANDLER] Received media event with no payload")
+
+    async def _handle_mark(self, message: Dict[str, Any]):
+        """
+        Handle mark event from Twilio
+        Mark events confirm that audio has been played to the user
+        """
+        if not self.pipeline:
+            logger.warning("[STREAM_HANDLER] Received mark but pipeline not initialized")
+            return
+
+        mark_data = message.get('mark', {})
+        mark_id = mark_data.get('name')
+
+        if mark_id:
+            # Process mark event through pipeline
+            self.pipeline.process_mark_event(mark_id)
+            logger.debug(f"[STREAM_HANDLER] Mark event processed: {mark_id}")
+        else:
+            logger.warning("[STREAM_HANDLER] Received mark event with no name")
 
     async def _handle_stop(self, message: Dict[str, Any]):
         """Handle Twilio stream stop event"""

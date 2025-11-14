@@ -6,10 +6,12 @@ Orchestrates: Twilio Audio → Deepgram → OpenAI LLM → ElevenLabs/Cartesia �
 import asyncio
 import base64
 import json
+import uuid
 from typing import Dict, Any
 from datetime import datetime
 from app.voice_pipeline.helpers.logger_config import configure_logger
 from app.voice_pipeline.helpers.utils import create_ws_data_packet, timestamp_ms
+from app.voice_pipeline.helpers.mark_event_meta_data import MarkEventMetaData
 from app.voice_pipeline.transcriber import DeepgramTranscriber, SarvamTranscriber, GoogleTranscriber
 from app.voice_pipeline.llm import OpenAiLLM
 from app.voice_pipeline.synthesizer import ElevenlabsSynthesizer, CartesiaSynthesizer, OpenAISynthesizer, SarvamSynthesizer
@@ -30,11 +32,12 @@ class VoicePipeline:
     Manages async queues between: Transcriber → LLM → Synthesizer → Twilio
     """
 
-    def __init__(self, assistant_config: Dict[str, Any], api_keys: Dict[str, str], twilio_ws, call_sid=None, db=None, conversation_history=None):
+    def __init__(self, assistant_config: Dict[str, Any], api_keys: Dict[str, str], twilio_ws, call_sid=None, stream_sid=None, db=None, conversation_history=None):
         self.assistant_config = assistant_config
         self.api_keys = api_keys
         self.twilio_ws = twilio_ws
         self.call_sid = call_sid
+        self.stream_sid = stream_sid
         self.db = db
         self.conversation_history = conversation_history if conversation_history is not None else []
 
@@ -48,6 +51,11 @@ class VoicePipeline:
         self.transcriber = None
         self.llm = None
         self.synthesizer = None
+
+        # Mark event tracking for audio playback monitoring
+        self.mark_event_meta_data = MarkEventMetaData()
+        self.is_audio_being_played = False
+        self.response_heard_by_user = ""
 
         # Pipeline control
         self.running = False
@@ -192,10 +200,51 @@ class VoicePipeline:
             logger.info("[VOICE_PIPELINE] ✅ Pipeline started successfully")
             logger.info(f"[VOICE_PIPELINE] Components: Deepgram → OpenAI → {self.assistant_config.get('synthesizer', {}).get('provider', 'ElevenLabs').title()} → Twilio")
 
+            # Send greeting message if configured
+            greeting = self.assistant_config.get('greeting_message')
+            if greeting:
+                await self._send_greeting(greeting)
+
         except Exception as e:
             logger.error(f"[VOICE_PIPELINE] Failed to start pipeline: {e}", exc_info=True)
             await self.stop()
             raise
+
+    async def _send_greeting(self, greeting_text: str):
+        """
+        Send greeting message through the pipeline
+        Synthesizes greeting and sends to Twilio immediately after pipeline starts
+
+        Args:
+            greeting_text: The greeting message to synthesize and play
+        """
+        try:
+            logger.info(f"[VOICE_PIPELINE] 👋 Sending greeting: '{greeting_text}'")
+
+            # Add greeting to conversation history
+            self.conversation_history.append({
+                "role": "assistant",
+                "text": greeting_text
+            })
+
+            # Create metadata for greeting
+            meta_info = {
+                'sequence_id': str(timestamp_ms()),
+                'message_category': 'agent_welcome_message',
+                'is_greeting': True
+            }
+
+            # Queue greeting text to LLM output (which goes to synthesizer)
+            await self.llm_output_queue.put({
+                'text': greeting_text,
+                'meta_info': meta_info,
+                'is_final': True
+            })
+
+            logger.info("[VOICE_PIPELINE] ✅ Greeting queued for synthesis")
+
+        except Exception as e:
+            logger.error(f"[VOICE_PIPELINE] Failed to send greeting: {e}", exc_info=True)
 
     async def _run_transcriber(self):
         """Run transcriber and forward output to LLM"""
@@ -244,8 +293,28 @@ class VoicePipeline:
                 transcript_data = data_packet.get('data', {})
                 if isinstance(transcript_data, dict) and transcript_data.get('type') == 'transcript':
                     transcript = transcript_data.get('content', '').strip()
+                    is_final = transcript_data.get('is_final', True)
+
                     if transcript:
-                        logger.info(f"[VOICE_PIPELINE] 📝 Transcript: {transcript}")
+                        logger.info(f"[VOICE_PIPELINE] 📝 Transcript ({'final' if is_final else 'interim'}): {transcript}")
+
+                        # BARGE-IN DETECTION
+                        # If audio is playing and user speaks, trigger interruption
+                        if self.is_audio_being_played and is_final:
+                            word_count = len(transcript.split())
+                            # Simple threshold: 2+ words = real interruption
+                            # (Avoid false positives from single-word ASR artifacts)
+                            if word_count >= 2:
+                                logger.warning(f"[VOICE_PIPELINE] 🛑 Interruption detected! User said: '{transcript}' while audio was playing")
+                                await self.handle_interruption()
+                            else:
+                                logger.info(f"[VOICE_PIPELINE] Ignoring single-word potential false positive: '{transcript}'")
+                                continue
+
+                        # Only process final transcripts (ignore interim results)
+                        if not is_final:
+                            logger.debug(f"[VOICE_PIPELINE] Skipping interim transcript: {transcript}")
+                            continue
 
                         # Add user message to conversation history
                         self.conversation_history.append({
@@ -323,14 +392,27 @@ class VoicePipeline:
             # Start monitoring task to maintain connection
             monitor_task = asyncio.create_task(self.synthesizer.monitor_connection())
 
+            # Track current synthesis metadata
+            current_meta_info = {}
+            current_text_parts = []
+
             # Start receiver task to get audio from synthesizer and forward to Twilio
             async def synthesizer_receiver():
                 try:
                     async for audio_chunk, text_spoken in self.synthesizer.receiver():
                         if audio_chunk and len(audio_chunk) > 0 and audio_chunk != b'\x00':
-                            # Forward audio to Twilio output queue
-                            await self.synthesizer_output_queue.put(audio_chunk)
-                            logger.debug(f"[VOICE_PIPELINE] 🎵 Audio chunk received ({len(audio_chunk)} bytes)")
+                            # Attach metadata to audio chunk
+                            audio_message = {
+                                'data': audio_chunk,
+                                'meta_info': {
+                                    'text_synthesized': text_spoken or '',
+                                    'sequence_id': current_meta_info.get('sequence_id', ''),
+                                    'is_final_chunk': False  # Will be updated on end_of_llm_stream
+                                }
+                            }
+                            # Forward audio with metadata to Twilio output queue
+                            await self.synthesizer_output_queue.put(audio_message)
+                            logger.debug(f"[VOICE_PIPELINE] 🎵 Audio chunk received ({len(audio_chunk)} bytes, text: '{text_spoken or ''}')")
                 except Exception as e:
                     logger.error(f"[VOICE_PIPELINE] Synthesizer receiver error: {e}", exc_info=True)
 
@@ -344,8 +426,14 @@ class VoicePipeline:
                 meta_info = llm_output.get('meta_info', {})
                 is_final = llm_output.get('is_final', False)
 
+                # Update shared metadata for the receiver task
+                current_meta_info.update(meta_info)
+                if is_final:
+                    current_meta_info['is_final_chunk'] = True
+
                 if text and len(text.strip()) > 0:
                     logger.info(f"[VOICE_PIPELINE] 🔊 Synthesizing: {text[:50]}...")
+                    current_text_parts.append(text)
 
                     try:
                         # Send text to synthesizer with sequence_id
@@ -359,6 +447,11 @@ class VoicePipeline:
                     except Exception as e:
                         logger.error(f"[VOICE_PIPELINE] Synthesizer sender error: {e}", exc_info=True)
 
+                # Reset metadata after final chunk
+                if is_final:
+                    current_meta_info = {}
+                    current_text_parts = []
+
             # Cleanup
             monitor_task.cancel()
             receiver_task.cancel()
@@ -366,25 +459,165 @@ class VoicePipeline:
         except Exception as e:
             logger.error(f"[VOICE_PIPELINE] Synthesizer error: {e}", exc_info=True)
 
+    async def _send_mark_message(self, mark_id: str):
+        """Send mark event to Twilio for audio playback tracking"""
+        if not self.stream_sid:
+            logger.warning("[VOICE_PIPELINE] Missing streamSid, cannot send mark event")
+            return
+
+        mark_message = {
+            'event': 'mark',
+            'streamSid': self.stream_sid,
+            'mark': {
+                'name': mark_id
+            }
+        }
+        await self.twilio_ws.send_text(json.dumps(mark_message))
+        logger.debug(f"[VOICE_PIPELINE] Sent mark event: {mark_id}")
+
     async def _send_audio_to_twilio(self):
-        """Send synthesized audio back to Twilio WebSocket"""
+        """
+        Send synthesized audio back to Twilio WebSocket with mark events
+        Pattern: Pre-Mark → Media → Post-Mark (like Bolna)
+        """
         try:
             logger.info("[VOICE_PIPELINE] Twilio audio sender task started")
-            while self.running:
-                # Get audio from synthesizer
-                audio_chunk = await self.synthesizer_output_queue.get()
+            chunk_counter = 0
 
-                # Send to Twilio as media message
+            while self.running:
+                # Get audio from synthesizer queue
+                # Audio comes with metadata attached by synthesizer
+                message = await self.synthesizer_output_queue.get()
+
+                # Handle different message formats
+                if isinstance(message, bytes):
+                    # Simple byte format (backward compatibility)
+                    audio_chunk = message
+                    meta_info = {'sequence_id': str(timestamp_ms()), 'chunk_id': chunk_counter}
+                    text_synthesized = ""
+                    is_final_chunk = False
+                elif isinstance(message, dict):
+                    # Rich format with metadata
+                    audio_chunk = message.get('data', message.get('audio', b''))
+                    meta_info = message.get('meta_info', {})
+                    text_synthesized = meta_info.get('text_synthesized', '')
+                    is_final_chunk = meta_info.get('is_final_chunk', False)
+                else:
+                    logger.warning(f"[VOICE_PIPELINE] Unknown message format: {type(message)}")
+                    continue
+
+                if not self.stream_sid:
+                    logger.warning("[VOICE_PIPELINE] Missing streamSid, cannot send audio to Twilio")
+                    continue
+
+                if not audio_chunk or len(audio_chunk) == 0:
+                    logger.debug("[VOICE_PIPELINE] Skipping empty audio chunk")
+                    continue
+
+                # Calculate audio duration (mulaw @ 8kHz)
+                duration = len(audio_chunk) / 8000.0
+
+                # Send Pre-Mark
+                pre_mark_id = str(uuid.uuid4())
+                pre_mark_metadata = {
+                    'type': 'pre_mark_message',
+                    'counter': chunk_counter
+                }
+                self.mark_event_meta_data.update_data(pre_mark_id, pre_mark_metadata)
+                await self._send_mark_message(pre_mark_id)
+
+                # Send Media (audio payload)
                 media_message = {
                     'event': 'media',
+                    'streamSid': self.stream_sid,
                     'media': {
                         'payload': base64.b64encode(audio_chunk).decode('utf-8')
                     }
                 }
                 await self.twilio_ws.send_text(json.dumps(media_message))
 
+                # Send Post-Mark with metadata
+                post_mark_id = str(uuid.uuid4())
+                post_mark_metadata = {
+                    'type': 'agent_response',
+                    'text_synthesized': text_synthesized,
+                    'is_final_chunk': is_final_chunk,
+                    'sequence_id': meta_info.get('sequence_id', ''),
+                    'duration': duration,
+                    'counter': chunk_counter
+                }
+                self.mark_event_meta_data.update_data(post_mark_id, post_mark_metadata)
+                await self._send_mark_message(post_mark_id)
+
+                logger.debug(f"[VOICE_PIPELINE] ✅ Sent audio chunk #{chunk_counter} ({len(audio_chunk)} bytes, {duration:.2f}s)")
+                chunk_counter += 1
+
         except Exception as e:
             logger.error(f"[VOICE_PIPELINE] Twilio sender error: {e}", exc_info=True)
+
+    async def handle_interruption(self):
+        """
+        Handle user interruption (barge-in)
+        Sends clear event to Twilio to stop current audio playback
+        """
+        logger.info("[VOICE_PIPELINE] ⚠️ Handling interruption - user spoke while audio was playing")
+
+        if not self.stream_sid:
+            logger.warning("[VOICE_PIPELINE] Missing streamSid, cannot send clear event")
+            return
+
+        # Send clear event to Twilio
+        clear_message = {
+            'event': 'clear',
+            'streamSid': self.stream_sid
+        }
+        await self.twilio_ws.send_text(json.dumps(clear_message))
+        logger.info("[VOICE_PIPELINE] 🧹 Clear event sent to Twilio")
+
+        # Clear mark event metadata
+        self.mark_event_meta_data.clear_data()
+
+        # Reset audio playback state
+        self.is_audio_being_played = False
+
+        # TODO: Implement full interruption handling:
+        # - Cancel ongoing LLM generation
+        # - Flush synthesizer stream
+        # - Update conversation history with partial text heard
+        # For now, this basic clear is sufficient to stop audio playback
+
+    def process_mark_event(self, mark_id: str):
+        """
+        Process mark event received from Twilio
+        Called when Twilio acknowledges audio playback
+
+        Args:
+            mark_id: UUID of the mark event
+        """
+        mark_data = self.mark_event_meta_data.fetch_data(mark_id)
+        if not mark_data:
+            logger.debug(f"[VOICE_PIPELINE] Mark {mark_id} not found (may have been cleared)")
+            return
+
+        mark_type = mark_data.get('type')
+
+        if mark_type == 'pre_mark_message':
+            # Audio chunk started playing
+            self.is_audio_being_played = True
+            logger.debug(f"[VOICE_PIPELINE] Audio playback started (chunk #{mark_data.get('counter')})")
+
+        elif mark_type == 'agent_response':
+            # Audio chunk finished playing
+            text_synthesized = mark_data.get('text_synthesized', '')
+            if text_synthesized:
+                self.response_heard_by_user += text_synthesized
+
+            if mark_data.get('is_final_chunk'):
+                self.is_audio_being_played = False
+                logger.info(f"[VOICE_PIPELINE] ✅ Final audio chunk played, user heard: '{self.response_heard_by_user}'")
+                self.response_heard_by_user = ""  # Reset for next response
+
+            logger.debug(f"[VOICE_PIPELINE] Audio chunk #{mark_data.get('counter')} played ({mark_data.get('duration', 0):.2f}s)")
 
     async def feed_audio(self, audio_chunk: bytes):
         """
