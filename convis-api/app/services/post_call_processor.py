@@ -11,6 +11,10 @@ from typing import Optional, Dict, Any
 from bson import ObjectId
 
 from app.config.database import Database
+from app.utils.assistant_keys import (
+    resolve_assistant_api_key,
+    resolve_user_provider_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,8 +23,8 @@ class PostCallProcessor:
     """Service for post-call AI processing"""
 
     def __init__(self):
-        self.openai_api_key = os.getenv("OPENAI_API_KEY")
-        if not self.openai_api_key:
+        self.env_openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not self.env_openai_api_key:
             logger.warning("OPENAI_API_KEY not set - post-call processing will be limited")
 
     async def download_recording(self, recording_url: str, account_sid: str = None, auth_token: str = None) -> Optional[bytes]:
@@ -59,7 +63,7 @@ class PostCallProcessor:
             logger.error(f"Error downloading recording: {e}")
             return None
 
-    async def transcribe_audio(self, audio_bytes: bytes) -> Optional[str]:
+    async def transcribe_audio(self, audio_bytes: bytes, openai_api_key: Optional[str]) -> Optional[str]:
         """
         Transcribe audio using OpenAI Whisper.
 
@@ -70,7 +74,8 @@ class PostCallProcessor:
             Transcript text or None
         """
         try:
-            if not self.openai_api_key:
+            if not openai_api_key:
+                logger.warning("No OpenAI API key available for transcription")
                 return None
 
             # OpenAI Whisper API
@@ -82,7 +87,7 @@ class PostCallProcessor:
 
                 response = await client.post(
                     "https://api.openai.com/v1/audio/transcriptions",
-                    headers={"Authorization": f"Bearer {self.openai_api_key}"},
+                    headers={"Authorization": f"Bearer {openai_api_key}"},
                     files=files,
                     timeout=120.0
                 )
@@ -97,7 +102,7 @@ class PostCallProcessor:
             logger.error(f"Error transcribing audio: {e}")
             return None
 
-    async def analyze_transcript(self, transcript: str) -> Optional[Dict[str, Any]]:
+    async def analyze_transcript(self, transcript: str, openai_api_key: Optional[str]) -> Optional[Dict[str, Any]]:
         """
         Analyze transcript using GPT to extract sentiment, summary, and appointment info.
 
@@ -108,7 +113,16 @@ class PostCallProcessor:
             Analysis dict with sentiment, summary, and appointment or None
         """
         try:
-            if not self.openai_api_key or not transcript or len(transcript.strip()) < 10:
+            if not openai_api_key:
+                logger.warning("No OpenAI API key available for transcript analysis")
+                return {
+                    "sentiment": "neutral",
+                    "sentiment_score": 0.0,
+                    "summary": "OpenAI key unavailable for analysis.",
+                    "appointment": None
+                }
+
+            if not transcript or len(transcript.strip()) < 10:
                 # Empty or very short transcript
                 return {
                     "sentiment": "neutral",
@@ -148,7 +162,7 @@ Return ONLY the JSON, no other text."""
                 response = await client.post(
                     "https://api.openai.com/v1/chat/completions",
                     headers={
-                        "Authorization": f"Bearer {self.openai_api_key}",
+                        "Authorization": f"Bearer {openai_api_key}",
                         "Content-Type": "application/json"
                     },
                     json={
@@ -217,6 +231,12 @@ Return ONLY the JSON, no other text."""
                 logger.warning(f"No recording URL for call {call_sid}")
                 return
 
+            # Resolve OpenAI API key (per assistant/user)
+            openai_api_key = self._resolve_openai_api_key(call_attempt)
+            if not openai_api_key:
+                logger.error(f"No OpenAI API key available for call {call_sid}")
+                return
+
             # Step 1: Download recording
             logger.info(f"Downloading recording from {recording_url}")
             audio_bytes = await self.download_recording(recording_url)
@@ -226,7 +246,7 @@ Return ONLY the JSON, no other text."""
 
             # Step 2: Transcribe
             logger.info("Transcribing audio...")
-            transcript = await self.transcribe_audio(audio_bytes)
+            transcript = await self.transcribe_audio(audio_bytes, openai_api_key)
             if not transcript:
                 logger.error("Failed to transcribe audio")
                 transcript = ""
@@ -239,7 +259,7 @@ Return ONLY the JSON, no other text."""
 
             # Step 3: Analyze
             logger.info("Analyzing transcript...")
-            analysis = await self.analyze_transcript(transcript)
+            analysis = await self.analyze_transcript(transcript, openai_api_key)
             if not analysis:
                 logger.error("Failed to analyze transcript")
                 return
@@ -331,6 +351,68 @@ Return ONLY the JSON, no other text."""
             logger.error(f"Error in post-call processing: {e}")
             import traceback
             logger.error(traceback.format_exc())
+
+    def _resolve_openai_api_key(self, call_attempt: Dict[str, Any]) -> Optional[str]:
+        """
+        Determine the correct OpenAI API key for a call.
+        Prefers assistant/user stored keys and falls back to env variable.
+        """
+        db = Database.get_db()
+        call_sid = call_attempt.get("call_sid")
+        assistant_id = None
+        user_id = None
+
+        # Try call_logs (covers inbound/outbound direct calls)
+        call_logs_collection = db["call_logs"]
+        call_log = call_logs_collection.find_one({"call_sid": call_sid})
+        if call_log:
+            assistant_id = call_log.get("assistant_id")
+            user_id = call_log.get("user_id")
+
+        # Campaign attempts: fetch campaign for assistant/user references
+        if not user_id or not assistant_id:
+            campaign_id = call_attempt.get("campaign_id")
+            if campaign_id:
+                try:
+                    campaign_obj_id = campaign_id if isinstance(campaign_id, ObjectId) else ObjectId(str(campaign_id))
+                    campaign = db["campaigns"].find_one({"_id": campaign_obj_id})
+                except Exception as exc:
+                    logger.warning(f"Invalid campaign_id on call {call_sid}: {exc}")
+                    campaign = None
+                if campaign:
+                    user_id = user_id or campaign.get("user_id")
+                    assistant_id = assistant_id or campaign.get("assistant_id")
+
+        # Assistant-scoped key takes precedence
+        if assistant_id:
+            try:
+                assistant_obj_id = assistant_id if isinstance(assistant_id, ObjectId) else ObjectId(str(assistant_id))
+                assistant = db["assistants"].find_one({"_id": assistant_obj_id})
+            except Exception as exc:
+                logger.warning(f"Invalid assistant_id on call {call_sid}: {exc}")
+                assistant = None
+
+            if assistant:
+                try:
+                    key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+                    return key
+                except Exception as exc:
+                    detail = getattr(exc, "detail", str(exc))
+                    logger.warning(f"Assistant API key resolution failed for call {call_sid}: {detail}")
+
+        # Fallback to any OpenAI key saved under the user account
+        if user_id:
+            key = resolve_user_provider_key(db, user_id, "openai")
+            if key:
+                return key
+
+        # Last resort: environment variable
+        if self.env_openai_api_key:
+            logger.info(f"Using OPENAI_API_KEY env fallback for call {call_sid}")
+        else:
+            logger.error(f"OPENAI_API_KEY env variable not set. Unable to process call {call_sid}")
+
+        return self.env_openai_api_key
 
     async def transcribe_and_update_call(self, call_sid: str, recording_url: str):
         """

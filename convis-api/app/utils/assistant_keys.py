@@ -1,4 +1,4 @@
-from typing import Tuple, Optional, Dict
+from typing import Tuple, Optional, Dict, Union
 from bson import ObjectId
 from fastapi import HTTPException, status
 from app.utils.encryption import encryption_service
@@ -182,3 +182,65 @@ def resolve_provider_keys(db, assistant: dict, user_id: ObjectId) -> Dict[str, s
             logger.warning(f"⚠ Unknown provider: {provider}, no env var mapping")
 
     return provider_keys
+
+
+def resolve_user_provider_key(
+    db,
+    user_id: Union[str, ObjectId],
+    provider: str,
+    allow_env_fallback: bool = True
+) -> Optional[str]:
+    """
+    Retrieve a decrypted API key for a specific provider stored by the user.
+
+    Args:
+        db: Database connection
+        user_id: User's ObjectId (or string convertible to ObjectId)
+        provider: Provider name (e.g., 'openai')
+        allow_env_fallback: Whether to fall back to env vars if DB lookup fails
+
+    Returns:
+        Decrypted API key string or None if unavailable
+    """
+    try:
+        user_obj_id = user_id if isinstance(user_id, ObjectId) else ObjectId(str(user_id))
+    except Exception:
+        logger.error(f"Invalid user_id provided for provider key lookup: {user_id}")
+        return None
+
+    api_keys_collection = db['api_keys']
+    key_doc = api_keys_collection.find_one({
+        "user_id": user_obj_id,
+        "provider": provider.lower()
+    })
+
+    if key_doc:
+        try:
+            return encryption_service.decrypt(key_doc['key'])
+        except Exception as exc:
+            logger.error(f"Failed to decrypt {provider} key for user {user_id}: {exc}")
+            return None
+
+    if not allow_env_fallback:
+        return None
+
+    env_var_map = {
+        'openai': 'OPENAI_API_KEY',
+        'deepgram': 'DEEPGRAM_API_KEY',
+        'cartesia': 'CARTESIA_API_KEY',
+        'elevenlabs': 'ELEVENLABS_API_KEY',
+        'groq': 'GROQ_API_KEY',
+        'anthropic': 'ANTHROPIC_API_KEY'
+    }
+
+    env_var = env_var_map.get(provider.lower())
+    if env_var:
+        env_value = os.getenv(env_var)
+        if env_value:
+            logger.info(f"Falling back to environment variable {env_var} for provider {provider}")
+            return env_value
+        logger.warning(f"No environment variable configured for provider {provider} ({env_var})")
+    else:
+        logger.warning(f"No environment mapping defined for provider {provider}")
+
+    return None
