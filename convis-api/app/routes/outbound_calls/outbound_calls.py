@@ -684,7 +684,6 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             # Get user ID for API key resolution
             assistant_user_id = assistant.get('user_id')
             if isinstance(assistant_user_id, str):
-                from bson import ObjectId
                 assistant_user_id = ObjectId(assistant_user_id)
 
             # Resolve API keys from database (user's stored keys) with environment fallback

@@ -56,9 +56,10 @@ services:
       # Email Configuration
       - EMAIL_USER=${EMAIL_USER}
       - EMAIL_PASS=${EMAIL_PASS}
-      - SMTP_HOST=${SMTP_HOST}
-      - SMTP_PORT=${SMTP_PORT}
-      - SMTP_USE_SSL=${SMTP_USE_SSL}
+      # SMTP settings use defaults from settings.py if not provided
+      # - SMTP_HOST=${SMTP_HOST}
+      # - SMTP_PORT=${SMTP_PORT}
+      # - SMTP_USE_SSL=${SMTP_USE_SSL}
 
       # URLs
       - FRONTEND_URL=${FRONTEND_URL}
