@@ -151,10 +151,10 @@ class CartesiaSynthesizer(BaseSynthesizer):
 
                 if "data" in data and data["data"]:
                     chunk = base64.b64decode(data["data"])
-                    yield chunk
+                    yield chunk, None
 
                 elif "done" in data and data["done"]:
-                    yield b'\x00'
+                    yield b'\x00', None
                 else:
                     logger.info("No audio data in the response")
             except websockets.exceptions.ConnectionClosed:
@@ -208,7 +208,7 @@ class CartesiaSynthesizer(BaseSynthesizer):
 
     async def generate(self):
         try:
-            async for message in self.receiver():
+            async for message, text_synthesized in self.receiver():
                 if len(self.text_queue) > 0:
                     self.meta_info = self.text_queue.popleft()
                     # Compute first-result latency on first audio chunk
@@ -257,6 +257,9 @@ class CartesiaSynthesizer(BaseSynthesizer):
                             self.current_turn_id = None
                     except Exception:
                         pass
+
+                if text_synthesized:
+                    self.meta_info["text_synthesized"] = text_synthesized
 
                 yield create_ws_data_packet(audio, self.meta_info)
 

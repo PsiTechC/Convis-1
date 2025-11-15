@@ -292,7 +292,10 @@ class CustomProviderHandler:
                 response = await client.post(
                     "https://api.sarvam.ai/speech-to-text",
                     headers={
-                        "api-subscription-key": api_key
+                        "api-subscription-key": api_key,
+                        "api-key": api_key,
+                        "x-api-key": api_key,
+                        "Authorization": f"Bearer {api_key}"
                     },
                     files=files,
                     data=data,
@@ -774,6 +777,9 @@ class CustomProviderHandler:
                     "https://api.sarvam.ai/text-to-speech",
                     headers={
                         "api-subscription-key": api_key,
+                        "api-key": api_key,
+                        "x-api-key": api_key,
+                        "Authorization": f"Bearer {api_key}",
                         "Content-Type": "application/json"
                     },
                     json={

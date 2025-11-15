@@ -51,7 +51,7 @@ class SarvamSynthesizer(BaseSynthesizer):
     ):
         super().__init__(kwargs.get("task_manager_instance", None), stream)
 
-        self.api_key = synthesizer_key or os.environ.get("SARVAM_API_KEY")
+        self.api_key = (synthesizer_key or os.environ.get("SARVAM_API_KEY", "")).strip()
         if not self.api_key:
             raise ValueError("SARVAM_API_KEY not found in environment or parameters")
 
@@ -102,10 +102,8 @@ class SarvamSynthesizer(BaseSynthesizer):
         """
         Send HTTP request to Sarvam TTS API
         """
-        headers = {
-            'api-subscription-key': self.api_key,
-            'Content-Type': 'application/json'
-        }
+        headers = self._build_auth_headers()
+        headers['Content-Type'] = 'application/json'
 
         async with aiohttp.ClientSession() as session:
             if payload is not None:
@@ -245,9 +243,7 @@ class SarvamSynthesizer(BaseSynthesizer):
         """
         try:
             start_time = time.perf_counter()
-            additional_headers = {
-                'api-subscription-key': self.api_key,
-            }
+            additional_headers = self._build_auth_headers()
 
             websocket = await asyncio.wait_for(
                 websockets.connect(self.ws_url, additional_headers=additional_headers),
@@ -440,3 +436,11 @@ class SarvamSynthesizer(BaseSynthesizer):
             await self.websocket_holder["websocket"].close()
         self.websocket_holder["websocket"] = None
         logger.info("[SARVAM_TTS] WebSocket connection closed")
+    def _build_auth_headers(self):
+        """Return headers required for Sarvam authentication."""
+        return {
+            'api-subscription-key': self.api_key,
+            'api-key': self.api_key,
+            'x-api-key': self.api_key,
+            'authorization': f"Bearer {self.api_key}"
+        }

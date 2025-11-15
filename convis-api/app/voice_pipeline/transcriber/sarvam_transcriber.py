@@ -44,7 +44,9 @@ class SarvamTranscriber(BaseTranscriber):
         self.language = language
         self.endpointing = endpointing
 
-        self.api_key = transcriber_key or os.getenv("SARVAM_API_KEY")
+        self.api_key = (transcriber_key or os.getenv("SARVAM_API_KEY", "")).strip()
+        if not self.api_key:
+            raise ValueError("SARVAM_API_KEY not configured for SarvamTranscriber")
         self.api_host = os.getenv("SARVAM_HOST", "api.sarvam.ai")
 
         # Determine endpoint based on model
@@ -235,6 +237,9 @@ class SarvamTranscriber(BaseTranscriber):
         ws_url = self._get_ws_url()
         additional_headers = {
             'api-subscription-key': self.api_key,
+            'api-key': self.api_key,
+            'x-api-key': self.api_key,
+            'authorization': f"Bearer {self.api_key}"
         }
 
         attempt = 0

@@ -176,7 +176,7 @@ def resolve_provider_keys(db, assistant: dict, user_id: ObjectId) -> Dict[str, s
         if env_var:
             env_value = os.getenv(env_var)
             if env_value:
-                provider_keys[provider] = env_value
+                provider_keys[provider] = env_value.strip()
                 logger.info(f"✓ Resolved {provider} key from environment variable {env_var}")
             else:
                 logger.warning(f"⚠ No {provider} API key found (not in DB or env var {env_var})")
@@ -242,7 +242,7 @@ def resolve_user_provider_key(
         env_value = os.getenv(env_var)
         if env_value:
             logger.info(f"Falling back to environment variable {env_var} for provider {provider}")
-            return env_value
+            return env_value.strip()
         logger.warning(f"No environment variable configured for provider {provider} ({env_var})")
     else:
         logger.warning(f"No environment mapping defined for provider {provider}")
