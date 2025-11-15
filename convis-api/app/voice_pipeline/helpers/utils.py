@@ -7,6 +7,9 @@ import json
 import copy
 import io
 import base64
+import numpy as np
+from scipy.io import wavfile
+from scipy.signal import resample as scipy_resample
 from app.voice_pipeline.helpers.logger_config import configure_logger
 from app.voice_pipeline.constants import DEFAULT_LANGUAGE_CODE, PRE_FUNCTION_CALL_MESSAGE, TRANSFERING_CALL_FILLER
 
@@ -48,12 +51,78 @@ def convert_audio_to_wav(audio_bytes, source_format='flac'):
 
 def resample(audio_bytes, target_sample_rate, format="mp3"):
     """
-    Simplified audio resampler - for now returns audio as-is
-    In production, this would resample using torchaudio
+    Resample audio to target sample rate using scipy.
+    Supports WAV format audio resampling for telephony.
+    Falls back to original audio if resampling fails.
+
+    Args:
+        audio_bytes: Audio data as bytes (WAV format)
+        target_sample_rate: Target sample rate (e.g., 8000 for telephony)
+        format: Audio format (currently supports "wav", "mp3" returns as-is)
+
+    Returns:
+        Resampled audio bytes or original if format not WAV or resampling fails
     """
-    logger.info(f"Audio resampling requested to {target_sample_rate}Hz")
-    # Twilio uses 8kHz μ-law, which our providers handle natively
-    return audio_bytes
+    logger.debug(f"Audio resampling requested to {target_sample_rate}Hz (format: {format})")
+
+    # Only resample WAV format
+    if format.lower() != "wav":
+        logger.debug(f"Skipping resample for {format} format - returning original")
+        return audio_bytes
+
+    try:
+        # Read WAV audio using scipy
+        audio_buffer = io.BytesIO(audio_bytes)
+        orig_sample_rate, audio_data = wavfile.read(audio_buffer)
+
+        # Check if resampling is needed
+        if orig_sample_rate == target_sample_rate:
+            logger.debug(f"Audio already at {target_sample_rate}Hz, no resampling needed")
+            return audio_bytes
+
+        # Resample to target sample rate
+        num_samples = int(len(audio_data) * target_sample_rate / orig_sample_rate)
+        resampled_data = scipy_resample(audio_data, num_samples)
+
+        # Convert back to int16 and clip values
+        resampled_data = np.clip(resampled_data, -32768, 32767).astype(np.int16)
+
+        # Save back as WAV
+        output_buffer = io.BytesIO()
+        wavfile.write(output_buffer, target_sample_rate, resampled_data)
+        output_buffer.seek(0)
+        resampled_bytes = output_buffer.read()
+
+        logger.debug(f"Resampled audio from {orig_sample_rate}Hz to {target_sample_rate}Hz")
+        return resampled_bytes
+
+    except Exception as e:
+        logger.warning(f"Error resampling audio: {e}. Returning original audio.")
+        return audio_bytes
+
+
+def wav_bytes_to_pcm(wav_bytes):
+    """
+    Convert WAV bytes to PCM (raw audio data).
+    Extracts the audio data from WAV format by removing the header.
+
+    Args:
+        wav_bytes: WAV format audio bytes
+
+    Returns:
+        PCM audio bytes (raw audio data without header)
+    """
+    try:
+        audio_buffer = io.BytesIO(wav_bytes)
+        sample_rate, audio_data = wavfile.read(audio_buffer)
+
+        # Convert to bytes
+        pcm_bytes = audio_data.tobytes()
+        logger.debug(f"Converted WAV to PCM: {len(wav_bytes)} → {len(pcm_bytes)} bytes")
+        return pcm_bytes
+    except Exception as e:
+        logger.warning(f"Error converting WAV to PCM: {e}. Returning original data.")
+        return wav_bytes
 
 
 def convert_to_request_log(message, meta_info, model, component="transcriber", direction='response', is_cached=False, engine=None, run_id=None):
