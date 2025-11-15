@@ -268,7 +268,7 @@ class VoicePipeline:
 
     async def _save_transcript(self):
         """Save conversation transcript to database in real-time"""
-        if not self.db or not self.call_sid:
+        if self.db is None or not self.call_sid:
             return
 
         try:

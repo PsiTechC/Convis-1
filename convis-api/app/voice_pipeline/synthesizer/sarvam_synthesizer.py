@@ -18,7 +18,12 @@ from collections import deque
 
 from .base_synthesizer import BaseSynthesizer
 from app.voice_pipeline.helpers.logger_config import configure_logger
-from app.voice_pipeline.helpers.utils import create_ws_data_packet, resample, wav_bytes_to_pcm
+from app.voice_pipeline.helpers.utils import (
+    create_ws_data_packet,
+    resample,
+    wav_bytes_to_pcm,
+    pcm16_to_mulaw,
+)
 
 logger = configure_logger(__name__)
 
@@ -337,7 +342,6 @@ class SarvamSynthesizer(BaseSynthesizer):
                         except Exception:
                             pass
 
-                    self.meta_info['format'] = 'wav'
                     audio = message
 
                     if not self.first_chunk_generated:
@@ -373,7 +377,14 @@ class SarvamSynthesizer(BaseSynthesizer):
                     else:
                         # Resample and convert audio
                         resampled_audio = resample(audio, int(self.sampling_rate), format="wav")
-                        audio = wav_bytes_to_pcm(resampled_audio)
+                        pcm_audio = wav_bytes_to_pcm(resampled_audio)
+
+                        if self.use_mulaw:
+                            audio = pcm16_to_mulaw(pcm_audio)
+                            self.meta_info['format'] = 'mulaw'
+                        else:
+                            audio = pcm_audio
+                            self.meta_info['format'] = 'pcm'
 
                     self.meta_info["mark_id"] = str(uuid.uuid4())
                     yield create_ws_data_packet(audio, self.meta_info)

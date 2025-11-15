@@ -11,7 +11,13 @@ from openai import AsyncOpenAI
 
 from .base_synthesizer import BaseSynthesizer
 from app.voice_pipeline.helpers.logger_config import configure_logger
-from app.voice_pipeline.helpers.utils import convert_audio_to_wav, create_ws_data_packet, resample
+from app.voice_pipeline.helpers.utils import (
+    convert_audio_to_wav,
+    create_ws_data_packet,
+    resample,
+    wav_bytes_to_pcm,
+    pcm16_to_mulaw,
+)
 
 logger = configure_logger(__name__)
 
@@ -188,7 +194,16 @@ class OpenAISynthesizer(BaseSynthesizer):
                         try:
                             wav_audio = convert_audio_to_wav(chunk, 'mp3')
                             resampled_audio = resample(wav_audio, self.sample_rate, format="wav")
-                            yield create_ws_data_packet(resampled_audio, meta_info)
+                            pcm_audio = wav_bytes_to_pcm(resampled_audio)
+
+                            if self.use_mulaw:
+                                audio_bytes = pcm16_to_mulaw(pcm_audio)
+                                meta_info["format"] = "mulaw"
+                            else:
+                                audio_bytes = pcm_audio
+                                meta_info["format"] = "pcm"
+
+                            yield create_ws_data_packet(audio_bytes, meta_info)
                         except Exception as e:
                             logger.error(f"[OPENAI_TTS] Audio conversion error: {e}")
                             continue
@@ -216,7 +231,16 @@ class OpenAISynthesizer(BaseSynthesizer):
                     try:
                         wav_audio = convert_audio_to_wav(audio, 'mp3')
                         resampled_audio = resample(wav_audio, self.sample_rate, format="wav")
-                        yield create_ws_data_packet(resampled_audio, meta_info)
+                        pcm_audio = wav_bytes_to_pcm(resampled_audio)
+
+                        if self.use_mulaw:
+                            audio_bytes = pcm16_to_mulaw(pcm_audio)
+                            meta_info["format"] = "mulaw"
+                        else:
+                            audio_bytes = pcm_audio
+                            meta_info["format"] = "pcm"
+
+                        yield create_ws_data_packet(audio_bytes, meta_info)
                     except Exception as e:
                         logger.error(f"[OPENAI_TTS] Audio conversion error: {e}")
 

@@ -7,6 +7,7 @@ import json
 import copy
 import io
 import base64
+import audioop
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import resample as scipy_resample
@@ -123,6 +124,18 @@ def wav_bytes_to_pcm(wav_bytes):
     except Exception as e:
         logger.warning(f"Error converting WAV to PCM: {e}. Returning original data.")
         return wav_bytes
+
+
+def pcm16_to_mulaw(pcm_bytes):
+    """
+    Convert 16-bit PCM audio bytes to μ-law (G.711) 8-bit encoding.
+    Returns original audio if conversion fails.
+    """
+    try:
+        return audioop.lin2ulaw(pcm_bytes, 2)
+    except Exception as e:
+        logger.warning(f"Error converting PCM to μ-law: {e}. Returning original PCM data.")
+        return pcm_bytes
 
 
 def convert_to_request_log(message, meta_info, model, component="transcriber", direction='response', is_cached=False, engine=None, run_id=None):
