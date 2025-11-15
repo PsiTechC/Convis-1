@@ -378,7 +378,7 @@ async def check_phone_number(user_id: str, phone_number: str):
 
 @router.post("/make-call/{assistant_id}", response_model=OutboundCallResponse, status_code=status.HTTP_200_OK)
 @limiter.limit(get_rate_limit("outbound_call"))
-async def make_outbound_call(req: Request, assistant_id: str, request: OutboundCallRequest):
+async def make_outbound_call(request: Request, assistant_id: str, call_request: OutboundCallRequest):
     """
     Initiate an outbound call using the specified AI assistant.
 
@@ -457,7 +457,7 @@ async def make_outbound_call(req: Request, assistant_id: str, request: OutboundC
         twilio_client = Client(account_sid, auth_token)
 
         # Validate phone number format (basic E.164 check)
-        phone_number = request.phone_number.strip()
+        phone_number = call_request.phone_number.strip()
         if not re.match(r'^\+[1-9]\d{1,14}$', phone_number):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
