@@ -78,25 +78,29 @@ class PostCallProcessor:
                 logger.warning("No OpenAI API key available for transcription")
                 return None
 
-            # OpenAI Whisper API
+            # OpenAI Whisper API expects multipart/form-data with a filename and mimetype.
+            # Twilio recordings are WAV by default; label accordingly to avoid 400 errors.
             async with httpx.AsyncClient() as client:
-                files = {
-                    "file": ("recording.mp3", audio_bytes, "audio/mpeg"),
-                    "model": (None, "whisper-1")
-                }
-
                 response = await client.post(
                     "https://api.openai.com/v1/audio/transcriptions",
                     headers={"Authorization": f"Bearer {openai_api_key}"},
-                    files=files,
+                    data={"model": "whisper-1"},
+                    files={"file": ("recording.wav", audio_bytes, "audio/wav")},
                     timeout=120.0
+                )
+
+            if response.status_code >= 400:
+                logger.error(
+                    "OpenAI transcription failed (%s): %s",
+                    response.status_code,
+                    response.text
                 )
                 response.raise_for_status()
 
-                result = response.json()
-                transcript = result.get("text", "")
-                logger.info(f"Transcription completed: {len(transcript)} characters")
-                return transcript
+            result = response.json()
+            transcript = result.get("text", "")
+            logger.info(f"Transcription completed: {len(transcript)} characters")
+            return transcript
 
         except Exception as e:
             logger.error(f"Error transcribing audio: {e}")
@@ -355,12 +359,16 @@ Return ONLY the JSON, no other text."""
     def _resolve_openai_api_key(self, call_attempt: Dict[str, Any]) -> Optional[str]:
         """
         Determine the correct OpenAI API key for a call.
-        Prefers assistant/user stored keys and falls back to env variable.
+        Prefers environment-injected keys (deployment-managed) and falls back to persisted keys.
         """
         db = Database.get_db()
         call_sid = call_attempt.get("call_sid")
         assistant_id = None
         user_id = None
+
+        # Deployment-first: use env var if present to keep runtime deterministic
+        if self.env_openai_api_key:
+            return self.env_openai_api_key
 
         # Try call_logs (covers inbound/outbound direct calls)
         call_logs_collection = db["call_logs"]

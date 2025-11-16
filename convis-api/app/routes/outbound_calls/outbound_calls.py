@@ -14,7 +14,7 @@ from bson import ObjectId
 from app.middleware.rate_limiter import limiter, get_rate_limit
 from app.config.database import Database
 from app.config.settings import settings
-from app.utils.assistant_keys import resolve_assistant_api_key
+from app.utils.assistant_keys import resolve_assistant_api_key, resolve_env_provider_keys
 from app.utils.twilio_helpers import decrypt_twilio_credentials
 from app.utils import conversational_rag
 from app.utils.openai_session import (
@@ -464,10 +464,43 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
                 detail="Invalid phone number format. Use E.164 format (e.g., +1234567890)"
             )
 
-        try:
-            openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
-        except HTTPException as exc:
-            raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+        # ========== PREFLIGHT VALIDATION: Check provider configuration ==========
+        # Determine which path this call will use based on provider configuration
+        asr_provider = assistant.get('asr_provider', 'openai')
+        tts_provider = assistant.get('tts_provider', 'openai')
+        llm_provider = assistant.get('llm_provider', 'openai')
+
+        use_openai_realtime = (
+            asr_provider == 'openai' and
+            tts_provider == 'openai' and
+            (llm_provider == 'openai' or llm_provider == 'openai-realtime')
+        )
+
+        logger.info(f"[PREFLIGHT] Provider Config: ASR={asr_provider}, TTS={tts_provider}, LLM={llm_provider}")
+        logger.info(f"[PREFLIGHT] Will use OpenAI Realtime API: {use_openai_realtime}")
+
+        # Validate that required API keys exist BEFORE creating the Twilio call
+        if use_openai_realtime:
+            # OpenAI Realtime path: MUST have OPENAI_API_KEY in environment
+            openai_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+            if not openai_key:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="OpenAI Realtime API requires OPENAI_API_KEY environment variable. "
+                           "Please ensure it is set in your deployment configuration."
+                )
+            logger.info("[PREFLIGHT] ✓ OpenAI API key validated from environment")
+        else:
+            # Custom Provider path: Validate all provider keys exist in environment
+            try:
+                provider_keys = resolve_env_provider_keys(asr_provider, tts_provider, llm_provider)
+                logger.info(f"[PREFLIGHT] ✓ Custom provider keys validated: {list(provider_keys.keys())}")
+            except HTTPException as exc:
+                # Re-raise with clear context
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Custom provider validation failed: {exc.detail}"
+                )
 
         # Get the phone number to call FROM (the one assigned to this assistant)
         phone_numbers_collection = db['phone_numbers']
@@ -525,19 +558,21 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
         logger.info(f"Calling {phone_number} from {phone_number_from}")
         logger.info(f"WebSocket URL: wss://{domain}/api/outbound-calls/media-stream/{assistant_id}")
 
-        # Make the call with recording enabled and status callbacks
+        # Make the call with status callbacks
+        # NOTE: record=True is REMOVED because it conflicts with inline twiml parameter
+        # Media Streams are automatically recorded by Twilio, accessible via Recordings API
         call = twilio_client.calls.create(
             from_=phone_number_from,
             to=phone_number,
             twiml=outbound_twiml,
-            record=True,  # Enable call recording
+            # record=True removed - conflicts with inline TwiML, causing Twilio to ignore <Stream>
             recording_status_callback=f'{settings.api_base_url}/api/outbound-calls/recording-status',
             recording_status_callback_method='POST',
             recording_status_callback_event=['completed'],  # Get callback when recording is complete
             status_callback=f'{settings.api_base_url}/api/outbound-calls/status-callback',
             status_callback_method='POST',
             status_callback_event=['initiated', 'ringing', 'answered', 'completed']
-            # Note: Transcription will be requested via Recordings API in the recording-status callback
+            # Note: Media Stream calls are automatically recorded. Transcription requested in recording-status callback
         )
 
         logger.info(f"Call created with SID: {call.sid}")
@@ -670,28 +705,33 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
 
         logger.info(f"[OUTBOUND] Voice mode: {voice_mode}")
 
-        # Resolve OpenAI API key for the assistant (needed for both modes)
-        try:
-            openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
-        except HTTPException as exc:
-            logger.error(f"Failed to resolve OpenAI API key: {exc.detail}")
-            await websocket.close(code=1008, reason=f"API key configuration error: {exc.detail}")
-            return
+        # Resolve OpenAI API key for the assistant (env-first)
+        openai_api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            try:
+                openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+            except HTTPException as exc:
+                logger.error(f"Failed to resolve OpenAI API key: {exc.detail}")
+                await websocket.close(code=1008, reason=f"API key configuration error: {exc.detail}")
+                return
 
         # Route to appropriate handler based on voice mode
         if voice_mode == 'custom':
             # Use advanced streaming voice pipeline (WebSocket-based ASR -> LLM -> TTS)
             logger.info("[OUTBOUND] Using advanced streaming pipeline for custom provider mode")
             from app.voice_pipeline.pipeline import StreamProviderHandler
-            from app.utils.assistant_keys import resolve_provider_keys
 
             # Get user ID for API key resolution
             assistant_user_id = assistant.get('user_id')
             if isinstance(assistant_user_id, str):
                 assistant_user_id = ObjectId(assistant_user_id)
 
-            # Resolve API keys from database (user's stored keys) with environment fallback
-            api_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+            # Resolve API keys from environment only (deployment supplies them)
+            api_keys = resolve_env_provider_keys(
+                assistant.get('asr_provider', 'openai'),
+                assistant.get('tts_provider', 'openai'),
+                assistant.get('llm_provider', 'openai'),
+            )
 
             logger.info(f"[OUTBOUND] Resolved API keys for providers: {list(api_keys.keys())}")
 
@@ -1214,10 +1254,8 @@ IMPORTANT:
         if not use_openai_realtime:
             logger.info(f"[TWILIO] Routing to custom provider handler for assistant {assistant_id}")
             from app.routes.frejun.custom_provider_stream import CustomProviderStreamHandler
-            from app.utils.assistant_keys import resolve_provider_keys
-
-            # Resolve all necessary API keys
-            provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+            # Resolve all necessary API keys strictly from environment
+            provider_keys = resolve_env_provider_keys(asr_provider, tts_provider, llm_provider)
 
             # Ensure we have a key for the configured LLM provider
             llm_api_key = provider_keys.get(llm_provider)
@@ -1277,36 +1315,45 @@ IMPORTANT:
                 await websocket.close()
             return
 
-        # OpenAI Realtime API path (existing code)
+        # ========== OpenAI Realtime API Path (Isolated) ==========
+        logger.info("[REALTIME] Entering OpenAI Realtime API path")
+
         # OpenAI Realtime API requires temperature >= 0.6
         if temperature < 0.6:
-            logger.warning(f"Temperature {temperature} is below OpenAI minimum. Adjusting to 0.6")
+            logger.warning(f"[REALTIME] Temperature {temperature} is below OpenAI minimum. Adjusting to 0.6")
             temperature = 0.6
 
-        try:
-            openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
-        except HTTPException as exc:
-            logger.error(f"Failed to resolve API key for assistant {assistant_id}: {exc.detail}")
-            await websocket.close(code=1008, reason=exc.detail)
+        # Resolve OpenAI API key STRICTLY from environment (no DB fallback)
+        openai_api_key = settings.openai_api_key or os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            logger.error("[REALTIME] OPENAI_API_KEY not found in environment")
+            await websocket.close(
+                code=1008,
+                reason="OpenAI Realtime API requires OPENAI_API_KEY environment variable"
+            )
             return
+
+        logger.info("[REALTIME] ✓ OpenAI API key resolved from environment")
 
         # Get the LLM model to use for OpenAI Realtime API
         llm_model = assistant.get('llm_model', 'gpt-4o-mini-realtime-preview')
-        logger.info(f"[TWILIO] Using OpenAI Realtime API - Model: {llm_model}, Voice: {voice}, Temperature: {temperature}")
+        logger.info(f"[REALTIME] Configuration - Model: {llm_model}, Voice: {voice}, Temperature: {temperature}")
 
-        # Connect to OpenAI WebSocket using the assistant's API key and selected model
-        # Increased timeout to handle connection delays
-        async with websockets.connect(
-            f"wss://api.openai.com/v1/realtime?model={llm_model}&temperature={temperature}",
-            additional_headers={
-                "Authorization": f"Bearer {openai_api_key}",
-                "OpenAI-Beta": "realtime=v1"
-            },
-            open_timeout=30,  # Increased from default 10s to 30s
-            close_timeout=10,
-            ping_interval=20,
-            ping_timeout=20
-        ) as openai_ws:
+        # Connect to OpenAI WebSocket with proper error handling
+        try:
+            logger.info(f"[REALTIME] Connecting to OpenAI WebSocket - Model: {llm_model}")
+            async with websockets.connect(
+                f"wss://api.openai.com/v1/realtime?model={llm_model}&temperature={temperature}",
+                additional_headers={
+                    "Authorization": f"Bearer {openai_api_key}",
+                    "OpenAI-Beta": "realtime=v1"
+                },
+                open_timeout=30,
+                close_timeout=10,
+                ping_interval=20,
+                ping_timeout=20
+            ) as openai_ws:
+                logger.info("[REALTIME] ✓ Successfully connected to OpenAI WebSocket")
             # Initialize session with interruption handling enabled
             # NOTE: send_session_update now calls send_initial_conversation_item internally
             # This matches the original pattern from CallTack_IN_out/outbound_call.py
@@ -1689,7 +1736,30 @@ IMPORTANT:
                     import traceback
                     logger.error(traceback.format_exc())
 
-            await asyncio.gather(receive_from_twilio(), send_to_twilio())
+                await asyncio.gather(receive_from_twilio(), send_to_twilio())
+
+        except websockets.exceptions.InvalidStatusCode as e:
+            # OpenAI rejected the connection (401, 403, etc.)
+            logger.error(f"[REALTIME] OpenAI WebSocket connection failed with status {e.status_code}: {e}")
+            error_detail = f"OpenAI connection rejected (HTTP {e.status_code})"
+            if e.status_code == 401:
+                error_detail = "Invalid OpenAI API key"
+            elif e.status_code == 403:
+                error_detail = "OpenAI API key does not have Realtime API access"
+            await websocket.close(code=1008, reason=error_detail)
+            return
+        except websockets.exceptions.WebSocketException as e:
+            # Other websocket errors
+            logger.error(f"[REALTIME] OpenAI WebSocket error: {e}")
+            await websocket.close(code=1011, reason=f"OpenAI WebSocket error: {str(e)}")
+            return
+        except Exception as e:
+            # Unexpected errors during OpenAI connection
+            logger.error(f"[REALTIME] Unexpected error connecting to OpenAI: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            await websocket.close(code=1011, reason="Failed to connect to OpenAI Realtime API")
+            return
 
     except WebSocketDisconnect:
         logger.info(f"Client disconnected normally from outbound call for assistant: {assistant_id}")

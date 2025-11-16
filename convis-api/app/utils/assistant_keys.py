@@ -7,6 +7,10 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+# NOTE: Deployments now supply provider API keys via environment variables.
+# The new helper resolve_env_provider_keys below lets callers enforce env-only
+# resolution (no DB lookups) to keep the voice pipelines deterministic.
+
 
 def resolve_assistant_api_key(db, assistant: dict, required_provider: Optional[str] = "openai") -> Tuple[str, str]:
     """
@@ -248,3 +252,50 @@ def resolve_user_provider_key(
         logger.warning(f"No environment mapping defined for provider {provider}")
 
     return None
+
+
+def resolve_env_provider_keys(
+    asr_provider: str,
+    tts_provider: str,
+    llm_provider: str
+) -> Dict[str, str]:
+    """
+    Resolve required provider keys strictly from environment variables.
+    This bypasses any database lookup to align with deployments where
+    keys are injected via container envs only.
+    """
+    provider_env_map = {
+        'openai': 'OPENAI_API_KEY',
+        'openai-realtime': 'OPENAI_API_KEY',
+        'deepgram': 'DEEPGRAM_API_KEY',
+        'sarvam': 'SARVAM_API_KEY',
+        'google': 'GOOGLE_API_KEY',
+        'cartesia': 'CARTESIA_API_KEY',
+        'elevenlabs': 'ELEVENLABS_API_KEY',
+        'groq': 'GROQ_API_KEY',
+        'anthropic': 'ANTHROPIC_API_KEY'
+    }
+
+    needed = {asr_provider.lower(), tts_provider.lower(), llm_provider.lower()}
+    keys: Dict[str, str] = {}
+    missing = []
+
+    for provider in needed:
+        env_var = provider_env_map.get(provider)
+        if not env_var:
+            missing.append(provider)
+            continue
+        value = os.getenv(env_var)
+        if value:
+            keys[provider] = value.strip()
+        else:
+            missing.append(provider)
+
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Missing API keys for providers: {', '.join(sorted(missing))}. "
+                   "Ensure they are set via environment variables."
+        )
+
+    return keys
