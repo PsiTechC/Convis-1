@@ -813,10 +813,15 @@ async def get_active_calls(user_id: str):
         except Exception:
             return {"active_numbers": []}
 
-        # Find calls in active status (in-progress, ringing, queued, initiated)
+        active_statuses = ["in-progress", "ringing", "queued", "initiated"]
+
+        # Find calls in active status (support both legacy `call_status` and new `status` fields)
         active_calls = list(call_logs_collection.find({
             "user_id": user_obj_id,
-            "call_status": {"$in": ["in-progress", "ringing", "queued", "initiated"]}
+            "$or": [
+                {"call_status": {"$in": active_statuses}},
+                {"status": {"$in": active_statuses}}
+            ]
         }))
 
         # Extract unique phone numbers from both incoming and outgoing

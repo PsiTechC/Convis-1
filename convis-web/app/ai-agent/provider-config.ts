@@ -13,37 +13,32 @@ export const ENHANCED_TTS_VOICES = {
     { value: 'nova', label: 'Nova - Bright, engaging female', gender: 'female', accent: 'American' }
   ],
   elevenlabs: [
-    // Female voices - American
-    { value: 'rachel', label: 'Rachel - Young female American', gender: 'female', accent: 'American' },
-    { value: 'domi', label: 'Domi - Strong female American', gender: 'female', accent: 'American' },
-    { value: 'bella', label: 'Bella - Soft young American female', gender: 'female', accent: 'American' },
-    { value: 'elli', label: 'Elli - Emotional young female', gender: 'female', accent: 'American' },
-    { value: 'emily', label: 'Emily - Calm American female', gender: 'female', accent: 'American' },
-    { value: 'grace', label: 'Grace - Southern American female', gender: 'female', accent: 'American' },
-    { value: 'sarah', label: 'Sarah - Soft young female', gender: 'female', accent: 'American' },
+    // Female voices - American (using actual ElevenLabs voice_ids)
+    { value: 'EXAVITQu4vr4xnSDxMaL', label: 'Sarah - American Female (Young)', gender: 'female', accent: 'American' },
+    { value: 'FGY2WhTYpPnrIDTdsKH5', label: 'Laura - American Female (Young)', gender: 'female', accent: 'American' },
+    { value: 'cgSgspJ2msm6clMCkdW9', label: 'Jessica - American Female (Young)', gender: 'female', accent: 'American' },
+    { value: 'XrExE9yKIg1WjnnlVkGX', label: 'Matilda - American Female (Middle-aged)', gender: 'female', accent: 'American' },
+    { value: 'pFZP5JQG7iQjIQuC4Bku', label: 'Lily - Female (Middle-aged)', gender: 'female', accent: 'American' },
     // Female voices - British
-    { value: 'charlotte', label: 'Charlotte - English female', gender: 'female', accent: 'British' },
-    { value: 'alice', label: 'Alice - British female', gender: 'female', accent: 'British' },
-    { value: 'matilda', label: 'Matilda - Warm British female', gender: 'female', accent: 'British' },
+    { value: 'Xb7hH8MSUJpSbSDYk0k2', label: 'Alice - British Female (Middle-aged)', gender: 'female', accent: 'British' },
     // Male voices - American
-    { value: 'antoni', label: 'Antoni - Well-rounded male', gender: 'male', accent: 'American' },
-    { value: 'josh', label: 'Josh - Deep American male', gender: 'male', accent: 'American' },
-    { value: 'arnold', label: 'Arnold - Crisp American male', gender: 'male', accent: 'American' },
-    { value: 'adam', label: 'Adam - Deep American male', gender: 'male', accent: 'American' },
-    { value: 'sam', label: 'Sam - Young American male', gender: 'male', accent: 'American' },
-    { value: 'ethan', label: 'Ethan - American male', gender: 'male', accent: 'American' },
-    { value: 'michael', label: 'Michael - American male', gender: 'male', accent: 'American' },
-    { value: 'thomas', label: 'Thomas - Young American male', gender: 'male', accent: 'American' },
+    { value: '2EiwWnXFnvU5JabPnv8n', label: 'Clyde - American Male (Middle-aged)', gender: 'male', accent: 'American' },
+    { value: 'CwhRBWXzGAHq8TQ4Fs17', label: 'Roger - American Male (Middle-aged)', gender: 'male', accent: 'American' },
+    { value: 'TX3LPaxmHKxFdv7VOQHJ', label: 'Liam - American Male (Young)', gender: 'male', accent: 'American' },
+    { value: 'SOYHLrjzK2X1ezoPC6cr', label: 'Harry - American Male (Young)', gender: 'male', accent: 'American' },
+    { value: 'bIHbv24MWmeRgasZH58o', label: 'Will - American Male (Young)', gender: 'male', accent: 'American' },
+    { value: 'cjVigY5qzO86Huf0OWal', label: 'Eric - American Male (Middle-aged)', gender: 'male', accent: 'American' },
+    { value: 'iP95p4xoKVk53GoZ742B', label: 'Chris - American Male (Middle-aged)', gender: 'male', accent: 'American' },
+    { value: 'nPczCjzI2devNBz1zQrb', label: 'Brian - American Male (Middle-aged)', gender: 'male', accent: 'American' },
+    { value: 'pqHfZKP75CvOlQylNhV4', label: 'Bill - American Male (Old)', gender: 'male', accent: 'American' },
     // Male voices - British
-    { value: 'callum', label: 'Callum - Hoarse British male', gender: 'male', accent: 'British' },
-    { value: 'daniel', label: 'Daniel - Deep British male', gender: 'male', accent: 'British' },
-    { value: 'george', label: 'George - Warm British male', gender: 'male', accent: 'British' },
-    { value: 'harry', label: 'Harry - Anxious young male', gender: 'male', accent: 'British' },
-    { value: 'joseph', label: 'Joseph - British male', gender: 'male', accent: 'British' },
+    { value: 'JBFqnCBsd6RMkjVDRZzb', label: 'George - British Male (Middle-aged)', gender: 'male', accent: 'British' },
+    { value: 'onwK4e9ZLuTAKqWW03F9', label: 'Daniel - British Male (Middle-aged)', gender: 'male', accent: 'British' },
+    { value: 'N2lVS1w4EtoT3dr4eOWO', label: 'Callum - Male (Middle-aged)', gender: 'male', accent: 'British' },
     // Male voices - Other
-    { value: 'charlie', label: 'Charlie - Australian male', gender: 'male', accent: 'Australian' },
-    { value: 'fin', label: 'Fin - Irish male', gender: 'male', accent: 'Irish' },
-    { value: 'james', label: 'James - Australian male', gender: 'male', accent: 'Australian' }
+    { value: 'IKne3meq5aSn9XLyUdCD', label: 'Charlie - Australian Male (Young)', gender: 'male', accent: 'Australian' },
+    // Neutral voices
+    { value: 'SAz9YHcvj6GT2YYXdXww', label: 'River - American Neutral (Middle-aged)', gender: 'neutral', accent: 'American' }
   ],
   openai: [
     { value: 'alloy', label: 'Alloy - Neutral, balanced', gender: 'neutral', accent: 'American' },
@@ -54,16 +49,38 @@ export const ENHANCED_TTS_VOICES = {
     { value: 'shimmer', label: 'Shimmer - Soft female', gender: 'female', accent: 'American' }
   ],
   sarvam: [
-    { value: 'Manisha', label: 'Manisha - Female Hindi/English', gender: 'female', accent: 'Indian' },
-    { value: 'Hitesh', label: 'Hitesh - Male Hindi/English', gender: 'male', accent: 'Indian' },
-    { value: 'Abhilash', label: 'Abhilash - Male Hindi', gender: 'male', accent: 'Indian' },
-    { value: 'Karun', label: 'Karun - Male Hindi', gender: 'male', accent: 'Indian' },
-    { value: 'Anushka', label: 'Anushka - Female Hindi', gender: 'female', accent: 'Indian' },
-    { value: 'Vidya', label: 'Vidya - Female Hindi', gender: 'female', accent: 'Indian' },
-    { value: 'Arya', label: 'Arya - Female Hindi', gender: 'female', accent: 'Indian' },
-    { value: 'Priya', label: 'Priya - Female Hindi', gender: 'female', accent: 'Indian' },
-    { value: 'Ravi', label: 'Ravi - Male Hindi', gender: 'male', accent: 'Indian' },
-    { value: 'Sneha', label: 'Sneha - Female Hindi', gender: 'female', accent: 'Indian' }
+    // Female voices (lowercase required by Sarvam API)
+    { value: 'manisha', label: 'Manisha - Female Hindi/English', gender: 'female', accent: 'Indian' },
+    { value: 'anushka', label: 'Anushka - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'vidya', label: 'Vidya - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'arya', label: 'Arya - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'priya', label: 'Priya - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'isha', label: 'Isha - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'ritu', label: 'Ritu - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'sakshi', label: 'Sakshi - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'neha', label: 'Neha - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'sneha', label: 'Sneha - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'pooja', label: 'Pooja - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'simran', label: 'Simran - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'kavya', label: 'Kavya - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'anjali', label: 'Anjali - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'sunita', label: 'Sunita - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'tara', label: 'Tara - Female Hindi', gender: 'female', accent: 'Indian' },
+    { value: 'kriti', label: 'Kriti - Female Hindi', gender: 'female', accent: 'Indian' },
+    // Male voices (lowercase required by Sarvam API)
+    { value: 'abhilash', label: 'Abhilash - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'hitesh', label: 'Hitesh - Male Hindi/English', gender: 'male', accent: 'Indian' },
+    { value: 'karun', label: 'Karun - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'aditya', label: 'Aditya - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'chirag', label: 'Chirag - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'harsh', label: 'Harsh - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'rahul', label: 'Rahul - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'rohan', label: 'Rohan - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'kiran', label: 'Kiran - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'vikram', label: 'Vikram - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'rajesh', label: 'Rajesh - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'anirudh', label: 'Anirudh - Male Hindi', gender: 'male', accent: 'Indian' },
+    { value: 'ishaan', label: 'Ishaan - Male Hindi', gender: 'male', accent: 'Indian' }
   ],
 };
 
@@ -104,8 +121,8 @@ export const ENHANCED_TTS_MODELS = {
     { value: 'tts-1-hd', label: 'TTS-1-HD (High Quality)', cost: 0.030, latency: 300, costPerChar: 0.000030 }
   ],
   sarvam: [
-    { value: 'bulbul:v1', label: 'Bulbul V1 (Hindi/Indian)', cost: 0.004, latency: 120, costPerChar: 0.000004 },
-    { value: 'bulbul:v2', label: 'Bulbul V2 (Better Quality)', cost: 0.006, latency: 130, costPerChar: 0.000006 }
+    { value: 'bulbul:v2', label: 'Bulbul V2 (Hindi/Indian - Recommended)', cost: 0.006, latency: 130, costPerChar: 0.000006 },
+    { value: 'bulbul:v3-beta', label: 'Bulbul V3 Beta (Latest, Experimental)', cost: 0.008, latency: 140, costPerChar: 0.000008 }
   ]
 };
 

@@ -464,17 +464,6 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
                 detail="Invalid phone number format. Use E.164 format (e.g., +1234567890)"
             )
 
-        # Check if number is allowed to be called
-        is_allowed = await check_number_allowed(twilio_client, phone_number)
-        if not is_allowed:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    f"The number {phone_number} is not recognized as a valid outgoing number or caller ID. "
-                    "Please verify the number in your Twilio console first."
-                )
-            )
-
         try:
             openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
         except HTTPException as exc:
@@ -497,6 +486,17 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
         phone_number_from = phone_number_doc["phone_number"]
         logger.info(f"Using assigned phone number: {phone_number_from}")
 
+        # Check if the FROM number is verified/owned (validation should be on source, not destination)
+        is_allowed = await check_number_allowed(twilio_client, phone_number_from)
+        if not is_allowed:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    f"The number {phone_number_from} is not recognized as a valid outgoing caller ID. "
+                    "Please verify the number in your Twilio console first."
+                )
+            )
+
         # Ensure API_BASE_URL is configured
         if not settings.api_base_url:
             raise HTTPException(
@@ -514,7 +514,8 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
             f'<?xml version="1.0" encoding="UTF-8"?>'
             f'<Response>'
             f'<Connect>'
-            f'<Stream url="wss://{domain}/api/outbound-calls/media-stream/{assistant_id}">'
+            f'<Stream url="wss://{domain}/api/outbound-calls/media-stream/{assistant_id}" '
+            f'track="both_tracks" bidirectional="true">'
             f'<Parameter name="to_number" value="{phone_number}" />'
             f'</Stream>'
             f'</Connect>'
@@ -524,7 +525,7 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
         logger.info(f"Calling {phone_number} from {phone_number_from}")
         logger.info(f"WebSocket URL: wss://{domain}/api/outbound-calls/media-stream/{assistant_id}")
 
-        # Make the call with recording enabled
+        # Make the call with recording enabled and status callbacks
         call = twilio_client.calls.create(
             from_=phone_number_from,
             to=phone_number,
@@ -532,7 +533,10 @@ async def make_outbound_call(request: Request, assistant_id: str, call_request: 
             record=True,  # Enable call recording
             recording_status_callback=f'{settings.api_base_url}/api/outbound-calls/recording-status',
             recording_status_callback_method='POST',
-            recording_status_callback_event=['completed']  # Get callback when recording is complete
+            recording_status_callback_event=['completed'],  # Get callback when recording is complete
+            status_callback=f'{settings.api_base_url}/api/outbound-calls/status-callback',
+            status_callback_method='POST',
+            status_callback_event=['initiated', 'ringing', 'answered', 'completed']
             # Note: Transcription will be requested via Recordings API in the recording-status callback
         )
 
@@ -706,11 +710,19 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
                 async for message in websocket.iter_text():
                     data = json.loads(message)
                     await handler.handle_twilio_message(data)
+            except WebSocketDisconnect:
+                logger.info("[STREAM_PIPELINE] Twilio websocket disconnected")
+            except RuntimeError as exc:
+                # Happens when Twilio closes the socket before we finish iterating
+                logger.info(f"[STREAM_PIPELINE] WebSocket closed: {exc}")
             except Exception as e:
                 logger.error(f"[STREAM_PIPELINE_ERROR] {e}", exc_info=True)
             finally:
                 await handler.cleanup()
-                await websocket.close()
+                try:
+                    await websocket.close()
+                except RuntimeError as exc:
+                    logger.debug(f"[STREAM_PIPELINE] websocket already closed: {exc}")
             return
 
         # Continue with realtime API mode (default)
@@ -1730,6 +1742,65 @@ async def check_number_allowed(twilio_client: Client, phone_number: str) -> bool
     except Exception as e:
         logger.error(f"Error checking phone number: {e}")
         return False
+
+@router.api_route("/status-callback", methods=["GET", "POST"])
+async def handle_outbound_status_callback(request: Request):
+    """
+    Callback endpoint for Twilio outbound call status updates.
+    Logs call status transitions (initiated, ringing, answered, completed).
+    """
+    try:
+        # Get form data from Twilio
+        if request.method == "POST":
+            form_data = await request.form()
+        else:
+            form_data = request.query_params
+
+        call_sid = form_data.get('CallSid')
+        call_status = form_data.get('CallStatus')
+        timestamp = form_data.get('Timestamp')
+
+        logger.info(f"[CALL_STATUS] Call {call_sid} status changed to: {call_status} at {timestamp}")
+
+        # Update call log with status
+        if call_sid and call_status:
+            db = Database.get_db()
+            call_logs_collection = db['call_logs']
+
+            update_data = {
+                'status': call_status,
+                'updated_at': datetime.utcnow()
+            }
+
+            # Add specific timestamp fields for each status
+            if call_status == 'initiated':
+                update_data['initiated_at'] = datetime.utcnow()
+            elif call_status == 'ringing':
+                update_data['ringing_at'] = datetime.utcnow()
+            elif call_status == 'answered':
+                update_data['answered_at'] = datetime.utcnow()
+            elif call_status == 'completed':
+                update_data['completed_at'] = datetime.utcnow()
+                update_data['call_duration'] = form_data.get('CallDuration')
+
+            result = call_logs_collection.update_one(
+                {'call_sid': call_sid},
+                {'$set': update_data}
+            )
+
+            if result.modified_count > 0:
+                logger.info(f"[CALL_STATUS] Updated call log for {call_sid} with status: {call_status}")
+            else:
+                logger.warning(f"[CALL_STATUS] Call log not found for call_sid: {call_sid}")
+
+        return {"status": "success", "message": "Status callback received"}
+
+    except Exception as error:
+        logger.error(f"[CALL_STATUS] Error handling status callback: {str(error)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {"status": "error", "message": str(error)}
+
 
 @router.api_route("/recording-status", methods=["GET", "POST"])
 async def handle_outbound_recording_status(request: Request):

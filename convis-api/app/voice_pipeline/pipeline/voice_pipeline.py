@@ -173,8 +173,8 @@ class VoicePipeline:
         elif synthesizer_provider == 'sarvam':
             logger.info("[VOICE_PIPELINE] Creating Sarvam TTS synthesizer (WebSocket streaming)")
             return SarvamSynthesizer(
-                voice_id=self.assistant_config.get('synthesizer', {}).get('voice', 'Manisha'),
-                model=self.assistant_config.get('synthesizer', {}).get('model', 'bulbul:v1'),
+                voice_id=self.assistant_config.get('synthesizer', {}).get('voice', 'manisha'),
+                model=self.assistant_config.get('synthesizer', {}).get('model', 'bulbul:v2'),
                 language=self.assistant_config.get('synthesizer', {}).get('language', 'hi-IN'),
                 synthesizer_key=self.api_keys.get('sarvam'),
                 stream=True,

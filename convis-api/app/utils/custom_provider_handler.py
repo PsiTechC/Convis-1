@@ -785,13 +785,13 @@ class CustomProviderHandler:
                     json={
                         "inputs": [text],
                         "target_language_code": self.asr_language or "en-IN",
-                        "speaker": self.tts_voice or "meera",
+                        "speaker": self.tts_voice or "manisha",
                         "pitch": 0,
                         "pace": tts_speed,
                         "loudness": 1.5,
                         "speech_sample_rate": 8000,
                         "enable_preprocessing": True,
-                        "model": self.tts_model or "bulbul:v1"
+                        "model": self.tts_model or "bulbul:v2"
                     },
                     timeout=30.0
                 )
