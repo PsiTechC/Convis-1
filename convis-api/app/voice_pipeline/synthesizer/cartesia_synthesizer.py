@@ -24,6 +24,19 @@ class CartesiaSynthesizer(BaseSynthesizer):
                  stream=False, buffer_size=400, synthesizer_key=None, caching=True, **kwargs):
         super().__init__(kwargs.get("task_manager_instance", None), stream)
         self.api_key = synthesizer_key or os.getenv("CARTESIA_API_KEY", "")
+
+        # Log initialization details
+        logger.info("=" * 80)
+        logger.info("[CARTESIA_INIT] Initializing Cartesia Synthesizer")
+        logger.info(f"[CARTESIA_INIT] Voice ID: {voice_id}")
+        logger.info(f"[CARTESIA_INIT] Voice: {voice}")
+        logger.info(f"[CARTESIA_INIT] Language: {language}")
+        logger.info(f"[CARTESIA_INIT] Model: {model}")
+        logger.info(f"[CARTESIA_INIT] API Key present: {bool(self.api_key)}")
+        logger.info(f"[CARTESIA_INIT] API Key length: {len(self.api_key) if self.api_key else 0}")
+        logger.info(f"[CARTESIA_INIT] API Key from: {'parameter' if synthesizer_key else 'environment'}")
+        logger.info("=" * 80)
+
         self.version = '2024-06-10'
         self.language = language
         self.voice_id = voice_id
@@ -46,6 +59,8 @@ class CartesiaSynthesizer(BaseSynthesizer):
 
         self.ws_url = f"wss://api.cartesia.ai/tts/websocket?api_key={self.api_key}&cartesia_version=2024-06-10"
         self.api_url = "https://api.cartesia.ai/tts/bytes"
+        logger.info(f"[CARTESIA_INIT] WebSocket URL configured: wss://api.cartesia.ai/tts/websocket")
+
         self.turn_id = 0
         self.sequence_id = 0
         self.context_ids_to_ignore = set()
@@ -97,39 +112,46 @@ class CartesiaSynthesizer(BaseSynthesizer):
 
     async def sender(self, text, sequence_id, end_of_llm_stream=False):
         try:
+            logger.info(f"[CARTESIA_SENDER] Called with text length: {len(text) if text else 0}, sequence_id: {sequence_id}, end_of_stream: {end_of_llm_stream}")
+
             if self.conversation_ended:
+                logger.info("[CARTESIA_SENDER] Conversation ended, skipping")
                 return
 
             if not self.should_synthesize_response(sequence_id):
-                logger.info(f"Not synthesizing text as the sequence_id ({sequence_id}) of it is not in the list of sequence_ids present in the task manager.")
+                logger.info(f"[CARTESIA_SENDER] Not synthesizing text as the sequence_id ({sequence_id}) of it is not in the list of sequence_ids present in the task manager.")
                 return
 
             while self.websocket_holder["websocket"] is None or self.websocket_holder["websocket"].state is websockets.protocol.State.CLOSED:
-                logger.info("Waiting for webSocket connection to be established...")
+                logger.info("[CARTESIA_SENDER] Waiting for webSocket connection to be established...")
                 await asyncio.sleep(1)
 
             if text != "":
                 try:
                     input_message = self.form_payload(text)
+                    logger.info(f"[CARTESIA_SENDER] Sending text to Cartesia: '{text[:50]}...'")
                     await self.websocket_holder["websocket"].send(json.dumps(input_message))
+                    logger.info("[CARTESIA_SENDER] Text sent successfully")
                 except Exception as e:
-                    logger.error(f"Error sending chunk: {e}")
+                    logger.error(f"[CARTESIA_SENDER] Error sending chunk: {e}")
                     return
 
             # If end_of_llm_stream is True, mark the last chunk and send an empty message
             if end_of_llm_stream:
                 self.last_text_sent = True
+                logger.info("[CARTESIA_SENDER] Sending end-of-stream signal")
 
                 # Send the end-of-stream signal with an empty string as text
                 try:
                     input_message = self.form_payload("")
                     await self.websocket_holder["websocket"].send(json.dumps(input_message))
+                    logger.info("[CARTESIA_SENDER] End-of-stream signal sent")
                 except Exception as e:
-                    logger.error(f"Error sending end-of-stream signal: {e}")
+                    logger.error(f"[CARTESIA_SENDER] Error sending end-of-stream signal: {e}")
         except asyncio.CancelledError:
-            logger.info("Sender task was cancelled.")
+            logger.info("[CARTESIA_SENDER] Sender task was cancelled.")
         except Exception as e:
-            logger.error(f"Unexpected error in sender: {e}")
+            logger.error(f"[CARTESIA_SENDER] Unexpected error in sender: {e}")
 
     async def receiver(self):
         while True:
@@ -269,6 +291,10 @@ class CartesiaSynthesizer(BaseSynthesizer):
 
     async def establish_connection(self):
         try:
+            logger.info("[CARTESIA_CONNECT] Attempting to establish WebSocket connection...")
+            logger.info(f"[CARTESIA_CONNECT] API Key present: {bool(self.api_key)}")
+            logger.info(f"[CARTESIA_CONNECT] API Key length: {len(self.api_key) if self.api_key else 0}")
+
             start_time = time.perf_counter()
             websocket = await asyncio.wait_for(
                 websockets.connect(self.ws_url),
@@ -276,22 +302,24 @@ class CartesiaSynthesizer(BaseSynthesizer):
             )
             if not self.connection_time:
                 self.connection_time = round((time.perf_counter() - start_time) * 1000)
-            logger.info(f"Connected to {self.ws_url}")
+            logger.info(f"[CARTESIA_CONNECT] ✓ Connected successfully in {self.connection_time}ms")
             return websocket
         except asyncio.TimeoutError:
-            logger.error("Timeout while connecting to Cartesia websocket")
+            logger.error("[CARTESIA_CONNECT] ✗ Timeout while connecting to Cartesia websocket")
             return None
         except InvalidHandshake as e:
             error_msg = str(e)
             if '401' in error_msg or '403' in error_msg:
-                logger.error(f"Cartesia authentication failed: Invalid or expired API key - {e}")
+                logger.error(f"[CARTESIA_CONNECT] ✗ Authentication failed: Invalid or expired API key - {e}")
             elif '404' in error_msg:
-                logger.error(f"Cartesia endpoint not found: {e}")
+                logger.error(f"[CARTESIA_CONNECT] ✗ Endpoint not found: {e}")
             else:
-                logger.error(f"Cartesia handshake failed: {e}")
+                logger.error(f"[CARTESIA_CONNECT] ✗ Handshake failed: {e}")
             return None
         except Exception as e:
-            logger.error(f"Failed to connect to Cartesia: {e}")
+            logger.error(f"[CARTESIA_CONNECT] ✗ Failed to connect: {e}")
+            import traceback
+            logger.error(f"[CARTESIA_CONNECT] Traceback: {traceback.format_exc()}")
             return None
 
     async def monitor_connection(self):
@@ -320,16 +348,23 @@ class CartesiaSynthesizer(BaseSynthesizer):
         self.sequence_id = meta_info.get('sequence_id', 0)
 
     async def push(self, message):
+        logger.info(f"[CARTESIA_PUSH] Called with message: {message.keys() if message else 'None'}")
+
         if self.stream:
             meta_info, text, self.current_text = message.get("meta_info"), message.get("data"), message.get("data")
+            logger.info(f"[CARTESIA_PUSH] Text to synthesize: '{text[:100] if text else 'None'}...'")
+            logger.info(f"[CARTESIA_PUSH] Meta info: {meta_info}")
+
             self.synthesized_characters += len(text) if text is not None else 0
             end_of_llm_stream = "end_of_llm_stream" in meta_info and meta_info["end_of_llm_stream"]
             self.meta_info = copy.deepcopy(meta_info)
             meta_info["text"] = text
             if not self.context_id:
+                logger.info("[CARTESIA_PUSH] Creating new context ID")
                 self.update_context(meta_info)
             else:
                 if self.turn_id != meta_info.get('turn_id', 0) or self.sequence_id != meta_info.get('sequence_id', 0):
+                    logger.info(f"[CARTESIA_PUSH] Turn/Sequence changed - updating context (turn: {self.turn_id} -> {meta_info.get('turn_id')}, seq: {self.sequence_id} -> {meta_info.get('sequence_id')})")
                     self.update_context(meta_info)
 
             # Stamp synthesizer turn start time
@@ -339,9 +374,11 @@ class CartesiaSynthesizer(BaseSynthesizer):
             except Exception:
                 pass
 
+            logger.info(f"[CARTESIA_PUSH] Creating sender task for sequence_id: {meta_info.get('sequence_id')}")
             self.sender_task = asyncio.create_task(self.sender(text, meta_info.get('sequence_id'), end_of_llm_stream))
             self.text_queue.append(meta_info)
         else:
+            logger.info("[CARTESIA_PUSH] Non-streaming mode, adding to internal queue")
             self.internal_queue.put_nowait(message)
 
     async def cleanup(self):

@@ -268,6 +268,7 @@ class SarvamSynthesizer(BaseSynthesizer):
             )
 
             # Send initial config message
+            # Request mulaw directly from Sarvam to avoid WAV conversion issues
             config_message = {
                 "type": "config",
                 "data": {
@@ -276,10 +277,9 @@ class SarvamSynthesizer(BaseSynthesizer):
                     "pitch": self.pitch,
                     "pace": self.pace,
                     "loudness": self.loudness,
+                    "speech_sample_rate": self.sampling_rate,  # 8000 for telephony
                     "enable_preprocessing": self.enable_preprocessing,
-                    "output_audio_codec": "wav",
-                    "output_audio_bitrate": "32k",
-                    "max_chunk_length": 250,
+                    "output_audio_codec": "mulaw" if self.use_mulaw else "linear16",
                     "min_buffer_size": self.buffer_size
                 }
             }
@@ -404,16 +404,14 @@ class SarvamSynthesizer(BaseSynthesizer):
                         except Exception:
                             pass
                     else:
-                        # Resample and convert audio
-                        resampled_audio = resample(audio, int(self.sampling_rate), format="wav")
-                        pcm_audio = wav_bytes_to_pcm(resampled_audio)
-
+                        # Sarvam returns audio in the requested format (mulaw or linear16)
+                        # No conversion needed - use audio directly
                         if self.use_mulaw:
-                            audio = pcm16_to_mulaw(pcm_audio)
                             self.meta_info['format'] = 'mulaw'
+                            logger.debug(f"[SARVAM_TTS] Using μ-law audio directly from Sarvam ({len(audio)} bytes)")
                         else:
-                            audio = pcm_audio
                             self.meta_info['format'] = 'pcm'
+                            logger.debug(f"[SARVAM_TTS] Using linear16 PCM audio directly from Sarvam ({len(audio)} bytes)")
 
                     self.meta_info["mark_id"] = str(uuid.uuid4())
                     yield create_ws_data_packet(audio, self.meta_info)
