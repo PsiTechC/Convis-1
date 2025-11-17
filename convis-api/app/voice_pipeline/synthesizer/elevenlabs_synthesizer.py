@@ -23,7 +23,7 @@ class ElevenlabsSynthesizer(BaseSynthesizer):
                  stream=False, buffer_size=400, temperature=0.5, similarity_boost=0.75, speed=1.0, synthesizer_key=None,
                  caching=True, **kwargs):
         super().__init__(kwargs.get("task_manager_instance", None), stream)
-        self.api_key = os.environ["ELEVENLABS_API_KEY"] if synthesizer_key is None else synthesizer_key
+        self.api_key = synthesizer_key or os.getenv("ELEVENLABS_API_KEY", "")
         self.voice = voice_id
         self.model = model
         self.stream = True  # Issue with elevenlabs streaming that we need to always send the text quickly

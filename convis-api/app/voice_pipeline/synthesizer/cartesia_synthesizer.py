@@ -23,7 +23,7 @@ class CartesiaSynthesizer(BaseSynthesizer):
     def __init__(self, voice_id, voice, language="en", model="sonic-english", audio_format="mp3", sampling_rate="16000",
                  stream=False, buffer_size=400, synthesizer_key=None, caching=True, **kwargs):
         super().__init__(kwargs.get("task_manager_instance", None), stream)
-        self.api_key = os.environ["CARTESIA_API_KEY"] if synthesizer_key is None else synthesizer_key
+        self.api_key = synthesizer_key or os.getenv("CARTESIA_API_KEY", "")
         self.version = '2024-06-10'
         self.language = language
         self.voice_id = voice_id
