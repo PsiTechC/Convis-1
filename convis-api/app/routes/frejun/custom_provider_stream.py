@@ -126,12 +126,19 @@ class CustomProviderStreamHandler:
     async def initialize_providers(self):
         """Initialize ASR, TTS, and LLM providers"""
         try:
+            logger.info(f"[CUSTOM] 🔧 === PROVIDER INITIALIZATION START ===")
+            logger.info(f"[CUSTOM] 📋 Configuration:")
+            logger.info(f"[CUSTOM]   ├─ ASR: {self.asr_provider_name} (model: {self.asr_model}, lang: {self.asr_language})")
+            logger.info(f"[CUSTOM]   ├─ TTS: {self.tts_provider_name} (model: {self.tts_model}, voice: {self.tts_voice})")
+            logger.info(f"[CUSTOM]   └─ LLM: {self.llm_provider} (model: {self.llm_model})")
+
             # Initialize ASR provider
-            logger.info(f"[CUSTOM] Initializing ASR provider: {self.asr_provider_name}")
+            logger.info(f"[CUSTOM] 🎤 Initializing ASR provider: {self.asr_provider_name}")
             # Determine ASR model based on provider and config
             asr_model = self.asr_model
             if not asr_model:
                 asr_model = 'nova-2' if self.asr_provider_name == 'deepgram' else 'whisper-1'
+                logger.info(f"[CUSTOM]   └─ No model specified, using default: {asr_model}")
 
             asr_api_key = self.provider_keys.get(self.asr_provider_name)
             if self.asr_provider_name == 'openai':
@@ -139,23 +146,27 @@ class CustomProviderStreamHandler:
             elif self.asr_provider_name == 'deepgram':
                 asr_api_key = asr_api_key or os.getenv("DEEPGRAM_API_KEY")
 
+            logger.info(f"[CUSTOM]   └─ API key {'✓ found' if asr_api_key else '✗ missing'}")
+
             if self.asr_provider_name == 'deepgram' and not asr_api_key:
-                logger.warning("[CUSTOM] Deepgram key not configured. Falling back to OpenAI Whisper for ASR.")
+                logger.warning("[CUSTOM] ⚠️ Deepgram key not configured. Falling back to OpenAI Whisper for ASR.")
                 self.asr_provider_name = 'openai'
                 asr_model = 'whisper-1'
                 asr_api_key = self.openai_api_key or os.getenv("OPENAI_API_KEY")
 
             try:
+                logger.info(f"[CUSTOM]   └─ Creating ASR provider instance...")
                 self.asr_provider = ProviderFactory.create_asr_provider(
                     provider_name=self.asr_provider_name,
                     api_key=asr_api_key,
                     model=asr_model,
                     language=self.asr_language
                 )
+                logger.info(f"[CUSTOM] ✅ ASR provider initialized: {self.asr_provider_name}/{asr_model}")
             except Exception as asr_error:
-                logger.error(f"[CUSTOM] Failed to initialize ASR provider '{self.asr_provider_name}': {asr_error}", exc_info=True)
+                logger.error(f"[CUSTOM] ❌ Failed to initialize ASR provider '{self.asr_provider_name}': {asr_error}", exc_info=True)
                 if self.asr_provider_name != 'openai':
-                    logger.warning("[CUSTOM] Falling back to OpenAI Whisper for ASR")
+                    logger.warning("[CUSTOM] ⚠️ Falling back to OpenAI Whisper for ASR")
                     self.asr_provider_name = 'openai'
                     self.asr_model = 'whisper-1'
                     self.asr_provider = ProviderFactory.create_asr_provider(
@@ -164,15 +175,18 @@ class CustomProviderStreamHandler:
                         model='whisper-1',
                         language=self.asr_language
                     )
+                    logger.info(f"[CUSTOM] ✅ ASR fallback successful: openai/whisper-1")
                 else:
                     raise
 
             # Initialize TTS provider
-            logger.info(f"[CUSTOM] Initializing TTS provider: {self.tts_provider_name}")
+            logger.info(f"[CUSTOM] 🔊 Initializing TTS provider: {self.tts_provider_name}")
             # Determine TTS model based on provider and config
             tts_model = self.tts_model
             if not tts_model:
                 tts_model = 'tts-1' if self.tts_provider_name == 'openai' else None
+                if tts_model:
+                    logger.info(f"[CUSTOM]   └─ No model specified, using default: {tts_model}")
 
             tts_api_key = self.provider_keys.get(self.tts_provider_name)
             if self.tts_provider_name == 'openai':
@@ -182,27 +196,31 @@ class CustomProviderStreamHandler:
             elif self.tts_provider_name == 'elevenlabs':
                 tts_api_key = tts_api_key or os.getenv("ELEVENLABS_API_KEY")
 
+            logger.info(f"[CUSTOM]   └─ API key {'✓ found' if tts_api_key else '✗ missing'}")
+
             if self.tts_provider_name == 'cartesia' and not tts_api_key:
-                logger.warning("[CUSTOM] Cartesia key not configured. Falling back to OpenAI TTS.")
+                logger.warning("[CUSTOM] ⚠️ Cartesia key not configured. Falling back to OpenAI TTS.")
                 self.tts_provider_name = 'openai'
                 tts_model = 'tts-1'
                 tts_api_key = self.openai_api_key or os.getenv("OPENAI_API_KEY")
             elif self.tts_provider_name == 'elevenlabs' and not tts_api_key:
-                logger.warning("[CUSTOM] ElevenLabs key not configured. Falling back to OpenAI TTS.")
+                logger.warning("[CUSTOM] ⚠️ ElevenLabs key not configured. Falling back to OpenAI TTS.")
                 self.tts_provider_name = 'openai'
                 tts_model = 'tts-1'
                 tts_api_key = self.openai_api_key or os.getenv("OPENAI_API_KEY")
 
             try:
+                logger.info(f"[CUSTOM]   └─ Creating TTS provider instance...")
                 self.tts_provider = ProviderFactory.create_tts_provider(
                     provider_name=self.tts_provider_name,
                     api_key=tts_api_key,
                     voice=self.tts_voice or self.voice
                 )
+                logger.info(f"[CUSTOM] ✅ TTS provider initialized: {self.tts_provider_name}/{tts_model or 'default'} (voice: {self.tts_voice or self.voice})")
             except Exception as tts_error:
-                logger.error(f"[CUSTOM] Failed to initialize TTS provider '{self.tts_provider_name}': {tts_error}", exc_info=True)
+                logger.error(f"[CUSTOM] ❌ Failed to initialize TTS provider '{self.tts_provider_name}': {tts_error}", exc_info=True)
                 if self.tts_provider_name != 'openai':
-                    logger.warning("[CUSTOM] Falling back to OpenAI TTS")
+                    logger.warning("[CUSTOM] ⚠️ Falling back to OpenAI TTS")
                     self.tts_provider_name = 'openai'
                     self.tts_model = 'tts-1'
                     self.tts_provider = ProviderFactory.create_tts_provider(
@@ -210,22 +228,25 @@ class CustomProviderStreamHandler:
                         api_key=self.openai_api_key or os.getenv("OPENAI_API_KEY"),
                         voice=self.voice
                     )
+                    logger.info(f"[CUSTOM] ✅ TTS fallback successful: openai/tts-1")
                 else:
                     raise
 
             # Initialize LLM client based on provider
-            logger.info(f"[CUSTOM] Initializing LLM provider: {self.llm_provider}")
+            logger.info(f"[CUSTOM] 🤖 Initializing LLM provider: {self.llm_provider}")
             llm_initialized = False
             if self.llm_provider == "openai":
                 try:
                     import openai
                     openai_key = self.provider_keys.get('openai') or self.openai_api_key or os.getenv("OPENAI_API_KEY")
+                    logger.info(f"[CUSTOM]   └─ API key {'✓ found' if openai_key else '✗ missing'}")
                     if not openai_key:
                         raise RuntimeError("OpenAI API key is not configured")
                     self.llm_client = openai.AsyncOpenAI(api_key=openai_key)
                     llm_initialized = True
+                    logger.info(f"[CUSTOM] ✅ LLM initialized: openai/{self.llm_model or 'gpt-4o-mini'}")
                 except Exception as openai_error:
-                    logger.error(f"[CUSTOM] Failed to initialize OpenAI LLM client: {openai_error}", exc_info=True)
+                    logger.error(f"[CUSTOM] ❌ Failed to initialize OpenAI LLM client: {openai_error}", exc_info=True)
             elif self.llm_provider == "anthropic":
                 try:
                     import anthropic
@@ -233,9 +254,9 @@ class CustomProviderStreamHandler:
                     if not api_key:
                         raise RuntimeError("ANTHROPIC_API_KEY is not configured")
                     self.llm_client = anthropic.AsyncAnthropic(api_key=api_key)
-                    logger.warning("[CUSTOM] Anthropic client initialized but API responses are not yet supported. Falling back to OpenAI.")
+                    logger.warning("[CUSTOM] ⚠️ Anthropic client initialized but API responses are not yet supported. Falling back to OpenAI.")
                 except Exception as anthropic_error:
-                    logger.error(f"[CUSTOM] Failed to initialize Anthropic client: {anthropic_error}", exc_info=True)
+                    logger.error(f"[CUSTOM] ❌ Failed to initialize Anthropic client: {anthropic_error}", exc_info=True)
             elif self.llm_provider == "groq":
                 try:
                     from groq import AsyncGroq
@@ -243,11 +264,12 @@ class CustomProviderStreamHandler:
                     if not api_key:
                         raise RuntimeError("GROQ_API_KEY is not configured")
                     self.llm_client = AsyncGroq(api_key=api_key)
-                    logger.warning("[CUSTOM] Groq client initialized but API responses are not yet supported. Falling back to OpenAI.")
+                    logger.warning("[CUSTOM] ⚠️ Groq client initialized but API responses are not yet supported. Falling back to OpenAI.")
                 except Exception as groq_error:
-                    logger.error(f"[CUSTOM] Failed to initialize Groq client: {groq_error}", exc_info=True)
+                    logger.error(f"[CUSTOM] ❌ Failed to initialize Groq client: {groq_error}", exc_info=True)
 
             if not llm_initialized:
+                logger.warning("[CUSTOM] ⚠️ LLM provider not initialized, falling back to OpenAI")
                 import openai
                 fallback_key = self.provider_keys.get('openai') or self.openai_api_key or os.getenv("OPENAI_API_KEY")
                 if not fallback_key:
@@ -257,6 +279,7 @@ class CustomProviderStreamHandler:
                 if not self.llm_model:
                     self.llm_model = "gpt-4o-mini"
                 llm_initialized = True
+                logger.info(f"[CUSTOM] ✅ LLM fallback successful: openai/{self.llm_model}")
 
             # Add system message to conversation history
             self.conversation_history.append({
@@ -341,11 +364,13 @@ class CustomProviderStreamHandler:
         Bolna-style: 100ms buffering for optimal latency
         """
         self.audio_buffer.extend(audio_data)
+        logger.debug(f"[CUSTOM] 🎙️ Buffered audio: {len(self.audio_buffer)} bytes total")
 
         # Process when we have ~100ms of audio (8000 samples/sec * 0.1sec * 2 bytes = 1600 bytes)
         # Twilio sends 20ms chunks (320 bytes), so we buffer 5 chunks = 100ms
         # This matches Bolna's optimal buffering strategy
         if len(self.audio_buffer) >= 1600:
+            logger.info(f"[CUSTOM] 🎯 Buffer threshold reached ({len(self.audio_buffer)} bytes), processing...")
             await self.transcribe_and_respond()
 
     async def transcribe_and_respond(self):
@@ -353,6 +378,7 @@ class CustomProviderStreamHandler:
         Transcribe buffered audio and generate response
         """
         if len(self.audio_buffer) == 0:
+            logger.debug(f"[CUSTOM] ℹ️ Empty buffer, skipping transcription")
             return
 
         try:
@@ -360,44 +386,56 @@ class CustomProviderStreamHandler:
             audio_to_process = bytes(self.audio_buffer)
             self.audio_buffer.clear()
 
-            logger.info(f"[CUSTOM] Transcribing {len(audio_to_process)} bytes of audio")
+            logger.info(f"[CUSTOM] 🎤 === TRANSCRIPTION START === ({len(audio_to_process)} bytes)")
 
             # Transcribe using ASR provider
+            logger.info(f"[CUSTOM] 🔄 Calling ASR provider: {self.asr_provider_name}")
             transcript = await self.asr_provider.transcribe(audio_to_process)
 
             if not transcript or len(transcript.strip()) == 0:
-                logger.debug(f"[CUSTOM] Empty transcript, skipping")
+                logger.debug(f"[CUSTOM] ℹ️ Empty transcript from ASR, skipping")
                 return
 
-            logger.info(f"[CUSTOM] Transcribed: {transcript}")
+            logger.info(f"[CUSTOM] ✅ Transcribed ({len(transcript)} chars): \"{transcript}\"")
 
             # Add user message to history
             self.conversation_history.append({
                 "role": "user",
                 "content": transcript
             })
+            logger.info(f"[CUSTOM] 💬 Added user message to conversation history (total: {len(self.conversation_history)} messages)")
 
             # Generate LLM response
-            logger.info(f"[CUSTOM] Generating LLM response...")
+            logger.info(f"[CUSTOM] 🤖 === LLM GENERATION START ===")
+            logger.info(f"[CUSTOM] 🔄 Calling LLM provider: {self.llm_provider}/{self.llm_model}")
             response_text = await self.generate_llm_response()
 
             if not response_text:
-                logger.warning(f"[CUSTOM] Empty LLM response")
+                logger.warning(f"[CUSTOM] ⚠️ Empty LLM response, skipping")
                 return
 
-            logger.info(f"[CUSTOM] LLM response: {response_text}")
+            logger.info(f"[CUSTOM] ✅ LLM response ({len(response_text)} chars): \"{response_text}\"")
 
             # Add assistant message to history
             self.conversation_history.append({
                 "role": "assistant",
                 "content": response_text
             })
+            logger.info(f"[CUSTOM] 💬 Added assistant message to conversation history")
 
             # Convert response to speech
-            logger.info(f"[CUSTOM] Synthesizing speech...")
+            logger.info(f"[CUSTOM] 🔊 === TTS SYNTHESIS START ===")
+            logger.info(f"[CUSTOM] 🔄 Calling TTS provider: {self.tts_provider_name}")
             response_audio = await self.tts_provider.synthesize(response_text)
 
+            if not response_audio:
+                logger.error(f"[CUSTOM] ❌ TTS synthesis returned no audio!")
+                return
+
+            logger.info(f"[CUSTOM] ✅ TTS synthesized {len(response_audio)} bytes of audio")
+
             # Convert audio format if needed
+            logger.info(f"[CUSTOM] 🔄 === AUDIO CONVERSION START ===")
             # Determine input sample rate based on TTS provider
             input_sample_rate = 8000  # Default for Cartesia
             if self.tts_provider_name == 'elevenlabs':
@@ -405,48 +443,61 @@ class CustomProviderStreamHandler:
             elif self.tts_provider_name == 'openai':
                 input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
 
+            logger.info(f"[CUSTOM]   └─ Input sample rate: {input_sample_rate}Hz, Target: 8000Hz (Twilio requirement)")
+
             # Step 1: Resample to 8kHz if needed
             if input_sample_rate != 8000:
                 try:
+                    logger.info(f"[CUSTOM]   └─ Resampling from {input_sample_rate}Hz to 8000Hz...")
                     converted_audio, _ = audioop.ratecv(response_audio, 2, 1, input_sample_rate, 8000, None)
-                    logger.info(f"[CUSTOM] Resampled audio from {input_sample_rate}Hz to 8kHz")
+                    logger.info(f"[CUSTOM] ✅ Resampled audio: {len(converted_audio)} bytes")
                 except Exception as conv_error:
-                    logger.warning(f"[CUSTOM] Audio resampling failed: {conv_error}")
+                    logger.error(f"[CUSTOM] ❌ Audio resampling failed: {conv_error}")
                     converted_audio = response_audio
             else:
+                logger.info(f"[CUSTOM]   └─ No resampling needed (already 8kHz)")
                 converted_audio = response_audio
 
             # Step 2: Encode to μ-law for Twilio, keep PCM for FreJun
             if self.platform == "twilio":
                 try:
+                    logger.info(f"[CUSTOM]   └─ Converting PCM to μ-law for Twilio...")
                     # Convert PCM to μ-law (G.711) for Twilio
                     converted_audio = audioop.lin2ulaw(converted_audio, 2)
-                    logger.info(f"[CUSTOM] Encoded audio to μ-law for Twilio ({len(converted_audio)} bytes)")
+                    logger.info(f"[CUSTOM] ✅ Encoded to μ-law: {len(converted_audio)} bytes")
                 except Exception as enc_error:
-                    logger.error(f"[CUSTOM] μ-law encoding failed: {enc_error}")
+                    logger.error(f"[CUSTOM] ❌ μ-law encoding failed: {enc_error}")
                     # Fall back to PCM (won't work but at least won't crash)
                     pass
 
             # Send audio in platform-specific format
+            logger.info(f"[CUSTOM] 📤 === SENDING AUDIO TO {self.platform.upper()} ===")
             if self.platform == "frejun":
                 # FreJun format
                 audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
+                logger.info(f"[CUSTOM]   └─ Sending FreJun format audio ({len(audio_b64)} chars base64)")
                 await self.websocket.send_json({
                     "type": "audio",
                     "audio_b64": audio_b64
                 })
+                logger.info(f"[CUSTOM] ✅ Audio sent to FreJun successfully")
             else:
                 # Twilio format with mark events (Bolna-style)
                 if not self.stream_sid:
-                    logger.warning("[CUSTOM] Missing streamSid for Twilio audio, waiting for start event")
+                    logger.error("[CUSTOM] ❌ Missing streamSid for Twilio audio! Cannot send.")
+                    logger.error("[CUSTOM]   └─ This usually means 'start' event was not received properly")
+                    return
                 else:
+                    logger.info(f"[CUSTOM]   └─ Sending Twilio format audio with mark events (streamSid: {self.stream_sid})")
+                    logger.info(f"[CUSTOM]   └─ Audio size: {len(converted_audio)} bytes")
                     await self.mark_handler.send_audio_with_marks(
                         converted_audio,
                         response_text,
                         is_final=True
                     )
+                    logger.info(f"[CUSTOM] ✅ Audio sent to Twilio with mark events")
 
-            logger.info(f"[CUSTOM] Response audio sent to {self.platform} ({len(converted_audio)} bytes)")
+            logger.info(f"[CUSTOM] 🎉 === RESPONSE PIPELINE COMPLETE === ({len(converted_audio)} bytes sent)")
 
             # Log to database
             await self.log_interaction(transcript, response_text)
@@ -515,22 +566,31 @@ class CustomProviderStreamHandler:
     async def handle_stream(self):
         """Main handler for WebSocket streaming - Bolna-style internal loop"""
         self.is_running = True
+        logger.info(f"[CUSTOM] 🎬 Starting handle_stream() for platform: {self.platform}")
 
         try:
             # Initialize providers
+            logger.info(f"[CUSTOM] 🔧 Initializing providers...")
             if not await self.initialize_providers():
-                logger.error(f"[CUSTOM] Failed to initialize providers")
+                logger.error(f"[CUSTOM] ❌ Failed to initialize providers")
                 await self.websocket.close(code=1011, reason="Provider initialization failed")
                 return
+
+            logger.info(f"[CUSTOM] ✅ Providers initialized successfully")
 
             # For Twilio, wait for start event before sending greeting
             # For FreJun, send greeting immediately
             greeting_sent = False
             if self.platform != "twilio":
+                logger.info(f"[CUSTOM] 📢 Sending greeting immediately (platform: {self.platform})")
                 await self.send_greeting()
                 greeting_sent = True
+            else:
+                logger.info(f"[CUSTOM] ⏳ Waiting for Twilio 'start' event before sending greeting")
 
             # Main message loop (Bolna-style: internal WebSocket loop)
+            logger.info(f"[CUSTOM] 🔄 Entering main WebSocket message loop...")
+            message_count = 0
             while self.is_running:
                 try:
                     # Receive message from platform (FreJun or Twilio)
@@ -538,6 +598,8 @@ class CustomProviderStreamHandler:
                         self.websocket.receive_json(),
                         timeout=30.0
                     )
+                    message_count += 1
+                    logger.debug(f"[CUSTOM] 📨 Received message #{message_count}: {message.get('event', message.get('type', 'unknown'))}")
 
                     # Handle platform-specific message formats
                     if self.platform == "frejun":
@@ -574,42 +636,62 @@ class CustomProviderStreamHandler:
                             if payload:
                                 # Decode base64 audio (Twilio sends μ-law encoded)
                                 audio_data = base64.b64decode(payload)
+                                logger.debug(f"[CUSTOM] 🎤 Received audio chunk: {len(audio_data)} bytes (μ-law)")
 
                                 # Convert μ-law to PCM for ASR processing
                                 try:
                                     audio_data = audioop.ulaw2lin(audio_data, 2)
-                                    logger.debug(f"[CUSTOM] Decoded μ-law to PCM ({len(audio_data)} bytes)")
+                                    logger.debug(f"[CUSTOM] ✅ Decoded μ-law to PCM ({len(audio_data)} bytes)")
                                 except Exception as decode_error:
-                                    logger.error(f"[CUSTOM] Failed to decode μ-law audio: {decode_error}")
+                                    logger.error(f"[CUSTOM] ❌ Failed to decode μ-law audio: {decode_error}")
                                     continue
 
                                 await self.process_audio_chunk(audio_data)
+                            else:
+                                logger.warning(f"[CUSTOM] ⚠️ Received media event with no payload")
 
                         elif event == "start":
                             # Extract streamSid and callSid from start event
                             start_data = message.get("start", {})
                             self.stream_sid = start_data.get("streamSid")
                             self.call_sid = start_data.get("callSid")
+                            media_format = start_data.get("mediaFormat", {})
+
+                            logger.info(f"[CUSTOM] 📞 Twilio stream START event received")
+                            logger.info(f"[CUSTOM]   └─ StreamSID: {self.stream_sid}")
+                            logger.info(f"[CUSTOM]   └─ CallSID: {self.call_sid}")
+                            logger.info(f"[CUSTOM]   └─ Media Format: {media_format}")
+
                             # Update mark handler with stream_sid
                             self.mark_handler.set_stream_sid(self.stream_sid)
-                            logger.info(f"[CUSTOM] Twilio stream started - StreamSID: {self.stream_sid}, CallSID: {self.call_sid}")
+                            logger.info(f"[CUSTOM] ✅ Mark handler configured with stream_sid")
 
                             # Send greeting now that we have streamSid
                             if not greeting_sent:
+                                logger.info(f"[CUSTOM] 📢 Sending greeting to caller...")
                                 await self.send_greeting()
                                 greeting_sent = True
+                                logger.info(f"[CUSTOM] ✅ Greeting sent successfully")
+                            else:
+                                logger.info(f"[CUSTOM] ℹ️ Greeting already sent, skipping")
 
                         elif event == "mark":
                             # Handle mark event confirmation from Twilio
                             mark_data = message.get("mark", {})
                             mark_id = mark_data.get("name")
                             if mark_id:
+                                logger.debug(f"[CUSTOM] ✔️ Mark event received: {mark_id}")
                                 self.mark_handler.process_mark_received(mark_id)
+                            else:
+                                logger.warning(f"[CUSTOM] ⚠️ Mark event with no name")
 
                         elif event == "stop":
-                            logger.info(f"[CUSTOM] Twilio stream stopped")
+                            logger.info(f"[CUSTOM] 🛑 Twilio stream STOP event received")
                             self.is_running = False
                             break
+
+                        else:
+                            logger.debug(f"[CUSTOM] ℹ️ Unhandled Twilio event: {event}")
 
                 except asyncio.TimeoutError:
                     # No message received, continue

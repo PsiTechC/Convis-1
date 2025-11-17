@@ -38,7 +38,7 @@ class TwilioMarkHandler:
             metadata: Metadata to store (type, text, is_final, etc.)
         """
         if not self.stream_sid:
-            logger.warning("[MARK_HANDLER] Cannot send mark: stream_sid not set")
+            logger.warning("[MARK_HANDLER] ⚠️ Cannot send mark: stream_sid not set")
             return
 
         mark_message = {
@@ -49,7 +49,7 @@ class TwilioMarkHandler:
 
         self.mark_events[mark_id] = metadata
         await self.websocket.send_json(mark_message)
-        logger.debug(f"[MARK_HANDLER] Sent mark: {mark_id} ({metadata.get('type')})")
+        logger.info(f"[MARK_HANDLER] 🏷️ Sent {metadata.get('type')} mark: {mark_id[:8]}...")
 
     async def send_audio_with_marks(self, audio_data: bytes, text: str, is_final: bool = False):
         """
@@ -61,11 +61,17 @@ class TwilioMarkHandler:
             is_final: Whether this is the final chunk in response
         """
         if not self.stream_sid:
-            logger.warning("[MARK_HANDLER] Cannot send audio: stream_sid not set")
+            logger.error("[MARK_HANDLER] ❌ Cannot send audio: stream_sid not set")
             return
+
+        logger.info(f"[MARK_HANDLER] 🎵 === SENDING AUDIO WITH MARKS ===")
+        logger.info(f"[MARK_HANDLER]   └─ Audio size: {len(audio_data)} bytes")
+        logger.info(f"[MARK_HANDLER]   └─ Text: \"{text[:100]}...\" ({len(text)} chars)")
+        logger.info(f"[MARK_HANDLER]   └─ Is final: {is_final}")
 
         # Pre-mark (before audio)
         pre_mark_id = str(uuid.uuid4())
+        logger.info(f"[MARK_HANDLER] 📌 Sending PRE-mark (before audio)...")
         await self.send_mark(pre_mark_id, {
             "type": "pre_mark",
             "text": text,
@@ -79,6 +85,7 @@ class TwilioMarkHandler:
         chunk_size = 160
         total_chunks = (len(audio_data) + chunk_size - 1) // chunk_size
 
+        logger.info(f"[MARK_HANDLER] 🔊 Sending {total_chunks} audio chunks...")
         for i in range(0, len(audio_data), chunk_size):
             chunk = audio_data[i:i + chunk_size]
             chunk_base64 = base64.b64encode(chunk).decode('utf-8')
@@ -91,16 +98,20 @@ class TwilioMarkHandler:
 
             await self.websocket.send_json(media_message)
 
-        logger.debug(f"[MARK_HANDLER] Sent {total_chunks} audio chunks ({len(audio_data)} bytes)")
+        logger.info(f"[MARK_HANDLER] ✅ Sent all {total_chunks} audio chunks ({len(audio_data)} bytes)")
 
         # Post-mark (after audio)
+        duration = len(audio_data) / 8000.0
         post_mark_id = str(uuid.uuid4())
+        logger.info(f"[MARK_HANDLER] 📌 Sending POST-mark (after audio, duration: {duration:.2f}s)...")
         await self.send_mark(post_mark_id, {
             "type": "post_mark",
             "text": text,
             "is_final": is_final,
-            "duration": len(audio_data) / 8000.0  # Calculate duration in seconds
+            "duration": duration
         })
+
+        logger.info(f"[MARK_HANDLER] 🎉 Audio with marks sent successfully!")
 
     def process_mark_received(self, mark_id: str):
         """
@@ -111,19 +122,21 @@ class TwilioMarkHandler:
         """
         if mark_id in self.mark_events:
             metadata = self.mark_events[mark_id]
+            mark_type = metadata.get('type')
 
-            logger.debug(f"[MARK_HANDLER] Mark confirmed: {mark_id} ({metadata.get('type')})")
+            logger.info(f"[MARK_HANDLER] ✅ Mark confirmed from Twilio: {mark_type} ({mark_id[:8]}...)")
 
             # If this is a final post-mark, audio playback is complete
             if metadata.get("type") == "post_mark" and metadata.get("is_final"):
                 self.is_playing_audio = False
                 self.current_audio_text = ""
-                logger.info(f"[MARK_HANDLER] Audio playback complete")
+                logger.info(f"[MARK_HANDLER] 🎉 Audio playback COMPLETE (final post-mark received)")
 
             # Clean up processed mark
             del self.mark_events[mark_id]
+            logger.debug(f"[MARK_HANDLER]   └─ Cleaned up mark (pending: {len(self.mark_events)})")
         else:
-            logger.warning(f"[MARK_HANDLER] Received unknown mark: {mark_id}")
+            logger.warning(f"[MARK_HANDLER] ⚠️ Received unknown mark ID: {mark_id[:8]}...")
 
     def clear_marks(self):
         """Clear all pending marks (used for interruptions)"""

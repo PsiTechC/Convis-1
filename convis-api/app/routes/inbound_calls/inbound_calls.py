@@ -224,8 +224,9 @@ async def handle_custom_stream(websocket: WebSocket, assistant_id: str):
 
     This endpoint is specifically for voice_mode='custom' assistants
     """
-    logger.info(f"[CUSTOM_STREAM] Connection for assistant: {assistant_id}")
+    logger.info(f"[CUSTOM_STREAM] 📞 Incoming WebSocket connection for assistant: {assistant_id}")
     await websocket.accept()
+    logger.info(f"[CUSTOM_STREAM] ✅ WebSocket connection accepted")
 
     try:
         db = Database.get_db()
@@ -234,26 +235,33 @@ async def handle_custom_stream(websocket: WebSocket, assistant_id: str):
         # Fetch assistant configuration
         try:
             assistant_obj_id = ObjectId(assistant_id)
+            logger.info(f"[CUSTOM_STREAM] Converted assistant_id to ObjectId: {assistant_obj_id}")
         except Exception as e:
-            logger.error(f"[CUSTOM_STREAM] Invalid assistant_id: {e}")
+            logger.error(f"[CUSTOM_STREAM] ❌ Invalid assistant_id format: {e}")
             await websocket.close(code=1008, reason="Invalid assistant_id")
             return
 
+        logger.info(f"[CUSTOM_STREAM] 🔍 Fetching assistant from database...")
         assistant = assistants_collection.find_one({"_id": assistant_obj_id})
 
         if not assistant:
-            logger.error(f"[CUSTOM_STREAM] Assistant not found: {assistant_id}")
+            logger.error(f"[CUSTOM_STREAM] ❌ Assistant not found in database: {assistant_id}")
             await websocket.close(code=1008, reason="Assistant not found")
             return
 
+        logger.info(f"[CUSTOM_STREAM] ✅ Assistant found: {assistant.get('name', 'Unknown')}")
+
         # Verify this is a custom provider assistant
         voice_mode = assistant.get('voice_mode', 'realtime')
+        logger.info(f"[CUSTOM_STREAM] 🔧 Voice mode: {voice_mode}")
+
         if voice_mode != 'custom':
-            logger.error(f"[CUSTOM_STREAM] Assistant {assistant_id} is not in custom mode (mode: {voice_mode})")
+            logger.error(f"[CUSTOM_STREAM] ❌ Assistant {assistant_id} is not in custom mode (mode: {voice_mode})")
             await websocket.close(code=1008, reason="Assistant not configured for custom provider")
             return
 
-        logger.info(f"[CUSTOM_STREAM] Starting custom provider stream for {assistant.get('name')}")
+        logger.info(f"[CUSTOM_STREAM] 🚀 Starting custom provider stream for '{assistant.get('name')}'")
+        logger.info(f"[CUSTOM_STREAM] 📊 Config: ASR={assistant.get('asr_provider')}, TTS={assistant.get('tts_provider')}, LLM={assistant.get('llm_provider')}")
 
         # Use CustomProviderStreamHandler (Bolna-style)
         from app.routes.frejun.custom_provider_stream import CustomProviderStreamHandler
@@ -264,18 +272,23 @@ async def handle_custom_stream(websocket: WebSocket, assistant_id: str):
         if isinstance(assistant_user_id, str):
             assistant_user_id = ObjectId(assistant_user_id)
 
+        logger.info(f"[CUSTOM_STREAM] 🔑 Resolving API keys for user: {assistant_user_id}")
+
         # Resolve OpenAI API key
         try:
             openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+            logger.info(f"[CUSTOM_STREAM] ✅ OpenAI API key resolved")
         except HTTPException as exc:
-            logger.error(f"[CUSTOM_STREAM] Failed to resolve API key: {exc.detail}")
+            logger.error(f"[CUSTOM_STREAM] ❌ Failed to resolve OpenAI API key: {exc.detail}")
             await websocket.close(code=1008, reason=f"API key error: {exc.detail}")
             return
 
         # Resolve all provider keys
         provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+        logger.info(f"[CUSTOM_STREAM] ✅ Resolved provider keys: {list(provider_keys.keys())}")
 
         # Initialize custom provider handler
+        logger.info(f"[CUSTOM_STREAM] 🎯 Initializing CustomProviderStreamHandler...")
         handler = CustomProviderStreamHandler(
             websocket=websocket,
             assistant_config=assistant,
@@ -284,8 +297,10 @@ async def handle_custom_stream(websocket: WebSocket, assistant_id: str):
             provider_keys=provider_keys
         )
 
+        logger.info(f"[CUSTOM_STREAM] ▶️ Starting handler.handle_stream() - Bolna-style internal loop")
         # Run handler (Bolna-style internal loop)
         await handler.handle_stream()
+        logger.info(f"[CUSTOM_STREAM] ✅ Handler.handle_stream() completed")
 
     except WebSocketDisconnect:
         logger.info(f"[CUSTOM_STREAM] WebSocket disconnected for assistant {assistant_id}")
