@@ -5,7 +5,7 @@ Provider Factory - Dynamically create ASR/TTS providers based on configuration
 import logging
 from typing import Optional
 from .asr import ASRProvider, DeepgramASR, OpenAIASR
-from .tts import TTSProvider, CartesiaTTS, ElevenLabsTTS, OpenAITTS
+from .tts import TTSProvider, CartesiaTTS, ElevenLabsTTS, OpenAITTS, SarvamTTS
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +23,7 @@ class ProviderFactory:
         'cartesia': CartesiaTTS,
         'elevenlabs': ElevenLabsTTS,
         'openai': OpenAITTS,
+        'sarvam': SarvamTTS,
     }
 
     @classmethod
@@ -71,15 +72,17 @@ class ProviderFactory:
         cls,
         provider_name: str,
         api_key: Optional[str] = None,
-        voice: str = "default"
+        voice: str = "default",
+        **kwargs
     ) -> TTSProvider:
         """
         Create TTS provider instance
 
         Args:
-            provider_name: Name of provider ('cartesia', 'elevenlabs', 'openai')
+            provider_name: Name of provider ('cartesia', 'elevenlabs', 'openai', 'sarvam')
             api_key: API key (optional, will use env var if not provided)
             voice: Voice name
+            **kwargs: Additional provider-specific parameters (e.g., language for Sarvam)
 
         Returns:
             TTSProvider instance
@@ -99,9 +102,11 @@ class ProviderFactory:
         provider_class = cls.TTS_PROVIDERS[provider_name]
         logger.info(f"Creating TTS provider: {provider_name} with voice: {voice}")
 
+        # Pass additional kwargs for provider-specific parameters
         return provider_class(
             api_key=api_key,
-            voice=voice
+            voice=voice,
+            **kwargs
         )
 
     @classmethod

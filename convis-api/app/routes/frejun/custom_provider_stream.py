@@ -195,6 +195,8 @@ class CustomProviderStreamHandler:
                 tts_api_key = tts_api_key or os.getenv("CARTESIA_API_KEY")
             elif self.tts_provider_name == 'elevenlabs':
                 tts_api_key = tts_api_key or os.getenv("ELEVENLABS_API_KEY")
+            elif self.tts_provider_name == 'sarvam':
+                tts_api_key = tts_api_key or os.getenv("SARVAM_API_KEY")
 
             logger.info(f"[CUSTOM]   └─ API key {'✓ found' if tts_api_key else '✗ missing'}")
 
@@ -211,10 +213,18 @@ class CustomProviderStreamHandler:
 
             try:
                 logger.info(f"[CUSTOM]   └─ Creating TTS provider instance...")
+                # Prepare kwargs for provider-specific parameters
+                tts_kwargs = {}
+                if self.tts_provider_name == 'sarvam':
+                    # Sarvam needs language parameter
+                    tts_kwargs['language'] = self.language or 'hi-IN'
+                    logger.info(f"[CUSTOM]   └─ Sarvam language: {tts_kwargs['language']}")
+
                 self.tts_provider = ProviderFactory.create_tts_provider(
                     provider_name=self.tts_provider_name,
                     api_key=tts_api_key,
-                    voice=self.tts_voice or self.voice
+                    voice=self.tts_voice or self.voice,
+                    **tts_kwargs
                 )
                 logger.info(f"[CUSTOM] ✅ TTS provider initialized: {self.tts_provider_name}/{tts_model or 'default'} (voice: {self.tts_voice or self.voice})")
             except Exception as tts_error:
@@ -300,16 +310,32 @@ class CustomProviderStreamHandler:
             logger.info(f"[CUSTOM] Sending greeting: {self.greeting}")
 
             # Generate greeting audio
+            logger.info(f"[CUSTOM] 🔊 Calling TTS provider to synthesize greeting...")
             greeting_audio = await self.tts_provider.synthesize(self.greeting)
+            logger.info(f"[CUSTOM] 🔊 TTS provider returned {len(greeting_audio) if greeting_audio else 0} bytes of audio")
 
             # Convert audio if needed
-            if len(greeting_audio) > 0:
+            if greeting_audio and len(greeting_audio) > 0:
                 # Determine input sample rate based on TTS provider
                 input_sample_rate = 8000  # Default for Cartesia
+                is_wav_format = False
+
                 if self.tts_provider_name == 'elevenlabs':
                     input_sample_rate = 16000
                 elif self.tts_provider_name == 'openai':
                     input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
+                elif self.tts_provider_name == 'sarvam':
+                    input_sample_rate = 8000
+                    is_wav_format = True
+
+                # Step 0: Extract PCM from WAV if needed (for Sarvam)
+                if is_wav_format:
+                    try:
+                        from app.voice_pipeline.helpers.utils import wav_bytes_to_pcm
+                        greeting_audio = wav_bytes_to_pcm(greeting_audio)
+                        logger.info(f"[CUSTOM] Extracted PCM from WAV: {len(greeting_audio)} bytes")
+                    except Exception as wav_error:
+                        logger.error(f"[CUSTOM] WAV extraction failed: {wav_error}")
 
                 # Step 1: Resample to 8kHz if needed
                 if input_sample_rate != 8000:
@@ -353,6 +379,10 @@ class CustomProviderStreamHandler:
                         )
 
                 logger.info(f"[CUSTOM] Greeting sent to {self.platform} ({len(converted_audio)} bytes)")
+            else:
+                logger.error(f"[CUSTOM] ❌ TTS returned NO AUDIO for greeting! Provider: {self.tts_provider_name}")
+                logger.error(f"[CUSTOM] ❌ Greeting text was: \"{self.greeting}\"")
+                logger.error(f"[CUSTOM] ❌ This means the TTS provider failed silently!")
 
         except Exception as e:
             logger.error(f"[CUSTOM] Error sending greeting: {e}", exc_info=True)
@@ -438,12 +468,29 @@ class CustomProviderStreamHandler:
             logger.info(f"[CUSTOM] 🔄 === AUDIO CONVERSION START ===")
             # Determine input sample rate based on TTS provider
             input_sample_rate = 8000  # Default for Cartesia
+            is_wav_format = False  # Flag for WAV-encoded audio
+
             if self.tts_provider_name == 'elevenlabs':
                 input_sample_rate = 16000
             elif self.tts_provider_name == 'openai':
                 input_sample_rate = 24000  # OpenAI TTS outputs 24kHz
+            elif self.tts_provider_name == 'sarvam':
+                # Sarvam returns WAV format @ 8kHz
+                input_sample_rate = 8000
+                is_wav_format = True
 
             logger.info(f"[CUSTOM]   └─ Input sample rate: {input_sample_rate}Hz, Target: 8000Hz (Twilio requirement)")
+            logger.info(f"[CUSTOM]   └─ Is WAV format: {is_wav_format}")
+
+            # Step 0: Extract PCM from WAV if needed (for Sarvam)
+            if is_wav_format:
+                try:
+                    from app.voice_pipeline.helpers.utils import wav_bytes_to_pcm
+                    logger.info(f"[CUSTOM]   └─ Extracting PCM from WAV container...")
+                    response_audio = wav_bytes_to_pcm(response_audio)
+                    logger.info(f"[CUSTOM] ✅ Extracted PCM: {len(response_audio)} bytes")
+                except Exception as wav_error:
+                    logger.error(f"[CUSTOM] ❌ WAV extraction failed: {wav_error}")
 
             # Step 1: Resample to 8kHz if needed
             if input_sample_rate != 8000:

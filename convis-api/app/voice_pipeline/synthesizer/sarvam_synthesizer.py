@@ -169,12 +169,12 @@ class SarvamSynthesizer(BaseSynthesizer):
 
             if text and text.strip():
                 try:
-                    await self.websocket_holder["websocket"].send(
-                        json.dumps({"type": "text", "data": {"text": text}})
-                    )
-                    logger.info(f"[SARVAM_TTS] Sent text chunk: {text[:50]}...")
+                    text_message = {"type": "text", "data": {"text": text}}
+                    logger.info(f"[SARVAM_TTS] 📤 Sending text message: {json.dumps(text_message, ensure_ascii=False)[:200]}...")
+                    await self.websocket_holder["websocket"].send(json.dumps(text_message))
+                    logger.info(f"[SARVAM_TTS] ✅ Text chunk sent successfully")
                 except Exception as e:
-                    logger.error(f"[SARVAM_TTS] Error sending chunk: {e}")
+                    logger.error(f"[SARVAM_TTS] ❌ Error sending chunk: {e}")
                     return
 
             # Send flush signal at end of LLM stream
@@ -182,10 +182,12 @@ class SarvamSynthesizer(BaseSynthesizer):
                 self.last_text_sent = True
 
             try:
-                await self.websocket_holder["websocket"].send(json.dumps({"type": "flush"}))
-                logger.info("[SARVAM_TTS] Sent flush signal")
+                flush_message = {"type": "flush"}
+                logger.info(f"[SARVAM_TTS] 📤 Sending flush: {json.dumps(flush_message)}")
+                await self.websocket_holder["websocket"].send(json.dumps(flush_message))
+                logger.info("[SARVAM_TTS] ✅ Flush signal sent successfully")
             except Exception as e:
-                logger.info(f"[SARVAM_TTS] Error sending flush signal: {e}")
+                logger.error(f"[SARVAM_TTS] ❌ Error sending flush signal: {e}")
 
         except asyncio.CancelledError:
             logger.info("[SARVAM_TTS] Sender task was cancelled")
@@ -226,10 +228,22 @@ class SarvamSynthesizer(BaseSynthesizer):
                 response = await self.websocket_holder["websocket"].recv()
                 data = json.loads(response)
 
+                logger.info(f"[SARVAM_TTS] 📨 Received message type: {data.get('type', 'unknown')}")
+
                 if "type" in data and data["type"] == 'audio':
-                    chunk = base64.b64decode(data["data"]["audio"])
-                    logger.debug(f"[SARVAM_TTS] Received audio chunk ({len(chunk)} bytes)")
+                    audio_data = data.get("data", {}).get("audio")
+                    if not audio_data:
+                        logger.error(f"[SARVAM_TTS] ❌ Received audio message but no audio data!")
+                        logger.error(f"[SARVAM_TTS] ❌ Full response: {data}")
+                        continue
+
+                    chunk = base64.b64decode(audio_data)
+                    logger.info(f"[SARVAM_TTS] ✅ Received audio chunk ({len(chunk)} bytes)")
                     yield chunk, None
+                elif "type" in data and data["type"] == 'error':
+                    logger.error(f"[SARVAM_TTS] ❌ Error from Sarvam: {data}")
+                else:
+                    logger.warning(f"[SARVAM_TTS] ⚠️ Unknown message type: {data}")
 
                 if self.last_text_sent:
                     yield b'\x00', None
@@ -269,7 +283,23 @@ class SarvamSynthesizer(BaseSynthesizer):
                     "min_buffer_size": self.buffer_size
                 }
             }
+
+            logger.info(f"[SARVAM_TTS] 📤 Sending config: {json.dumps(config_message, indent=2)}")
             await websocket.send(json.dumps(config_message))
+
+            # Wait for config acknowledgment
+            try:
+                config_response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                config_data = json.loads(config_response)
+                logger.info(f"[SARVAM_TTS] 📥 Config response: {json.dumps(config_data, indent=2)}")
+
+                if config_data.get("type") == "error":
+                    logger.error(f"[SARVAM_TTS] ❌ Config rejected by Sarvam: {config_data}")
+                    return None
+            except asyncio.TimeoutError:
+                logger.warning(f"[SARVAM_TTS] ⚠️ No config acknowledgment received (timeout)")
+            except Exception as e:
+                logger.warning(f"[SARVAM_TTS] ⚠️ Could not read config response: {e}")
 
             if not self.connection_time:
                 self.connection_time = round((time.perf_counter() - start_time) * 1000)

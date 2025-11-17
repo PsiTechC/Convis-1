@@ -8,6 +8,7 @@ from abc import ABC, abstractmethod
 from typing import Optional, Dict
 import os
 import base64
+import aiohttp
 
 logger = logging.getLogger(__name__)
 
@@ -260,6 +261,9 @@ class OpenAITTS(TTSProvider):
     async def synthesize(self, text: str) -> bytes:
         """Synthesize speech using OpenAI"""
         try:
+            self.logger.info(f"[OpenAI TTS] 🔊 Synthesizing text (length: {len(text)} chars)")
+            self.logger.info(f"[OpenAI TTS] 🔊 Using voice: {self.voice}, model: tts-1")
+
             response = await self.client.audio.speech.create(
                 model="tts-1",  # Faster model
                 voice=self.voice,
@@ -267,10 +271,18 @@ class OpenAITTS(TTSProvider):
                 response_format="pcm"
             )
 
-            return response.content
+            audio_bytes = response.content
+            self.logger.info(f"[OpenAI TTS] ✅ Synthesis complete: {len(audio_bytes)} bytes returned")
+
+            if not audio_bytes or len(audio_bytes) == 0:
+                self.logger.error(f"[OpenAI TTS] ❌ CRITICAL: OpenAI returned empty audio!")
+                self.logger.error(f"[OpenAI TTS] ❌ Text was: \"{text[:100]}...\"")
+                return bytes()  # Return empty bytes instead of None
+
+            return audio_bytes
 
         except Exception as e:
-            self.logger.error(f"OpenAI synthesis error: {e}")
+            self.logger.error(f"[OpenAI TTS] ❌ Synthesis error: {e}", exc_info=True)
             raise
 
     async def synthesize_stream(self, text: str) -> bytes:
@@ -306,4 +318,95 @@ class OpenAITTS(TTSProvider):
             "onyx": "Deep male voice",
             "nova": "Female voice",
             "shimmer": "Soft female voice"
+        }
+
+
+class SarvamTTS(TTSProvider):
+    """
+    Sarvam AI TTS Provider (HTTP API)
+
+    Latency: 300-500ms
+    Cost: Varies
+    Best for: Indian languages (Hindi, Tamil, Telugu, etc.)
+    """
+
+    def __init__(self, api_key: Optional[str] = None, voice: str = "manisha", language: str = "hi-IN"):
+        super().__init__(
+            api_key=api_key or os.getenv("SARVAM_API_KEY"),
+            voice=voice
+        )
+        self.language = language
+        self.api_url = "https://api.sarvam.ai/text-to-speech"
+        self.logger.info(f"Sarvam TTS initialized with voice: {voice}, language: {language}")
+
+    async def synthesize(self, text: str) -> bytes:
+        """Synthesize speech using Sarvam AI HTTP API"""
+        try:
+            self.logger.info(f"[Sarvam TTS] 🔊 Synthesizing text (length: {len(text)} chars)")
+
+            payload = {
+                "target_language_code": self.language,
+                "text": text,
+                "speaker": self.voice,
+                "pitch": 0.0,
+                "loudness": 1.0,
+                "speech_sample_rate": 8000,
+                "enable_preprocessing": True,
+                "model": "bulbul:v2"
+            }
+
+            headers = {
+                'api-subscription-key': self.api_key,
+                'api-key': self.api_key,
+                'x-api-key': self.api_key,
+                'authorization': f"Bearer {self.api_key}",
+                'Content-Type': 'application/json'
+            }
+
+            async with aiohttp.ClientSession() as session:
+                async with session.post(self.api_url, json=payload, headers=headers) as response:
+                    if response.status == 200:
+                        data = await response.json()
+                        audios = data.get('audios', [])
+                        if audios and isinstance(audios, list) and len(audios) > 0:
+                            # Sarvam returns base64 encoded audio
+                            audio_b64 = audios[0]
+                            audio_bytes = base64.b64decode(audio_b64)
+                            self.logger.info(f"[Sarvam TTS] ✅ Synthesis complete: {len(audio_bytes)} bytes returned")
+                            return audio_bytes
+                        else:
+                            self.logger.error(f"[Sarvam TTS] ❌ No audio in response: {data}")
+                            return bytes()
+                    else:
+                        error_text = await response.text()
+                        self.logger.error(f"[Sarvam TTS] ❌ API error ({response.status}): {error_text}")
+                        return bytes()
+
+        except Exception as e:
+            self.logger.error(f"[Sarvam TTS] ❌ Synthesis error: {e}", exc_info=True)
+            raise
+
+    async def synthesize_stream(self, text: str) -> bytes:
+        """Sarvam HTTP API doesn't support streaming, use regular synthesis"""
+        return await self.synthesize(text)
+
+    def get_latency_ms(self) -> int:
+        """Average latency: 300-500ms"""
+        return 400
+
+    def get_cost_per_minute(self) -> float:
+        """Cost: TBD (varies by plan)"""
+        return 0.02
+
+    def get_available_voices(self) -> Dict[str, str]:
+        """Available Sarvam voices"""
+        return {
+            "manisha": "Female Hindi voice",
+            "anushka": "Female Hindi voice",
+            "abhilash": "Male Hindi voice",
+            "vidya": "Female voice",
+            "arya": "Female voice",
+            "karun": "Male voice",
+            "hitesh": "Male voice",
+            "aditya": "Male voice"
         }
