@@ -70,7 +70,7 @@ async def send_session_update(
         "output_audio_format": "g711_ulaw",
         "voice": voice,
         "instructions": system_message,
-        "modalities": ["audio", "text"],
+        "modalities": ["text", "audio"],  # CRITICAL: text MUST be first for audio generation
         "temperature": temperature,
         "input_audio_transcription": {
             "model": "whisper-1"
@@ -86,8 +86,9 @@ async def send_session_update(
         "session": session_config
     }
 
-    logger.info(f'Sending session update with voice={voice}, temperature={temperature}, max_tokens={max_response_output_tokens}')
-    logger.info('Session modalities: ["audio", "text"], formats: g711_ulaw')
+    logger.info(f'🔊 Sending session update with voice={voice}, temperature={temperature}, max_tokens={max_response_output_tokens}')
+    logger.info(f'🎤 Session modalities: {session_config["modalities"]}, input_format: {session_config["input_audio_format"]}, output_format: {session_config["output_audio_format"]}')
+    logger.info(f'📝 Session config: {json.dumps(session_config, indent=2)}')
     await openai_ws.send(json.dumps(session_update))
 
     # CRITICAL: Call send_initial_conversation_item HERE, matching original pattern (line 223)

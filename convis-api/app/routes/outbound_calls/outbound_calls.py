@@ -1528,26 +1528,46 @@ IMPORTANT:
 
                         # Handle audio delta (AI speaking)
                         if response.get('type') == 'response.audio.delta' and 'delta' in response:
-                            audio_payload = response['delta']
-                            audio_delta = {
-                                "event": "media",
-                                "streamSid": stream_sid,
-                                "media": {
-                                    "payload": audio_payload
+                            try:
+                                audio_payload = response['delta']
+
+                                # CRITICAL: Ensure audio_payload is not empty
+                                if not audio_payload:
+                                    logger.warning("⚠️ Received empty audio payload from OpenAI")
+                                    continue
+
+                                # Log first audio chunk for debugging
+                                if response_start_timestamp_twilio is None:
+                                    logger.info(f"🔊 FIRST AUDIO CHUNK - Length: {len(audio_payload)} bytes, stream_sid: {stream_sid}")
+
+                                audio_delta = {
+                                    "event": "media",
+                                    "streamSid": stream_sid,
+                                    "media": {
+                                        "payload": audio_payload
+                                    }
                                 }
-                            }
-                            await websocket.send_json(audio_delta)
 
-                            if response_start_timestamp_twilio is None:
-                                response_start_timestamp_twilio = latest_media_timestamp
-                                if SHOW_TIMING_MATH:
-                                    logger.info(f"Setting start timestamp for new response: {response_start_timestamp_twilio}ms")
+                                # Send audio immediately without any delays
+                                await websocket.send_json(audio_delta)
+                                logger.debug(f"✅ Sent audio chunk to Twilio: {len(audio_payload)} bytes")
 
-                            # Update last_assistant_item safely
-                            if response.get('item_id'):
-                                last_assistant_item = response['item_id']
+                                if response_start_timestamp_twilio is None:
+                                    response_start_timestamp_twilio = latest_media_timestamp
+                                    if SHOW_TIMING_MATH:
+                                        logger.info(f"Setting start timestamp for new response: {response_start_timestamp_twilio}ms")
 
-                            await send_mark(websocket, stream_sid, mark_queue)
+                                # Update last_assistant_item safely
+                                if response.get('item_id'):
+                                    last_assistant_item = response['item_id']
+
+                                # Send mark after audio for synchronization
+                                await send_mark(websocket, stream_sid, mark_queue)
+
+                            except Exception as audio_err:
+                                logger.error(f"❌ Error sending audio delta to Twilio: {audio_err}")
+                                import traceback
+                                logger.error(traceback.format_exc())
 
                         # Handle audio transcript for debugging
                         if response.get('type') == 'response.audio_transcript.delta':
