@@ -178,6 +178,36 @@ class StreamProviderHandler:
         # Close WebSocket
         await self.websocket.close()
 
+    async def run(self):
+        """
+        Main message loop for handling Twilio WebSocket messages
+        Bolna-style: internal loop instead of external iteration
+        """
+        logger.info(f"[STREAM_HANDLER] Starting message loop")
+
+        try:
+            while True:
+                try:
+                    # Receive message from Twilio WebSocket
+                    message_text = await self.websocket.receive_text()
+                    message = json.loads(message_text)
+
+                    # Handle the message
+                    await self.handle_twilio_message(message)
+
+                    # Check for stop event
+                    if message.get('event') == 'stop':
+                        break
+
+                except Exception as e:
+                    logger.error(f"[STREAM_HANDLER] Error in message loop: {e}", exc_info=True)
+                    break
+
+        except Exception as e:
+            logger.error(f"[STREAM_HANDLER] Fatal error in run loop: {e}", exc_info=True)
+        finally:
+            await self.cleanup()
+
     async def cleanup(self):
         """Clean up resources"""
         logger.info(f"[STREAM_HANDLER] Cleaning up handler for call {self.call_sid}")

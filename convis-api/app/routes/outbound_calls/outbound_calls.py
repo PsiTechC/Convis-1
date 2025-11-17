@@ -713,15 +713,12 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             # Initialize streaming handler with voice pipeline
             handler = StreamProviderHandler(websocket, assistant, api_keys, db=db)
 
-            # Handle Twilio WebSocket messages
+            # Run handler with Bolna-style internal message loop
             try:
-                async for message in websocket.iter_text():
-                    data = json.loads(message)
-                    await handler.handle_twilio_message(data)
+                await handler.run()
             except Exception as e:
                 logger.error(f"[STREAM_PIPELINE_ERROR] {e}", exc_info=True)
             finally:
-                await handler.cleanup()
                 await websocket.close()
             return
 

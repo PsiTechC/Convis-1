@@ -3,14 +3,16 @@
 
 export const ENHANCED_TTS_VOICES = {
   cartesia: [
-    { value: 'sonic', label: 'Sonic - Fast, natural voice', gender: 'neutral', accent: 'American' },
-    { value: 'stella', label: 'Stella - Warm, friendly female', gender: 'female', accent: 'American' },
-    { value: 'marcus', label: 'Marcus - Professional male', gender: 'male', accent: 'American' },
-    { value: 'luna', label: 'Luna - Soft, gentle female', gender: 'female', accent: 'American' },
-    { value: 'phoenix', label: 'Phoenix - Energetic male', gender: 'male', accent: 'American' },
-    { value: 'aurora', label: 'Aurora - Clear, professional female', gender: 'female', accent: 'American' },
-    { value: 'orion', label: 'Orion - Deep, authoritative male', gender: 'male', accent: 'American' },
-    { value: 'nova', label: 'Nova - Bright, engaging female', gender: 'female', accent: 'American' }
+    // Real Cartesia Voice IDs - For Voice Agents (Stable, Realistic)
+    { value: 'f786b574-daa5-4673-aa0c-cbe3e8534c02', label: 'Katie - American Female (Voice Agent)', gender: 'female', accent: 'American' },
+    { value: '228fca29-3a0a-435c-8728-5cb483251068', label: 'Kiefer - American Male (Voice Agent)', gender: 'male', accent: 'American' },
+    // For Expressive Characters (Emotive)
+    { value: '6ccbfb76-1fc6-48f7-b71d-91ac6298247b', label: 'Tessa - American Female (Emotive)', gender: 'female', accent: 'American' },
+    { value: 'c961b81c-a935-4c17-bfb3-ba2239de8c2f', label: 'Kyle - American Male (Emotive)', gender: 'male', accent: 'American' },
+    // Additional Voice IDs from Examples
+    { value: 'a0e99841-438c-4a64-b679-ae501e7d6091', label: 'Default Voice (Recommended)', gender: 'neutral', accent: 'American' },
+    { value: 'f9836c6e-a0bd-460e-9d3c-f7299fa60f94', label: 'Alternative Voice 1', gender: 'neutral', accent: 'American' },
+    { value: 'a167e0f3-df7e-4d52-a9c3-f949145efdab', label: 'Customer Support Man', gender: 'male', accent: 'American' }
   ],
   elevenlabs: [
     // Female voices - American (using actual ElevenLabs voice_ids)
@@ -126,16 +128,16 @@ export const ENHANCED_TTS_MODELS = {
   ]
 };
 
-// Enhanced LLM Models with accurate per-token costs
+// Enhanced LLM Models with accurate per-token costs (January 2025)
 // For Custom Provider: Only OpenAI supported (5 best models from cheapest to expensive)
 export const ENHANCED_LLM_MODELS = {
   openai: [
     // Sorted from cheapest/fastest to most expensive/capable
-    { value: 'gpt-4o-mini', label: 'GPT-4O Mini - Cheapest & Fastest ($0.38/1M tokens)', costInput: 0.15, costOutput: 0.60, latency: 400, cost: '0.00038', speed: 'Fastest' },
-    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo - Very Fast ($1.00/1M tokens)', costInput: 0.50, costOutput: 1.50, latency: 300, cost: '0.001', speed: 'Very Fast' },
-    { value: 'gpt-4o', label: 'GPT-4O - Balanced Performance ($6.25/1M tokens)', costInput: 2.50, costOutput: 10.00, latency: 800, cost: '0.00625', speed: 'Fast' },
-    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo - High Quality ($20/1M tokens)', costInput: 10.00, costOutput: 30.00, latency: 1000, cost: '0.02', speed: 'Moderate' },
-    { value: 'o1-mini', label: 'O1 Mini - Most Expensive ($15/1M tokens)', costInput: 3.00, costOutput: 12.00, latency: 1200, cost: '0.015', speed: 'Advanced Reasoning' }
+    { value: 'gpt-4o-mini', label: 'GPT-4O Mini - Cheapest & Fastest ($0.15 in / $0.60 out per 1M tokens)', costInput: 0.15, costOutput: 0.60, latency: 400, cost: '0.000375', speed: 'Fastest' },
+    { value: 'gpt-3.5-turbo', label: 'GPT-3.5 Turbo - Very Fast ($0.50 in / $1.50 out per 1M tokens)', costInput: 0.50, costOutput: 1.50, latency: 300, cost: '0.001', speed: 'Very Fast' },
+    { value: 'gpt-4o', label: 'GPT-4O - Balanced Performance ($5.00 in / $20.00 out per 1M tokens)', costInput: 5.00, costOutput: 20.00, latency: 800, cost: '0.0125', speed: 'Fast' },
+    { value: 'gpt-4-turbo', label: 'GPT-4 Turbo - High Quality ($10.00 in / $30.00 out per 1M tokens)', costInput: 10.00, costOutput: 30.00, latency: 1000, cost: '0.02', speed: 'Moderate' },
+    { value: 'o1-mini', label: 'O1 Mini - Advanced Reasoning ($3.00 in / $12.00 out per 1M tokens)', costInput: 3.00, costOutput: 12.00, latency: 1200, cost: '0.0075', speed: 'Advanced Reasoning' }
   ],
   'openai-realtime': [
     { value: 'gpt-4o-realtime-preview', label: 'GPT-4O Realtime Preview', cost: 0.30, latency: 320, costPerMin: 0.30 },

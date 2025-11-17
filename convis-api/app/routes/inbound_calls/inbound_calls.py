@@ -32,6 +32,7 @@ from app.utils.openai_session import (
 from app.services.calendar_service import CalendarService
 from app.services.calendar_intent_service import CalendarIntentService
 from app.models.inbound_calls import InboundCallConfig, InboundCallResponse
+from fastapi.responses import PlainTextResponse
 import logging
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,33 @@ SHOW_TIMING_MATH = False
 async def inbound_calls_index():
     """Health check for inbound calls service"""
     return {"message": "Inbound calls service is running"}
+
+
+@router.post("/connect/{assistant_id}")
+async def twilio_connect_custom(assistant_id: str, request: Request):
+    """
+    Twilio webhook endpoint that returns TwiML to connect to custom provider WebSocket
+    Bolna-style architecture: returns TwiML with WebSocket stream URL
+
+    This is called by Twilio when a call comes in to a phone number assigned to this assistant
+    """
+    try:
+        # Get request origin to construct WebSocket URL
+        base_url = str(request.base_url).replace('http://', 'wss://').replace('https://', 'wss://')
+        websocket_url = f"{base_url}api/inbound-calls/stream/custom/{assistant_id}"
+
+        # Return TwiML that connects Twilio to our WebSocket
+        response = VoiceResponse()
+        connect = Connect()
+        connect.stream(url=websocket_url)
+
+        logger.info(f"[CONNECT] Routing call to WebSocket: {websocket_url}")
+
+        return PlainTextResponse(str(response), media_type='text/xml')
+
+    except Exception as e:
+        logger.error(f"[CONNECT] Error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/config/{assistant_id}", response_model=InboundCallResponse, status_code=status.HTTP_200_OK)
 async def get_inbound_call_config(assistant_id: str):
@@ -188,6 +216,89 @@ async def handle_incoming_call(assistant_id: str, request: Request):
             detail=f"Failed to handle incoming call: {str(error)}"
         )
 
+@router.websocket("/stream/custom/{assistant_id}")
+async def handle_custom_stream(websocket: WebSocket, assistant_id: str):
+    """
+    Bolna-style WebSocket endpoint for custom provider mode
+    Routes calls to CustomProviderStreamHandler with proper agent configuration
+
+    This endpoint is specifically for voice_mode='custom' assistants
+    """
+    logger.info(f"[CUSTOM_STREAM] Connection for assistant: {assistant_id}")
+    await websocket.accept()
+
+    try:
+        db = Database.get_db()
+        assistants_collection = db['assistants']
+
+        # Fetch assistant configuration
+        try:
+            assistant_obj_id = ObjectId(assistant_id)
+        except Exception as e:
+            logger.error(f"[CUSTOM_STREAM] Invalid assistant_id: {e}")
+            await websocket.close(code=1008, reason="Invalid assistant_id")
+            return
+
+        assistant = assistants_collection.find_one({"_id": assistant_obj_id})
+
+        if not assistant:
+            logger.error(f"[CUSTOM_STREAM] Assistant not found: {assistant_id}")
+            await websocket.close(code=1008, reason="Assistant not found")
+            return
+
+        # Verify this is a custom provider assistant
+        voice_mode = assistant.get('voice_mode', 'realtime')
+        if voice_mode != 'custom':
+            logger.error(f"[CUSTOM_STREAM] Assistant {assistant_id} is not in custom mode (mode: {voice_mode})")
+            await websocket.close(code=1008, reason="Assistant not configured for custom provider")
+            return
+
+        logger.info(f"[CUSTOM_STREAM] Starting custom provider stream for {assistant.get('name')}")
+
+        # Use CustomProviderStreamHandler (Bolna-style)
+        from app.routes.frejun.custom_provider_stream import CustomProviderStreamHandler
+        from app.utils.assistant_keys import resolve_provider_keys, resolve_assistant_api_key
+
+        # Get user ID for API key resolution
+        assistant_user_id = assistant.get('user_id')
+        if isinstance(assistant_user_id, str):
+            assistant_user_id = ObjectId(assistant_user_id)
+
+        # Resolve OpenAI API key
+        try:
+            openai_api_key, _ = resolve_assistant_api_key(db, assistant, required_provider="openai")
+        except HTTPException as exc:
+            logger.error(f"[CUSTOM_STREAM] Failed to resolve API key: {exc.detail}")
+            await websocket.close(code=1008, reason=f"API key error: {exc.detail}")
+            return
+
+        # Resolve all provider keys
+        provider_keys = resolve_provider_keys(db, assistant, assistant_user_id)
+
+        # Initialize custom provider handler
+        handler = CustomProviderStreamHandler(
+            websocket=websocket,
+            assistant_config=assistant,
+            platform="twilio",
+            openai_api_key=openai_api_key,
+            provider_keys=provider_keys
+        )
+
+        # Run handler (Bolna-style internal loop)
+        await handler.handle_stream()
+
+    except WebSocketDisconnect:
+        logger.info(f"[CUSTOM_STREAM] WebSocket disconnected for assistant {assistant_id}")
+    except Exception as e:
+        logger.error(f"[CUSTOM_STREAM] Error: {e}", exc_info=True)
+        try:
+            await websocket.close(code=1011, reason="Internal error")
+        except:
+            pass
+
+    logger.info(f"[CUSTOM_STREAM] Stream ended for assistant {assistant_id}")
+
+
 @router.websocket("/media-stream/{assistant_id}")
 async def handle_media_stream(websocket: WebSocket, assistant_id: str):
     """
@@ -295,15 +406,12 @@ async def handle_media_stream(websocket: WebSocket, assistant_id: str):
             # Initialize streaming handler with voice pipeline
             handler = StreamProviderHandler(websocket, assistant, api_keys, db=db)
 
-            # Handle Twilio WebSocket messages
+            # Run handler with Bolna-style internal message loop
             try:
-                async for message in websocket.iter_text():
-                    data = json.loads(message)
-                    await handler.handle_twilio_message(data)
+                await handler.run()
             except Exception as e:
                 logger.error(f"[STREAM_PIPELINE_ERROR] {e}", exc_info=True)
             finally:
-                await handler.cleanup()
                 await websocket.close()
             return
 

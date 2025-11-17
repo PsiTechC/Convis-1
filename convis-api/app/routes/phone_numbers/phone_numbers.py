@@ -1167,16 +1167,24 @@ async def assign_assistant_to_phone_number(request: Request, assignment: AssignA
                 detail="Phone number and assistant belong to different users"
             )
 
-        # Generate webhook URL
+        # Generate webhook URL based on voice_mode
         # Use API_BASE_URL from settings if available (for production), otherwise use request URL
         if settings.api_base_url:
             base_url = settings.api_base_url
         else:
             base_url = f"{request.url.scheme}://{request.url.netloc}"
 
-        webhook_url = f"{base_url}/api/inbound-calls/incoming-call/{assignment.assistant_id}"
+        # Determine which webhook endpoint to use based on voice_mode
+        voice_mode = assistant_doc.get('voice_mode', 'realtime')
 
-        logger.info(f"Generated webhook URL: {webhook_url}")
+        if voice_mode == 'custom':
+            # Bolna-style: use /connect endpoint that returns TwiML with WebSocket URL
+            webhook_url = f"{base_url}/api/inbound-calls/connect/{assignment.assistant_id}"
+            logger.info(f"[CUSTOM_MODE] Generated Bolna-style webhook URL: {webhook_url}")
+        else:
+            # Realtime API: use existing incoming-call endpoint
+            webhook_url = f"{base_url}/api/inbound-calls/incoming-call/{assignment.assistant_id}"
+            logger.info(f"[REALTIME_MODE] Generated realtime webhook URL: {webhook_url}")
 
         # Update phone number document
         update_doc = {

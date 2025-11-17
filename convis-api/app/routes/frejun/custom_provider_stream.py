@@ -17,6 +17,7 @@ from bson import ObjectId
 from app.config.database import Database
 from app.providers.factory import ProviderFactory
 from app.utils.assistant_keys import resolve_provider_keys, resolve_assistant_api_key
+from app.utils.twilio_mark_handler import TwilioMarkHandler
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,7 @@ class CustomProviderStreamHandler:
         # Twilio-specific state
         self.stream_sid = None  # Required for Twilio audio streaming
         self.call_sid = None
+        self.mark_handler = TwilioMarkHandler(websocket)  # Bolna-style mark event handler
 
         # API keys
         self.provider_keys = provider_keys or assistant_config.get("provider_keys") or {}
@@ -309,26 +311,23 @@ class CustomProviderStreamHandler:
                         pass
 
                 # Send audio in platform-specific format
-                audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
-
                 if self.platform == "frejun":
                     # FreJun format
+                    audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
                     await self.websocket.send_json({
                         "type": "audio",
                         "audio_b64": audio_b64
                     })
                 else:
-                    # Twilio format (requires streamSid)
+                    # Twilio format with mark events (Bolna-style)
                     if not self.stream_sid:
                         logger.warning("[CUSTOM] Missing streamSid for Twilio audio, waiting for start event")
                     else:
-                        await self.websocket.send_json({
-                            "event": "media",
-                            "streamSid": self.stream_sid,
-                            "media": {
-                                "payload": audio_b64
-                            }
-                        })
+                        await self.mark_handler.send_audio_with_marks(
+                            converted_audio,
+                            self.greeting,
+                            is_final=True
+                        )
 
                 logger.info(f"[CUSTOM] Greeting sent to {self.platform} ({len(converted_audio)} bytes)")
 
@@ -339,11 +338,14 @@ class CustomProviderStreamHandler:
         """
         Buffer audio and transcribe when we have enough data
         Uses simple VAD (Voice Activity Detection) based on buffer size
+        Bolna-style: 100ms buffering for optimal latency
         """
         self.audio_buffer.extend(audio_data)
 
-        # Process when we have ~1 second of audio (8000 samples * 2 bytes = 16000 bytes)
-        if len(self.audio_buffer) >= 16000:
+        # Process when we have ~100ms of audio (8000 samples/sec * 0.1sec * 2 bytes = 1600 bytes)
+        # Twilio sends 20ms chunks (320 bytes), so we buffer 5 chunks = 100ms
+        # This matches Bolna's optimal buffering strategy
+        if len(self.audio_buffer) >= 1600:
             await self.transcribe_and_respond()
 
     async def transcribe_and_respond(self):
@@ -426,26 +428,23 @@ class CustomProviderStreamHandler:
                     pass
 
             # Send audio in platform-specific format
-            audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
-
             if self.platform == "frejun":
                 # FreJun format
+                audio_b64 = base64.b64encode(converted_audio).decode('utf-8')
                 await self.websocket.send_json({
                     "type": "audio",
                     "audio_b64": audio_b64
                 })
             else:
-                # Twilio format (requires streamSid)
+                # Twilio format with mark events (Bolna-style)
                 if not self.stream_sid:
                     logger.warning("[CUSTOM] Missing streamSid for Twilio audio, waiting for start event")
                 else:
-                    await self.websocket.send_json({
-                        "event": "media",
-                        "streamSid": self.stream_sid,
-                        "media": {
-                            "payload": audio_b64
-                        }
-                    })
+                    await self.mark_handler.send_audio_with_marks(
+                        converted_audio,
+                        response_text,
+                        is_final=True
+                    )
 
             logger.info(f"[CUSTOM] Response audio sent to {self.platform} ({len(converted_audio)} bytes)")
 
@@ -514,7 +513,7 @@ class CustomProviderStreamHandler:
             logger.error(f"[CUSTOM] Error logging interaction: {e}")
 
     async def handle_stream(self):
-        """Main handler for WebSocket streaming"""
+        """Main handler for WebSocket streaming - Bolna-style internal loop"""
         self.is_running = True
 
         try:
@@ -531,7 +530,7 @@ class CustomProviderStreamHandler:
                 await self.send_greeting()
                 greeting_sent = True
 
-            # Main message loop
+            # Main message loop (Bolna-style: internal WebSocket loop)
             while self.is_running:
                 try:
                     # Receive message from platform (FreJun or Twilio)
@@ -591,12 +590,21 @@ class CustomProviderStreamHandler:
                             start_data = message.get("start", {})
                             self.stream_sid = start_data.get("streamSid")
                             self.call_sid = start_data.get("callSid")
+                            # Update mark handler with stream_sid
+                            self.mark_handler.set_stream_sid(self.stream_sid)
                             logger.info(f"[CUSTOM] Twilio stream started - StreamSID: {self.stream_sid}, CallSID: {self.call_sid}")
 
                             # Send greeting now that we have streamSid
                             if not greeting_sent:
                                 await self.send_greeting()
                                 greeting_sent = True
+
+                        elif event == "mark":
+                            # Handle mark event confirmation from Twilio
+                            mark_data = message.get("mark", {})
+                            mark_id = mark_data.get("name")
+                            if mark_id:
+                                self.mark_handler.process_mark_received(mark_id)
 
                         elif event == "stop":
                             logger.info(f"[CUSTOM] Twilio stream stopped")

@@ -706,13 +706,17 @@ class CustomProviderHandler:
                         "model": self.tts_model,
                         "voice": self.tts_voice,
                         "input": text,
-                        "response_format": "mulaw"  # Twilio format
+                        "response_format": "pcm"  # Get PCM, will convert to mulaw
                     },
                     timeout=30.0
                 )
 
                 if response.status_code == 200:
-                    return response.content
+                    pcm_audio = response.content
+                    # Convert PCM to μ-law for Twilio (like Bolna does)
+                    import audioop
+                    mulaw_audio = audioop.lin2ulaw(pcm_audio, 2)
+                    return mulaw_audio
                 else:
                     logger.error(f"[OPENAI_TTS] Error: {response.status_code}")
                     return None
@@ -798,11 +802,15 @@ class CustomProviderHandler:
 
                 if response.status_code == 200:
                     result = response.json()
-                    # Sarvam returns base64 encoded audio
+                    # Sarvam returns base64 encoded PCM audio at 8kHz
                     if 'audios' in result and len(result['audios']) > 0:
                         audio_base64 = result['audios'][0]
                         import base64
-                        return base64.b64decode(audio_base64)
+                        pcm_audio = base64.b64decode(audio_base64)
+                        # Convert PCM to μ-law for Twilio
+                        import audioop
+                        mulaw_audio = audioop.lin2ulaw(pcm_audio, 2)
+                        return mulaw_audio
                     else:
                         logger.error("[SARVAM_TTS] No audio in response")
                         return None
