@@ -1,10 +1,23 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { DotLottieReact } from '@lottiefiles/dotlottie-react';
 import { NAV_ITEMS, NavigationItem } from '../components/Navigation';
 import { TopBar } from '../components/TopBar';
+
+type StoredUser = {
+  id?: string;
+  _id?: string;
+  clientId?: string;
+  name?: string;
+  fullName?: string;
+  firstName?: string;
+  lastName?: string;
+  username?: string;
+  email?: string;
+  [key: string]: unknown;
+};
 
 interface Voice {
   id: string;
@@ -35,6 +48,7 @@ export default function VoiceLabPage() {
   const [error, setError] = useState<string | null>(null);
   const [currentlyPlaying, setCurrentlyPlaying] = useState<string | null>(null);
   const [userId, setUserId] = useState<string | null>(null);
+  const [user, setUser] = useState<StoredUser | null>(null);
   const [isDarkMode, setIsDarkMode] = useState(false);
 
   // UI State
@@ -79,7 +93,8 @@ export default function VoiceLabPage() {
 
     // Get userId from user object
     if (userStr) {
-      const parsedUser = JSON.parse(userStr);
+      const parsedUser: StoredUser = JSON.parse(userStr);
+      setUser(parsedUser);
       const resolvedUserId = parsedUser.id || parsedUser._id || parsedUser.clientId;
       if (resolvedUserId) {
         setUserId(resolvedUserId);
@@ -341,6 +356,8 @@ export default function VoiceLabPage() {
   const handleLogout = () => {
     localStorage.removeItem('token');
     localStorage.removeItem('user');
+    localStorage.removeItem('clientId');
+    localStorage.removeItem('isAdmin');
     router.push('/login');
   };
 
@@ -350,12 +367,30 @@ export default function VoiceLabPage() {
     localStorage.setItem('theme', newTheme ? 'dark' : 'light');
   };
 
-  // User info for TopBar
-  const userStr = typeof window !== 'undefined' ? localStorage.getItem('user') : null;
-  const parsedUser = userStr ? JSON.parse(userStr) : null;
-  const userFullName = parsedUser?.fullName || parsedUser?.name || parsedUser?.firstName || parsedUser?.username || 'User';
-  const userInitial = userFullName.charAt(0).toUpperCase();
-  const userGreeting = `Hi, ${userFullName.split(' ')[0]}`;
+  // User info for TopBar (mirror dashboard logic)
+  const userInitial = useMemo(() => {
+    const possible = user?.fullName || user?.name || user?.username || user?.email;
+    if (!possible || typeof possible !== 'string' || possible.length === 0) {
+      return 'U';
+    }
+    return possible.trim().charAt(0).toUpperCase();
+  }, [user]);
+
+  const userGreeting = useMemo(() => {
+    const candidates = [
+      user?.firstName && user?.firstName,
+      user?.fullName,
+      user?.name,
+      user?.username,
+      user?.email,
+    ].filter((value) => typeof value === 'string' && value.trim().length > 0) as string[];
+    if (candidates.length === 0) return 'User';
+    const primary = candidates[0];
+    if (primary.includes('@')) {
+      return primary.split('@')[0];
+    }
+    return primary.split(' ')[0];
+  }, [user]);
 
   return (
     <div className={`min-h-screen ${isDarkMode ? 'dark bg-gray-900' : 'bg-neutral-light'}`}>

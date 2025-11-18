@@ -401,12 +401,11 @@ class SarvamTTS(TTSProvider):
     def get_available_voices(self) -> Dict[str, str]:
         """Available Sarvam voices"""
         return {
-            "manisha": "Female Hindi voice",
-            "anushka": "Female Hindi voice",
+            "anushka": "Female Hindi voice (default)",
+            "manisha": "Female bilingual Hindi/English voice",
+            "vidya": "Female Hindi voice",
+            "arya": "Female Hindi voice",
             "abhilash": "Male Hindi voice",
-            "vidya": "Female voice",
-            "arya": "Female voice",
-            "karun": "Male voice",
-            "hitesh": "Male voice",
-            "aditya": "Male voice"
+            "karun": "Male Hindi voice",
+            "hitesh": "Male Hindi/English voice"
         }

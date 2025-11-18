@@ -33,10 +33,7 @@ class SarvamSynthesizer(BaseSynthesizer):
     Sarvam AI TTS synthesizer using WebSocket streaming
     Supports: Hindi and other Indian languages
     Models: bulbul:v2, bulbul:v3-beta (default: bulbul:v2)
-    Valid Speakers: anushka, abhilash, manisha, vidya, arya, karun, hitesh, aditya,
-                   isha, ritu, chirag, harsh, sakshi, priya, neha, rahul, pooja,
-                   rohan, simran, kavya, anjali, sneha, kiran, vikram, rajesh,
-                   sunita, tara, anirudh, kriti, ishaan
+    Valid Speakers (bulbul:v2): anushka, manisha, vidya, arya, abhilash, karun, hitesh
     """
 
     def __init__(
