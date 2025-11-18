@@ -26,8 +26,14 @@ class Settings(BaseSettings):
     frontend_url: str = "https://webapp.convis.ai"
     jwt_secret: str = "default_secret_change_in_production"
 
-    # OpenAI Configuration
+    # TTS Provider API Keys
     openai_api_key: Optional[str] = None
+    sarvam_api_key: Optional[str] = None
+    cartesia_api_key: Optional[str] = None
+    elevenlabs_api_key: Optional[str] = None
+
+    # ASR Provider API Keys
+    deepgram_api_key: Optional[str] = None
 
     # Encryption Configuration (for production)
     encryption_key: Optional[str] = None

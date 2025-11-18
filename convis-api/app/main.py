@@ -28,6 +28,7 @@ from app.routes.campaign_twilio_callbacks import router as campaign_twilio_route
 from app.routes.dashboard import router as dashboard_router
 from app.routes.whatsapp import credentials_router, messages_router, webhooks_router
 from app.routes.transcription import transcription_router
+from app.routes.voices import router as voices_router
 from app.config.database import Database
 from app.config.settings import settings
 from app.services.campaign_scheduler import campaign_scheduler
@@ -131,6 +132,9 @@ app.include_router(webhooks_router, prefix="/api/whatsapp", tags=["WhatsApp Webh
 
 # Transcription Management
 app.include_router(transcription_router, prefix="/api/transcription", tags=["Transcription"])
+
+# Voice Library and Preferences
+app.include_router(voices_router, prefix="/api/voices", tags=["Voices"])
 
 
 async def transcribe_existing_recordings():
