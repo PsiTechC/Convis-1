@@ -286,8 +286,23 @@ export default function VoiceLabPage() {
       );
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.detail || 'Failed to generate voice demo');
+        let errorMessage = 'Failed to generate voice demo';
+        try {
+          const errorData = await response.json();
+          errorMessage = errorData?.detail || errorData?.message || errorMessage;
+        } catch {
+          // Fallback to status text if JSON parse fails
+          errorMessage = response.statusText || errorMessage;
+        }
+
+        // Provide clearer guidance based on provider/key issues
+        if (voice.provider === 'openai' && errorMessage.toLowerCase().includes('no openai api key')) {
+          errorMessage = 'Please add an OpenAI TTS API key in Settings (Custom Provider) or add OPENAI_API_KEY to .env.';
+        } else if (voice.provider === 'cartesia' && response.status >= 500) {
+          errorMessage = 'Cartesia demo failed (500). Please verify your Cartesia API key in Settings (.env fallback) and try again.';
+        }
+
+        throw new Error(errorMessage);
       }
 
       // Create audio from blob
