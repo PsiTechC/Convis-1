@@ -1003,6 +1003,12 @@ IMPORTANT:
             # Initialize session with interruption handling enabled
             # NOTE: send_session_update now calls send_initial_conversation_item internally
             # This matches the original pattern from CallTack_IN_out/inbound_calls.py line 223
+
+            # Get VAD settings from assistant config for noise suppression
+            vad_threshold = assistant_config.get('vad_threshold', 0.5)
+            vad_prefix_padding_ms = assistant_config.get('vad_prefix_padding_ms', 300)
+            vad_silence_duration_ms = assistant_config.get('vad_silence_duration_ms', 500)
+
             await send_session_update(
                 openai_ws,
                 system_message,
@@ -1010,7 +1016,10 @@ IMPORTANT:
                 temperature,
                 enable_interruptions=True,
                 greeting_text=call_greeting,
-                max_response_output_tokens="inf"  # Allow unlimited response length for natural conversation
+                max_response_output_tokens="inf",  # Allow unlimited response length for natural conversation
+                vad_threshold=vad_threshold,  # Noise sensitivity control
+                vad_prefix_padding_ms=vad_prefix_padding_ms,  # Speech start padding
+                vad_silence_duration_ms=vad_silence_duration_ms  # Silence detection for noise handling
             )
 
             # Connection specific state
@@ -1086,7 +1095,10 @@ IMPORTANT:
                                     temperature,
                                     enable_interruptions=True,
                                     greeting_text=f"Hello {caller_name}! {call_greeting.replace('Hello!', '').strip()}",
-                                    max_response_output_tokens="inf"  # Allow unlimited response length
+                                    max_response_output_tokens="inf",  # Allow unlimited response length
+                                    vad_threshold=vad_threshold,
+                                    vad_prefix_padding_ms=vad_prefix_padding_ms,
+                                    vad_silence_duration_ms=vad_silence_duration_ms
                                 )
                                 logger.info(f"Updated greeting for {caller_name}")
 

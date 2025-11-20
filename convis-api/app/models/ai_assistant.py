@@ -55,6 +55,12 @@ class AIAssistantCreate(BaseModel):
     # Language Configuration
     bot_language: Optional[str] = "en"  # Language for bot responses (en, hi, es, fr, de, etc.)
 
+    # Noise Suppression & Voice Activity Detection (VAD)
+    noise_suppression_level: Optional[str] = "medium"  # off, low, medium, high, maximum
+    vad_threshold: Optional[float] = Field(default=0.5, ge=0.0, le=1.0)  # Voice activity detection threshold (0.0-1.0)
+    vad_prefix_padding_ms: Optional[int] = Field(default=300, ge=0, le=1000)  # Padding before speech starts (ms)
+    vad_silence_duration_ms: Optional[int] = Field(default=500, ge=100, le=2000)  # Silence duration to detect end of speech (ms)
+
 class AIAssistantUpdate(BaseModel):
     name: Optional[str] = None
     system_message: Optional[str] = None
@@ -104,6 +110,12 @@ class AIAssistantUpdate(BaseModel):
 
     # Language Configuration
     bot_language: Optional[str] = None  # Language for bot responses
+
+    # Noise Suppression & Voice Activity Detection (VAD)
+    noise_suppression_level: Optional[str] = None  # off, low, medium, high, maximum
+    vad_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)  # Voice activity detection threshold
+    vad_prefix_padding_ms: Optional[int] = Field(default=None, ge=0, le=1000)  # Padding before speech starts
+    vad_silence_duration_ms: Optional[int] = Field(default=None, ge=100, le=2000)  # Silence duration to detect end of speech
 
 class KnowledgeBaseFile(BaseModel):
     filename: str
@@ -183,6 +195,12 @@ class AIAssistantResponse(BaseModel):
 
     # Language Configuration
     bot_language: str = "en"  # Language for bot responses
+
+    # Noise Suppression & Voice Activity Detection (VAD)
+    noise_suppression_level: str = "medium"  # off, low, medium, high, maximum
+    vad_threshold: float = 0.5  # Voice activity detection threshold
+    vad_prefix_padding_ms: int = 300  # Padding before speech starts
+    vad_silence_duration_ms: int = 500  # Silence duration to detect end of speech
 
     created_at: str
     updated_at: str

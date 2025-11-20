@@ -1,6 +1,7 @@
 """
 Custom Provider WebSocket Streaming Handler
 Handles calls using separate ASR and TTS providers (not OpenAI Realtime API)
+WITH CALENDAR INTEGRATION SUPPORT
 """
 
 import logging
@@ -10,7 +11,7 @@ import base64
 import audioop
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from bson import ObjectId
 
@@ -18,8 +19,72 @@ from app.config.database import Database
 from app.providers.factory import ProviderFactory
 from app.utils.assistant_keys import resolve_provider_keys, resolve_assistant_api_key
 from app.utils.twilio_mark_handler import TwilioMarkHandler
+from app.services.calendar_service import CalendarService
+from app.services.calendar_intent_service import CalendarIntentService
 
 logger = logging.getLogger(__name__)
+
+
+def detect_language_from_text(text: str) -> str:
+    """
+    Detect language from text using simple heuristics and character patterns.
+    Returns ISO language code (e.g., 'en', 'hi', 'es', 'fr', etc.)
+
+    This is a fast, lightweight detection that works for most common languages.
+    For more accuracy, could integrate with langdetect library, but this adds dependency.
+    """
+    if not text or len(text.strip()) < 3:
+        return 'en'  # Default to English for very short text
+
+    text = text.lower().strip()
+
+    # Hindi detection - Devanagari script
+    if any('\u0900' <= char <= '\u097F' for char in text):
+        return 'hi'
+
+    # Spanish indicators
+    spanish_words = ['hola', 'gracias', 'por favor', 'sí', 'no', 'cómo', 'qué', 'dónde', 'cuándo']
+    if any(word in text for word in spanish_words):
+        return 'es'
+
+    # French indicators
+    french_words = ['bonjour', 'merci', 's\'il vous plaît', 'oui', 'non', 'comment', 'quoi', 'où', 'quand']
+    if any(word in text for word in french_words):
+        return 'fr'
+
+    # German indicators
+    german_words = ['hallo', 'danke', 'bitte', 'ja', 'nein', 'wie', 'was', 'wo', 'wann']
+    if any(word in text for word in german_words):
+        return 'de'
+
+    # Portuguese indicators
+    portuguese_words = ['olá', 'obrigado', 'por favor', 'sim', 'não', 'como', 'que', 'onde', 'quando']
+    if any(word in text for word in portuguese_words):
+        return 'pt'
+
+    # Italian indicators
+    italian_words = ['ciao', 'grazie', 'per favore', 'sì', 'no', 'come', 'cosa', 'dove', 'quando']
+    if any(word in text for word in italian_words):
+        return 'it'
+
+    # Arabic detection
+    if any('\u0600' <= char <= '\u06FF' for char in text):
+        return 'ar'
+
+    # Chinese detection
+    if any('\u4e00' <= char <= '\u9fff' for char in text):
+        return 'zh'
+
+    # Japanese detection
+    if any('\u3040' <= char <= '\u309f' or '\u30a0' <= char <= '\u30ff' for char in text):
+        return 'ja'
+
+    # Korean detection
+    if any('\uac00' <= char <= '\ud7af' for char in text):
+        return 'ko'
+
+    # Default to English
+    return 'en'
 
 
 class CustomProviderStreamHandler:
@@ -63,6 +128,15 @@ class CustomProviderStreamHandler:
         self.call_sid = None
         self.mark_handler = TwilioMarkHandler(websocket)  # Bolna-style mark event handler
 
+        # Calendar integration state
+        self.calendar_enabled = False
+        self.calendar_service: Optional[CalendarService] = None
+        self.calendar_intent_service: Optional[CalendarIntentService] = None
+        self.calendar_account_ids: List[str] = []
+        self.scheduling_task: Optional[asyncio.Task] = None
+        self.appointment_scheduled = False
+        self.appointment_metadata: Dict[str, Any] = {}
+
         # API keys
         self.provider_keys = provider_keys or assistant_config.get("provider_keys") or {}
         if openai_api_key:
@@ -82,19 +156,21 @@ class CustomProviderStreamHandler:
         self.system_message = assistant_config.get('system_message', 'You are a helpful AI assistant.')
 
         # Add language instruction to system message if not English
-        bot_language = assistant_config.get('bot_language', 'en')
-        if bot_language and bot_language != 'en':
-            language_names = {
-                'hi': 'Hindi', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
-                'pt': 'Portuguese', 'it': 'Italian', 'ja': 'Japanese', 'ko': 'Korean',
-                'ar': 'Arabic', 'ru': 'Russian', 'zh': 'Chinese', 'nl': 'Dutch',
-                'pl': 'Polish', 'tr': 'Turkish'
-            }
-            language_name = language_names.get(bot_language, bot_language.upper())
+        self.bot_language = assistant_config.get('bot_language', 'en')
+        self.language_names = {
+            'hi': 'Hindi', 'es': 'Spanish', 'fr': 'French', 'de': 'German',
+            'pt': 'Portuguese', 'it': 'Italian', 'ja': 'Japanese', 'ko': 'Korean',
+            'ar': 'Arabic', 'ru': 'Russian', 'zh': 'Chinese', 'nl': 'Dutch',
+            'pl': 'Polish', 'tr': 'Turkish'
+        }
+
+        if self.bot_language and self.bot_language != 'en':
+            language_name = self.language_names.get(self.bot_language, self.bot_language.upper())
             self.system_message = f"{self.system_message}\n\nIMPORTANT: You MUST speak and respond ONLY in {language_name}. All your responses should be in {language_name} language."
 
-        # Use greeting exactly as configured by user
+        # Get greeting (will be translated to bot_language if needed)
         self.greeting = assistant_config.get('greeting', 'Hello! Thanks for calling. How can I help you today?')
+        self.original_greeting = self.greeting  # Store original for reference
 
         # ASR Configuration
         self.asr_language = assistant_config.get('asr_language', 'en')
@@ -297,6 +373,31 @@ class CustomProviderStreamHandler:
                 "content": self.system_message
             })
 
+            # Initialize calendar services if enabled
+            logger.info(f"[CUSTOM] 📅 Checking calendar configuration...")
+            calendar_enabled_flag = self.assistant_config.get('calendar_enabled', False)
+            calendar_account_ids = self.assistant_config.get('calendar_account_ids', [])
+
+            if calendar_enabled_flag and calendar_account_ids:
+                logger.info(f"[CUSTOM] 📅 Calendar enabled with {len(calendar_account_ids)} account(s)")
+                self.calendar_enabled = True
+                self.calendar_account_ids = calendar_account_ids
+                self.calendar_service = CalendarService()
+                self.calendar_intent_service = CalendarIntentService()
+
+                # Add calendar instructions to system message
+                calendar_instruction = "\n\nIMPORTANT: You can schedule appointments for the caller. When someone wants to schedule a meeting or appointment, collect the following: date, time, duration, and their name/email. Always confirm the details before finalizing."
+                self.system_message += calendar_instruction
+                self.conversation_history[0]["content"] += calendar_instruction
+
+                logger.info(f"[CUSTOM] ✅ Calendar services initialized successfully")
+            else:
+                logger.info(f"[CUSTOM] ℹ️ Calendar integration disabled or no accounts configured")
+
+            # Translate greeting to bot language if needed
+            if self.bot_language and self.bot_language != 'en':
+                await self.translate_greeting()
+
             logger.info(f"[CUSTOM] Providers initialized successfully (LLM: {self.llm_provider}, Model: {self.llm_model or 'default'})")
             return True
 
@@ -305,14 +406,15 @@ class CustomProviderStreamHandler:
             return False
 
     async def send_greeting(self):
-        """Send initial greeting to caller"""
+        """Send initial greeting to caller - IMMEDIATE playback for zero lag"""
         try:
-            logger.info(f"[CUSTOM] Sending greeting: {self.greeting}")
+            logger.info(f"[CUSTOM] 🎙️ === IMMEDIATE GREETING SYNTHESIS START ===")
+            logger.info(f"[CUSTOM] Greeting text: {self.greeting}")
 
-            # Generate greeting audio
-            logger.info(f"[CUSTOM] 🔊 Calling TTS provider to synthesize greeting...")
+            # Generate greeting audio IMMEDIATELY (no buffering, no delays)
+            logger.info(f"[CUSTOM] 🔊 Synthesizing greeting with TTS provider ({self.tts_provider_name})...")
             greeting_audio = await self.tts_provider.synthesize(self.greeting)
-            logger.info(f"[CUSTOM] 🔊 TTS provider returned {len(greeting_audio) if greeting_audio else 0} bytes of audio")
+            logger.info(f"[CUSTOM] ✅ TTS returned {len(greeting_audio) if greeting_audio else 0} bytes of audio")
 
             # Convert audio if needed
             if greeting_audio and len(greeting_audio) > 0:
@@ -370,15 +472,17 @@ class CustomProviderStreamHandler:
                 else:
                     # Twilio format with mark events (Bolna-style)
                     if not self.stream_sid:
-                        logger.warning("[CUSTOM] Missing streamSid for Twilio audio, waiting for start event")
+                        logger.warning("[CUSTOM] ⚠️ Missing streamSid for Twilio audio, waiting for start event")
                     else:
+                        logger.info(f"[CUSTOM] 📤 Sending greeting audio to Twilio ({len(converted_audio)} bytes)")
                         await self.mark_handler.send_audio_with_marks(
                             converted_audio,
                             self.greeting,
                             is_final=True
                         )
+                        logger.info(f"[CUSTOM] ✅ Greeting audio sent to Twilio successfully")
 
-                logger.info(f"[CUSTOM] Greeting sent to {self.platform} ({len(converted_audio)} bytes)")
+                logger.info(f"[CUSTOM] 🎉 === GREETING SENT TO {self.platform.upper()} === ({len(converted_audio)} bytes)")
             else:
                 logger.error(f"[CUSTOM] ❌ TTS returned NO AUDIO for greeting! Provider: {self.tts_provider_name}")
                 logger.error(f"[CUSTOM] ❌ Greeting text was: \"{self.greeting}\"")
@@ -387,20 +491,64 @@ class CustomProviderStreamHandler:
         except Exception as e:
             logger.error(f"[CUSTOM] Error sending greeting: {e}", exc_info=True)
 
+    async def translate_greeting(self):
+        """Translate greeting to the selected bot language using OpenAI"""
+        try:
+            language_name = self.language_names.get(self.bot_language, self.bot_language.upper())
+            logger.info(f"[CUSTOM] 🌍 Translating greeting to {language_name}...")
+            logger.info(f"[CUSTOM]   Original greeting: \"{self.original_greeting}\"")
+
+            # Use OpenAI to translate the greeting
+            from openai import OpenAI
+            client = OpenAI(api_key=self.openai_api_key)
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",  # Fast and cheap model for translation
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"You are a professional translator. Translate the given text to {language_name}. Only return the translation, nothing else. Maintain the tone and formality of the original text."
+                    },
+                    {
+                        "role": "user",
+                        "content": self.original_greeting
+                    }
+                ],
+                temperature=0.3,  # Lower temperature for more consistent translations
+                max_tokens=150
+            )
+
+            translated_greeting = response.choices[0].message.content.strip()
+
+            if translated_greeting:
+                self.greeting = translated_greeting
+                logger.info(f"[CUSTOM] ✅ Greeting translated to {language_name}: \"{self.greeting}\"")
+            else:
+                logger.warning(f"[CUSTOM] ⚠️ Translation returned empty, using original greeting")
+
+        except Exception as e:
+            logger.error(f"[CUSTOM] ❌ Error translating greeting: {e}")
+            logger.warning(f"[CUSTOM] ⚠️ Falling back to original greeting: \"{self.original_greeting}\"")
+            # Keep original greeting on error
+
     async def process_audio_chunk(self, audio_data: bytes):
         """
         Buffer audio and transcribe when we have enough data
         Uses simple VAD (Voice Activity Detection) based on buffer size
-        Bolna-style: 100ms buffering for optimal latency
+        Configurable buffering: lower = faster response, higher = better accuracy
         """
         self.audio_buffer.extend(audio_data)
         logger.debug(f"[CUSTOM] 🎙️ Buffered audio: {len(self.audio_buffer)} bytes total")
 
-        # Process when we have ~100ms of audio (8000 samples/sec * 0.1sec * 2 bytes = 1600 bytes)
-        # Twilio sends 20ms chunks (320 bytes), so we buffer 5 chunks = 100ms
-        # This matches Bolna's optimal buffering strategy
-        if len(self.audio_buffer) >= 1600:
-            logger.info(f"[CUSTOM] 🎯 Buffer threshold reached ({len(self.audio_buffer)} bytes), processing...")
+        # Calculate buffer threshold based on configured buffer size (in ms)
+        # Formula: (sample_rate * buffer_ms / 1000) * bytes_per_sample
+        # Example: (8000 * 200 / 1000) * 2 = 3200 bytes for 200ms buffer
+        buffer_threshold_bytes = int((8000 * self.audio_buffer_size / 1000) * 2)
+
+        # Process when buffer reaches threshold
+        # Twilio sends 20ms chunks (320 bytes), so actual buffer will be a multiple of 320
+        if len(self.audio_buffer) >= buffer_threshold_bytes:
+            logger.info(f"[CUSTOM] 🎯 Buffer threshold reached ({len(self.audio_buffer)}/{buffer_threshold_bytes} bytes), processing...")
             await self.transcribe_and_respond()
 
     async def transcribe_and_respond(self):
@@ -412,6 +560,9 @@ class CustomProviderStreamHandler:
             return
 
         try:
+            # ⏱️ Start timing the entire pipeline
+            pipeline_start = datetime.now()
+
             # Copy buffer and clear it
             audio_to_process = bytes(self.audio_buffer)
             self.audio_buffer.clear()
@@ -419,14 +570,50 @@ class CustomProviderStreamHandler:
             logger.info(f"[CUSTOM] 🎤 === TRANSCRIPTION START === ({len(audio_to_process)} bytes)")
 
             # Transcribe using ASR provider
+            asr_start = datetime.now()
             logger.info(f"[CUSTOM] 🔄 Calling ASR provider: {self.asr_provider_name}")
             transcript = await self.asr_provider.transcribe(audio_to_process)
+            asr_time = (datetime.now() - asr_start).total_seconds() * 1000
 
             if not transcript or len(transcript.strip()) == 0:
                 logger.debug(f"[CUSTOM] ℹ️ Empty transcript from ASR, skipping")
                 return
 
-            logger.info(f"[CUSTOM] ✅ Transcribed ({len(transcript)} chars): \"{transcript}\"")
+            logger.info(f"[CUSTOM] ✅ Transcribed in {asr_time:.0f}ms ({len(transcript)} chars): \"{transcript}\"")
+
+            # 🌍 AUTOMATIC LANGUAGE DETECTION & SWITCHING
+            detected_language = detect_language_from_text(transcript)
+            if detected_language != self.bot_language:
+                logger.info(f"[CUSTOM] 🌍 Language switch detected: {self.bot_language} → {detected_language}")
+                logger.info(f"[CUSTOM] 🌍 User is now speaking in: {detected_language.upper()}")
+
+                # Update bot language for responses
+                old_language = self.bot_language
+                self.bot_language = detected_language
+
+                # Update ASR language for better future transcriptions (if ASR supports it)
+                if hasattr(self.asr_provider, 'set_language'):
+                    self.asr_provider.set_language(detected_language)
+                    logger.info(f"[CUSTOM] 🌍 Updated ASR language to: {detected_language}")
+
+                # Update system message to reflect new language
+                language_name = self.language_names.get(self.bot_language, self.bot_language.upper())
+                if self.bot_language != 'en':
+                    # Add language instruction to system message
+                    base_system_message = self.system_message.split("\n\nIMPORTANT: You MUST speak")[0]
+                    self.system_message = f"{base_system_message}\n\nIMPORTANT: You MUST speak and respond ONLY in {language_name}. All your responses should be in {language_name} language."
+                    logger.info(f"[CUSTOM] 🌍 Updated system message for {language_name} responses")
+                else:
+                    # Remove language instruction for English
+                    self.system_message = self.system_message.split("\n\nIMPORTANT: You MUST speak")[0]
+                    logger.info(f"[CUSTOM] 🌍 Switched back to English - removed language instruction")
+
+                # Update the system message in conversation history
+                if len(self.conversation_history) > 0 and self.conversation_history[0].get('role') == 'system':
+                    self.conversation_history[0]['content'] = self.system_message
+                    logger.info(f"[CUSTOM] 🌍 Updated system message in conversation history")
+
+                logger.info(f"[CUSTOM] 🌍 ✅ Language switched from {old_language} to {detected_language}")
 
             # Add user message to history
             self.conversation_history.append({
@@ -438,13 +625,15 @@ class CustomProviderStreamHandler:
             # Generate LLM response
             logger.info(f"[CUSTOM] 🤖 === LLM GENERATION START ===")
             logger.info(f"[CUSTOM] 🔄 Calling LLM provider: {self.llm_provider}/{self.llm_model}")
+            llm_start = datetime.now()
             response_text = await self.generate_llm_response()
+            llm_time = (datetime.now() - llm_start).total_seconds() * 1000
 
             if not response_text:
                 logger.warning(f"[CUSTOM] ⚠️ Empty LLM response, skipping")
                 return
 
-            logger.info(f"[CUSTOM] ✅ LLM response ({len(response_text)} chars): \"{response_text}\"")
+            logger.info(f"[CUSTOM] ✅ LLM response ({len(response_text)} chars) in {llm_time:.0f}ms: \"{response_text}\"")
 
             # Add assistant message to history
             self.conversation_history.append({
@@ -453,19 +642,36 @@ class CustomProviderStreamHandler:
             })
             logger.info(f"[CUSTOM] 💬 Added assistant message to conversation history")
 
-            # Convert response to speech
-            logger.info(f"[CUSTOM] 🔊 === TTS SYNTHESIS START ===")
-            logger.info(f"[CUSTOM] 🔄 Calling TTS provider: {self.tts_provider_name}")
-            response_audio = await self.tts_provider.synthesize(response_text)
+            # ⚡ OPTIMIZATION: Run TTS synthesis and calendar check IN PARALLEL to reduce lag
+            logger.info(f"[CUSTOM] ⚡ Starting TTS synthesis and calendar check in parallel...")
+
+            # Start TTS synthesis immediately (don't wait)
+            tts_task = asyncio.create_task(self._synthesize_response(response_text))
+
+            # Check for calendar intent in parallel (non-blocking)
+            if self.calendar_enabled and not self.appointment_scheduled and not self.scheduling_task:
+                asyncio.create_task(self.check_calendar_intent())  # Fire and forget
+
+            # Wait ONLY for TTS to complete (calendar check runs in background)
+            response_audio, tts_time = await tts_task
 
             if not response_audio:
                 logger.error(f"[CUSTOM] ❌ TTS synthesis returned no audio!")
                 return
 
-            logger.info(f"[CUSTOM] ✅ TTS synthesized {len(response_audio)} bytes of audio")
+            logger.info(f"[CUSTOM] ✅ TTS completed: {len(response_audio)} bytes")
+
+            # ⏱️ Log complete pipeline timing breakdown
+            total_time = (datetime.now() - pipeline_start).total_seconds() * 1000
+            logger.info(f"[CUSTOM] ⚡ === PIPELINE LATENCY BREAKDOWN ===")
+            logger.info(f"[CUSTOM]   ASR (Speech-to-Text): {asr_time:.0f}ms")
+            logger.info(f"[CUSTOM]   LLM (AI Response):     {llm_time:.0f}ms")
+            logger.info(f"[CUSTOM]   TTS (Text-to-Speech):  {tts_time:.0f}ms")
+            logger.info(f"[CUSTOM]   ⚡ TOTAL PIPELINE:     {total_time:.0f}ms")
+            logger.info(f"[CUSTOM] ⚡ === END PIPELINE TIMING ===")
 
             # Convert audio format if needed
-            logger.info(f"[CUSTOM] 🔄 === AUDIO CONVERSION START ===")
+            logger.info(f"[CUSTOM] 🔄 Converting audio format...")
             # Determine input sample rate based on TTS provider
             input_sample_rate = 8000  # Default for Cartesia
             is_wav_format = False  # Flag for WAV-encoded audio
@@ -552,6 +758,28 @@ class CustomProviderStreamHandler:
         except Exception as e:
             logger.error(f"[CUSTOM] Error in transcribe_and_respond: {e}", exc_info=True)
 
+    async def _synthesize_response(self, text: str) -> tuple[Optional[bytes], float]:
+        """
+        Internal helper to synthesize speech from text
+        This is separated to allow parallel execution with calendar checks
+
+        Returns:
+            Tuple of (audio_bytes, elapsed_time_ms)
+        """
+        try:
+            logger.info(f"[CUSTOM] 🔊 TTS synthesis starting for {len(text)} chars...")
+            start_time = datetime.now()
+
+            audio = await self.tts_provider.synthesize(text)
+
+            elapsed_ms = (datetime.now() - start_time).total_seconds() * 1000
+            logger.info(f"[CUSTOM] ✅ TTS synthesis completed in {elapsed_ms:.0f}ms")
+
+            return audio, elapsed_ms
+        except Exception as e:
+            logger.error(f"[CUSTOM] ❌ TTS synthesis error: {e}")
+            return None, 0.0
+
     async def generate_llm_response(self) -> str:
         """Generate response using LLM (OpenAI GPT-4)"""
         try:
@@ -583,6 +811,134 @@ class CustomProviderStreamHandler:
         except Exception as e:
             logger.error(f"[CUSTOM] Error generating LLM response: {e}", exc_info=True)
             return "I apologize, I'm having trouble processing that right now."
+
+    async def check_calendar_intent(self):
+        """Check if conversation indicates an appointment should be scheduled"""
+        try:
+            if not self.calendar_intent_service or not self.calendar_service:
+                return
+
+            # Format conversation for intent service
+            messages = [
+                {"role": msg["role"], "text": msg["content"]}
+                for msg in self.conversation_history
+                if msg["role"] in ("user", "assistant")
+            ]
+
+            # Get OpenAI API key
+            openai_api_key = self.provider_keys.get("openai") or os.getenv("OPENAI_API_KEY")
+            if not openai_api_key:
+                logger.warning("[CUSTOM] ⚠️ No OpenAI API key for calendar intent detection")
+                return
+
+            # Check for scheduling intent
+            logger.info(f"[CUSTOM] 📅 Analyzing conversation for appointment details...")
+            result = await self.calendar_intent_service.extract_from_conversation(
+                messages=messages,
+                openai_api_key=openai_api_key,
+                timezone="UTC"  # You can make this configurable
+            )
+
+            if result and result.get("should_schedule"):
+                logger.info(f"[CUSTOM] ✅ Appointment detected! Reason: {result.get('reason')}")
+                logger.info(f"[CUSTOM] 📅 Appointment details: {result.get('appointment')}")
+
+                # Schedule asynchronously to avoid blocking the conversation
+                self.scheduling_task = asyncio.create_task(self.schedule_appointment(result))
+            else:
+                logger.debug(f"[CUSTOM] ℹ️ No scheduling intent detected yet")
+
+        except Exception as e:
+            logger.error(f"[CUSTOM] ❌ Error checking calendar intent: {e}", exc_info=True)
+
+    async def schedule_appointment(self, intent_result: Dict[str, Any]):
+        """Schedule an appointment based on extracted intent"""
+        try:
+            appointment_data = intent_result.get("appointment", {})
+            logger.info(f"[CUSTOM] 📅 === APPOINTMENT SCHEDULING START ===")
+            logger.info(f"[CUSTOM] 📅 Details: {appointment_data}")
+
+            # Round-robin selection of calendar account
+            if not self.calendar_account_ids:
+                logger.error("[CUSTOM] ❌ No calendar accounts configured!")
+                return
+
+            calendar_account_id = self.calendar_account_ids[0]  # Use first for now
+            logger.info(f"[CUSTOM] 📅 Using calendar account: {calendar_account_id}")
+
+            # Get database connection
+            db = Database.get_db()
+            calendar_accounts_collection = db['calendar_accounts']
+
+            # Retrieve calendar account
+            from bson import ObjectId
+            calendar_account = calendar_accounts_collection.find_one({
+                "_id": ObjectId(calendar_account_id)
+            })
+
+            if not calendar_account:
+                logger.error(f"[CUSTOM] ❌ Calendar account {calendar_account_id} not found!")
+                return
+
+            # Check availability
+            logger.info(f"[CUSTOM] 📅 Checking availability for time slot...")
+            start_time = appointment_data.get("start_iso")
+            end_time = appointment_data.get("end_iso")
+
+            conflicts = await self.calendar_service.check_availability(
+                calendar_account=calendar_account,
+                start_time=start_time,
+                end_time=end_time
+            )
+
+            if conflicts:
+                logger.warning(f"[CUSTOM] ⚠️ Time slot conflict detected! Conflicts: {conflicts}")
+                # You could add logic here to notify the user about the conflict
+                return
+
+            # Create the event
+            logger.info(f"[CUSTOM] 📅 Creating calendar event...")
+            event_result = await self.calendar_service.create_event(
+                calendar_account=calendar_account,
+                summary=appointment_data.get("title", "Scheduled Appointment"),
+                start_time=start_time,
+                end_time=end_time,
+                description=appointment_data.get("notes", ""),
+                attendees=appointment_data.get("attendees", [])
+            )
+
+            if event_result:
+                logger.info(f"[CUSTOM] ✅ Appointment scheduled successfully!")
+                logger.info(f"[CUSTOM] 📅 Event ID: {event_result.get('id')}")
+
+                self.appointment_scheduled = True
+                self.appointment_metadata = {
+                    "event_id": event_result.get("id"),
+                    "start_time": start_time,
+                    "end_time": end_time,
+                    "title": appointment_data.get("title"),
+                    "calendar_account_id": calendar_account_id
+                }
+
+                # Log to database
+                call_logs_collection = db['call_logs']
+                call_logs_collection.update_one(
+                    {"frejun_call_id": self.call_id},
+                    {
+                        "$set": {
+                            "appointment_scheduled": True,
+                            "appointment_metadata": self.appointment_metadata,
+                            "updated_at": datetime.utcnow()
+                        }
+                    }
+                )
+
+                logger.info(f"[CUSTOM] 🎉 === APPOINTMENT SCHEDULING COMPLETE ===")
+            else:
+                logger.error(f"[CUSTOM] ❌ Failed to create calendar event")
+
+        except Exception as e:
+            logger.error(f"[CUSTOM] ❌ Error scheduling appointment: {e}", exc_info=True)
 
     async def log_interaction(self, user_text: str, assistant_text: str):
         """Log conversation to database"""
@@ -851,6 +1207,9 @@ async def handle_custom_provider_stream(
             "llm_model": assistant.get("llm_model"),
             "llm_max_tokens": assistant.get("llm_max_tokens", 150),
             "bot_language": assistant.get("bot_language", "en"),
+            # Calendar integration settings
+            "calendar_enabled": assistant.get("calendar_enabled", False),
+            "calendar_account_ids": assistant.get("calendar_account_ids", []),
             "provider_keys": provider_keys,
         }
 

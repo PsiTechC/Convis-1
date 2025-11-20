@@ -58,6 +58,15 @@ app.add_exception_handler(RateLimitExceeded, custom_rate_limit_exceeded_handler)
 # Build list of allowed origins from environment
 allowed_origins = []
 
+# Add localhost origins for development (always allow for local development)
+if settings.environment != "production":
+    allowed_origins.extend([
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ])
+
 # Add frontend URL from settings
 if settings.frontend_url:
     allowed_origins.append(settings.frontend_url)

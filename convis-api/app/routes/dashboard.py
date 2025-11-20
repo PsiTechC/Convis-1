@@ -2,13 +2,14 @@ from datetime import datetime, timedelta
 from typing import Dict, Optional
 
 from bson import ObjectId
-from fastapi import APIRouter, HTTPException, Query, status
-from twilio.base.exceptions import TwilioRestException
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from twilio.base.exceptions import TwilioException, TwilioRestException
 from twilio.rest import Client
 
 from app.config.database import Database
 from app.models.dashboard import AssistantSentimentBreakdown, AssistantSummaryItem, AssistantSummaryResponse
 from app.utils.twilio_helpers import decrypt_twilio_credentials
+from app.utils.auth import get_current_user, verify_user_ownership
 
 import logging
 
@@ -88,11 +89,16 @@ def update_sentiment_counts(sentiment: AssistantSentimentBreakdown, status: str)
 async def get_assistant_summary(
     user_id: str,
     timeframe: str = Query("total", regex="^(total|last_7d|last_30d|last_90d|current_year)$"),
+    current_user: dict = Depends(get_current_user),
 ):
     """
     Aggregate outbound/inbound call metrics per assistant for dashboard summary.
+    Requires authentication via JWT token.
     """
     try:
+        # Verify the authenticated user is requesting their own data
+        await verify_user_ownership(current_user, user_id)
+
         db = Database.get_db()
         users_collection = db["users"]
         phone_numbers_collection = db["phone_numbers"]
@@ -136,9 +142,24 @@ async def get_assistant_summary(
 
         twilio_client: Optional[Client] = None
         if twilio_connection:
-            account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
-            if account_sid and auth_token:
-                twilio_client = Client(account_sid, auth_token)
+            try:
+                account_sid, auth_token = decrypt_twilio_credentials(twilio_connection)
+                if account_sid and auth_token:
+                    try:
+                        # Validate credentials by creating client
+                        twilio_client = Client(account_sid, auth_token)
+                    except (TwilioException, TwilioRestException) as twilio_error:
+                        logger.warning(f"Twilio authentication failed for user {user_id}: {twilio_error}")
+                        # Continue without Twilio client - will use DB data only
+                    except Exception as client_error:
+                        logger.error(f"Failed to initialize Twilio client for user {user_id}: {client_error}")
+                        # Continue without Twilio client
+                else:
+                    logger.warning(f"Twilio credentials are missing or invalid for user {user_id}")
+            except Exception as e:
+                logger.error(f"Failed to decrypt Twilio credentials for user {user_id}: {e}")
+        else:
+            logger.info(f"No Twilio provider connection found for user {user_id}")
 
         assistant_summary: Dict[str, AssistantSummaryItem] = {}
         total_cost = 0.0
@@ -232,13 +253,13 @@ async def get_assistant_summary(
         # Process Twilio call logs for additional data (inbound/outbound not captured in DB)
         if twilio_client:
             try:
-                calls = twilio_client.calls.list(limit=500)
-            except TwilioRestException as e:
-                logger.error(f"Twilio API error while fetching calls: {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Error accessing Twilio: {str(e)}",
-                )
+                calls = twilio_client.calls.list(limit=1000)
+            except (TwilioException, TwilioRestException) as e:
+                logger.error(f"Twilio API error while fetching calls for user {user_id}: {e}")
+                # Don't fail the entire request if Twilio API fails
+                # Just log the error and continue with DB data only
+                logger.warning(f"Continuing with database call logs only due to Twilio API error")
+                calls = []
 
             user_phone_numbers = {doc["phone_number"] for doc in phone_docs}
 

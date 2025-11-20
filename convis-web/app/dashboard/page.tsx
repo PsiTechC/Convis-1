@@ -131,7 +131,7 @@ export default function DashboardPage() {
       const token = localStorage.getItem('token');
       if (!token) {
         setSummaryError('You are not authenticated. Please sign in again.');
-        setAssistantSummary(null);
+        router.push('/login');
         return;
       }
       const response = await fetch(`${API_URL}/api/dashboard/assistant-summary/${userId}?timeframe=${range}`, {
@@ -143,6 +143,22 @@ export default function DashboardPage() {
 
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
+
+        // Handle authentication errors
+        if (response.status === 401) {
+          setSummaryError('Your session has expired. Please sign in again.');
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          setTimeout(() => router.push('/login'), 2000);
+          return;
+        }
+
+        // Handle permission errors
+        if (response.status === 403) {
+          setSummaryError('You do not have permission to view this data.');
+          return;
+        }
+
         throw new Error(errorData.detail || 'Failed to fetch assistant summary');
       }
 
@@ -151,7 +167,7 @@ export default function DashboardPage() {
     } catch (error) {
       console.error('Error fetching assistant summary:', error);
       if (error instanceof TypeError) {
-        setSummaryError('Unable to reach dashboard summary service. Please verify the backend is running.');
+        setSummaryError('Unable to reach the server. Please check your connection and try again.');
       } else {
         setSummaryError(error instanceof Error ? error.message : 'Failed to fetch assistant summary');
       }
@@ -165,45 +181,61 @@ export default function DashboardPage() {
     try {
       setIsLoadingStats(true);
       const token = localStorage.getItem('token');
-      const response = await fetch(`${API_URL}/api/phone-numbers/call-logs/user/${userId}?limit=100`, {
+
+      if (!token) {
+        console.error('No authentication token found');
+        router.push('/login');
+        return;
+      }
+
+      const response = await fetch(`${API_URL}/api/phone-numbers/call-logs/user/${userId}?limit=1000`, {
         headers: { Authorization: `Bearer ${token}` },
       });
 
-      if (response.ok) {
-        const data = await response.json();
-        const logs: CallLog[] = Array.isArray(data.call_logs) ? data.call_logs : [];
-
-        // Calculate stats
-        const totalCalls = logs.length;
-        const inboundCalls = logs.filter((log) => log.direction === 'inbound').length;
-        const outboundCalls = logs.filter((log) => typeof log.direction === 'string' && log.direction.includes('outbound')).length;
-        const completedCalls = logs.filter((log) => log.status === 'completed').length;
-        const totalDuration = logs.reduce((sum, log) => sum + (typeof log.duration === 'number' ? log.duration : 0), 0);
-        const avgDuration = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
-        const totalCost = logs.reduce((sum, log) => {
-          const rawPrice = log.price;
-          const numericPrice =
-            typeof rawPrice === 'number'
-              ? rawPrice
-              : typeof rawPrice === 'string'
-                ? Number.parseFloat(rawPrice)
-                : 0;
-          const safePrice = Number.isFinite(numericPrice) ? numericPrice : 0;
-          return sum + Math.abs(safePrice);
-        }, 0);
-        const answeredRate = totalCalls > 0 ? Math.round((completedCalls / totalCalls) * 100) : 0;
-
-        setStats({
-          totalCalls,
-          inboundCalls,
-          outboundCalls,
-          completedCalls,
-          answeredRate,
-          avgDuration,
-          totalDuration,
-          totalCost,
-        });
+      if (!response.ok) {
+        if (response.status === 401) {
+          console.error('Authentication failed - redirecting to login');
+          localStorage.removeItem('token');
+          localStorage.removeItem('user');
+          router.push('/login');
+          return;
+        }
+        throw new Error(`Failed to fetch call logs: ${response.statusText}`);
       }
+
+      const data = await response.json();
+      const logs: CallLog[] = Array.isArray(data.call_logs) ? data.call_logs : [];
+
+      // Calculate stats
+      const totalCalls = logs.length;
+      const inboundCalls = logs.filter((log) => log.direction === 'inbound').length;
+      const outboundCalls = logs.filter((log) => typeof log.direction === 'string' && log.direction.includes('outbound')).length;
+      const completedCalls = logs.filter((log) => log.status === 'completed').length;
+      const totalDuration = logs.reduce((sum, log) => sum + (typeof log.duration === 'number' ? log.duration : 0), 0);
+      const avgDuration = totalCalls > 0 ? Math.round(totalDuration / totalCalls) : 0;
+      const totalCost = logs.reduce((sum, log) => {
+        const rawPrice = log.price;
+        const numericPrice =
+          typeof rawPrice === 'number'
+            ? rawPrice
+            : typeof rawPrice === 'string'
+              ? Number.parseFloat(rawPrice)
+              : 0;
+        const safePrice = Number.isFinite(numericPrice) ? numericPrice : 0;
+        return sum + Math.abs(safePrice);
+      }, 0);
+      const answeredRate = totalCalls > 0 ? Math.round((completedCalls / totalCalls) * 100) : 0;
+
+      setStats({
+        totalCalls,
+        inboundCalls,
+        outboundCalls,
+        completedCalls,
+        answeredRate,
+        avgDuration,
+        totalDuration,
+        totalCost,
+      });
     } catch (error) {
       console.error('Error fetching call logs:', error);
     } finally {
@@ -504,7 +536,15 @@ export default function DashboardPage() {
                 </div>
               ) : summaryError ? (
                 <div className={`p-4 rounded-xl border ${isDarkMode ? 'border-red-700 bg-red-900/20 text-red-200' : 'border-red-200 bg-red-50 text-red-700'}`}>
-                  {summaryError}
+                  <div className="flex items-start gap-3">
+                    <svg className="w-5 h-5 flex-shrink-0 mt-0.5" fill="currentColor" viewBox="0 0 20 20">
+                      <path fillRule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-7 4a1 1 0 11-2 0 1 1 0 012 0zm-1-9a1 1 0 00-1 1v4a1 1 0 102 0V6a1 1 0 00-1-1z" clipRule="evenodd" />
+                    </svg>
+                    <div>
+                      <p className="font-semibold mb-1">Error Loading Dashboard</p>
+                      <p className="text-sm">{summaryError}</p>
+                    </div>
+                  </div>
                 </div>
               ) : assistantSummary && assistantSummary.assistants.length > 0 ? (
                 <table className="min-w-full text-sm">

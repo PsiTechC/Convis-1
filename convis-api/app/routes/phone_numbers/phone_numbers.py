@@ -844,13 +844,13 @@ async def get_active_calls(user_id: str):
 
 
 @router.get("/call-logs/user/{user_id}", response_model=CallLogListResponse)
-async def get_user_call_logs(user_id: str, limit: int = 100):
+async def get_user_call_logs(user_id: str, limit: int = 1000):
     """
     Get comprehensive call logs for all user's phone numbers with all Twilio details
 
     Args:
         user_id: User ID
-        limit: Maximum number of call logs to return (default: 100)
+        limit: Maximum number of call logs to return (default: 1000)
 
     Returns:
         CallLogListResponse: Detailed list of call logs with all Twilio information

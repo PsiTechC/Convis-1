@@ -232,38 +232,13 @@ async def create_assistant(request: Request, assistant_data: AIAssistantCreate):
                 detail="User not found"
             )
 
+        # API keys are no longer required - system uses .env OPENAI_API_KEY
+        # Keep these for backwards compatibility but don't validate
         selected_key_doc = None
         encrypted_api_key: Optional[str] = None
         api_key_obj_id: Optional[ObjectId] = None
 
-        if assistant_data.api_key_id:
-            try:
-                api_key_obj_id = ObjectId(assistant_data.api_key_id)
-            except Exception:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Invalid api_key_id format"
-                )
-
-            selected_key_doc = api_keys_collection.find_one({"_id": api_key_obj_id, "user_id": user_obj_id})
-            if not selected_key_doc:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Selected API key not found"
-                )
-
-            if selected_key_doc.get('provider') != 'openai':
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Selected API key provider is not supported for AI assistants yet"
-                )
-        elif assistant_data.openai_api_key:
-            encrypted_api_key = encryption_service.encrypt(assistant_data.openai_api_key)
-        else:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="An API key selection is required"
-            )
+        logger.info("[ASSISTANT] Using system OpenAI API key from environment")
 
         # Resolve greeting text (default if empty)
         call_greeting = (assistant_data.call_greeting or DEFAULT_CALL_GREETING).strip()
@@ -374,24 +349,17 @@ async def create_assistant(request: Request, assistant_data: AIAssistantCreate):
             "updated_at": now
         }
 
-        if api_key_obj_id:
-            assistant_doc["api_key_id"] = api_key_obj_id
-            assistant_doc["openai_api_key"] = None
-        else:
-            assistant_doc["openai_api_key"] = encrypted_api_key
+        # Don't store API keys - system uses .env key
+        # Legacy fields kept as None for backwards compatibility
+        assistant_doc["api_key_id"] = None
+        assistant_doc["openai_api_key"] = None
 
         result = assistants_collection.insert_one(assistant_doc)
-        logger.info(f"AI assistant created with ID: {result.inserted_id}")
+        logger.info(f"AI assistant created with ID: {result.inserted_id} (using system API key)")
 
+        # No API key metadata since we're using system key
         api_key_metadata = None
-        if selected_key_doc:
-            api_key_metadata = {
-                "id": str(selected_key_doc['_id']),
-                "label": selected_key_doc['label'],
-                "provider": selected_key_doc['provider']
-            }
-
-        has_api_key_value = bool(api_key_obj_id or encrypted_api_key)
+        has_api_key_value = True  # Always true since system key is always available
 
         return AIAssistantResponse(
             id=str(result.inserted_id),
@@ -402,9 +370,9 @@ async def create_assistant(request: Request, assistant_data: AIAssistantCreate):
             temperature=assistant_data.temperature,
             call_greeting=call_greeting,
             has_api_key=has_api_key_value,
-            api_key_id=api_key_metadata["id"] if api_key_metadata else None,
-            api_key_label=api_key_metadata["label"] if api_key_metadata else None,
-            api_key_provider=api_key_metadata["provider"] if api_key_metadata else ("openai" if encrypted_api_key else None),
+            api_key_id=None,  # No user API key - system key used
+            api_key_label="System API Key",  # Indicate system key is being used
+            api_key_provider="openai",  # Always OpenAI from .env
             knowledge_base_files=[],  # New assistants start with no knowledge base
             has_knowledge_base=False,
             calendar_account_id=str(calendar_account_obj_id) if calendar_account_obj_id else None,
@@ -808,34 +776,13 @@ async def update_assistant(assistant_id: str, update_data: AIAssistantUpdate):
         if update_data.call_greeting is not None:
             greeting_value = update_data.call_greeting.strip() if isinstance(update_data.call_greeting, str) else ""
             update_doc["call_greeting"] = greeting_value or DEFAULT_CALL_GREETING
-        if update_data.api_key_id is not None:
-            if update_data.api_key_id == "":
-                update_doc["api_key_id"] = None
-            else:
-                try:
-                    api_key_obj_id = ObjectId(update_data.api_key_id)
-                except Exception:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Invalid api_key_id format"
-                    )
-                api_key_doc = api_keys_collection.find_one({"_id": api_key_obj_id, "user_id": assistant['user_id']})
-                if not api_key_doc:
-                    raise HTTPException(
-                        status_code=status.HTTP_404_NOT_FOUND,
-                        detail="Selected API key not found"
-                    )
-                if api_key_doc.get('provider') != 'openai':
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Selected API key provider is not supported for AI assistants yet"
-                    )
-                update_doc["api_key_id"] = api_key_obj_id
-                update_doc["openai_api_key"] = None
-        if update_data.openai_api_key is not None:
-            # Encrypt the new API key
-            update_doc["openai_api_key"] = encryption_service.encrypt(update_data.openai_api_key)
+
+        # API keys are ignored - system uses .env OPENAI_API_KEY
+        # Keep fields as None for backwards compatibility
+        if update_data.api_key_id is not None or update_data.openai_api_key is not None:
+            logger.info("[ASSISTANT] API key update ignored - using system API key from environment")
             update_doc["api_key_id"] = None
+            update_doc["openai_api_key"] = None
 
         # Handle provider updates
         if update_data.asr_provider is not None:
@@ -1254,4 +1201,96 @@ async def generate_voice_demo(request: VoiceDemoRequest):
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to generate voice demo: {str(error)}"
+        )
+
+
+# Translation endpoint for greeting preview
+class TranslateTextRequest(BaseModel):
+    text: str
+    target_language: str
+    language_name: str
+
+
+class TranslateTextResponse(BaseModel):
+    translated_text: str
+    source_language: str = "en"
+    target_language: str
+
+
+@router.post("/translate-text", response_model=TranslateTextResponse)
+async def translate_text(request: TranslateTextRequest):
+    """
+    Translate text to the target language using OpenAI GPT-4o-mini.
+    Uses system API key from environment variables.
+    """
+    try:
+        # Validate input
+        if not request.text or not request.text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Text to translate is required"
+            )
+
+        if not request.target_language or request.target_language == 'en':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Target language is required and must not be English"
+            )
+
+        # Get system OpenAI API key from environment
+        openai_api_key = os.getenv("OPENAI_API_KEY")
+        if not openai_api_key:
+            logger.error("[TRANSLATION] OPENAI_API_KEY not found in environment")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="OpenAI API key not configured"
+            )
+
+        # Call OpenAI to translate
+        from openai import OpenAI
+        client = OpenAI(api_key=openai_api_key)
+
+        logger.info(f"[TRANSLATION] Translating to {request.language_name}...")
+
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",  # Fast and cheap for translation
+            messages=[
+                {
+                    "role": "system",
+                    "content": f"You are a professional translator. Translate the following text to {request.language_name}. Only return the translation without any additional text. Maintain the tone, formality, and intent of the original message."
+                },
+                {
+                    "role": "user",
+                    "content": request.text
+                }
+            ],
+            temperature=0.3,  # Low temperature for consistent translations
+            max_tokens=300
+        )
+
+        translated_text = response.choices[0].message.content.strip()
+
+        if not translated_text:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Translation returned empty result"
+            )
+
+        logger.info(f"[TRANSLATION] Successfully translated to {request.language_name}: \"{translated_text}\"")
+
+        return TranslateTextResponse(
+            translated_text=translated_text,
+            source_language="en",
+            target_language=request.target_language
+        )
+
+    except HTTPException:
+        raise
+    except Exception as error:
+        import traceback
+        logger.error(f"Error translating text: {str(error)}")
+        logger.error(traceback.format_exc())
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to translate text: {str(error)}"
         )

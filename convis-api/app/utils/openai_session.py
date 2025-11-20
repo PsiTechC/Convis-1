@@ -43,7 +43,10 @@ async def send_session_update(
     temperature: float = 0.8,
     enable_interruptions: bool = True,
     greeting_text: Optional[str] = None,
-    max_response_output_tokens: Optional[int] = None
+    max_response_output_tokens: Optional[int] = None,
+    vad_threshold: float = 0.5,
+    vad_prefix_padding_ms: int = 300,
+    vad_silence_duration_ms: int = 500
 ):
     """
     Send session update to OpenAI WebSocket with dynamic configuration.
@@ -58,13 +61,16 @@ async def send_session_update(
         enable_interruptions: Whether to enable interruption handling
         greeting_text: Optional custom greeting text (passed to send_initial_conversation_item)
         max_response_output_tokens: Optional max tokens for AI responses (e.g., 'inf', 50-4096)
+        vad_threshold: Voice Activity Detection threshold (0.0-1.0) - lower=more sensitive to background noise
+        vad_prefix_padding_ms: Padding before speech starts (ms) - helps capture beginning of speech
+        vad_silence_duration_ms: Silence duration to detect end of speech (ms) - longer=less affected by noise
     """
     session_config = {
         "turn_detection": {
             "type": "server_vad",
-            "threshold": 0.4,  # Ultra-sensitive for instant detection (0.4 = very responsive)
-            "prefix_padding_ms": 100,  # Minimal padding for fastest response
-            "silence_duration_ms": 200  # Aggressive 200ms silence detection for sub-120ms total latency
+            "threshold": vad_threshold,  # Configurable VAD threshold for noise sensitivity
+            "prefix_padding_ms": vad_prefix_padding_ms,  # Configurable padding before speech
+            "silence_duration_ms": vad_silence_duration_ms  # Configurable silence detection - helps with noise handling
         },
         "input_audio_format": "g711_ulaw",
         "output_audio_format": "g711_ulaw",

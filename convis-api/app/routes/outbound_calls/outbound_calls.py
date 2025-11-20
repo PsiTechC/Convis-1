@@ -1251,6 +1251,10 @@ IMPORTANT:
                 'response_rate': assistant.get('response_rate', 'balanced'),
                 'check_user_online': assistant.get('check_user_online', True),
                 'audio_buffer_size': assistant.get('audio_buffer_size', 200),
+                'noise_suppression_level': assistant.get('noise_suppression_level', 'medium'),
+                'vad_threshold': assistant.get('vad_threshold', 0.5),
+                'vad_prefix_padding_ms': assistant.get('vad_prefix_padding_ms', 300),
+                'vad_silence_duration_ms': assistant.get('vad_silence_duration_ms', 500),
                 'provider_keys': provider_keys  # Pass all resolved keys
             }
 
@@ -1304,6 +1308,11 @@ IMPORTANT:
             ping_interval=20,
             ping_timeout=20
         ) as openai_ws:
+            # Get VAD settings from assistant config for noise suppression
+            vad_threshold = assistant.get('vad_threshold', 0.5)
+            vad_prefix_padding_ms = assistant.get('vad_prefix_padding_ms', 300)
+            vad_silence_duration_ms = assistant.get('vad_silence_duration_ms', 500)
+
             # Initialize session with interruption handling enabled
             # NOTE: send_session_update now calls send_initial_conversation_item internally
             # This matches the original pattern from CallTack_IN_out/outbound_call.py
@@ -1314,7 +1323,10 @@ IMPORTANT:
                 temperature,
                 enable_interruptions=True,
                 greeting_text=call_greeting,
-                max_response_output_tokens="inf"  # Allow unlimited response length for natural conversation
+                max_response_output_tokens="inf",  # Allow unlimited response length for natural conversation
+                vad_threshold=vad_threshold,
+                vad_prefix_padding_ms=vad_prefix_padding_ms,
+                vad_silence_duration_ms=vad_silence_duration_ms
             )
 
             # Connection specific state
@@ -1388,7 +1400,11 @@ IMPORTANT:
                                     voice,
                                     temperature,
                                     enable_interruptions=True,
-                                    greeting_text=f"Hello {recipient_name}! {call_greeting.replace('Hello!', '').strip()}"
+                                    greeting_text=f"Hello {recipient_name}! {call_greeting.replace('Hello!', '').strip()}",
+                                    max_response_output_tokens="inf",
+                                    vad_threshold=vad_threshold,
+                                    vad_prefix_padding_ms=vad_prefix_padding_ms,
+                                    vad_silence_duration_ms=vad_silence_duration_ms
                                 )
                                 logger.info(f"Updated greeting for outbound call to {recipient_name}")
 

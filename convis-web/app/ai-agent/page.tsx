@@ -85,6 +85,12 @@ interface AIAssistant {
   audio_buffer_size?: number;
   bot_language?: string;
 
+  // Noise Suppression & VAD settings
+  noise_suppression_level?: string;
+  vad_threshold?: number;
+  vad_prefix_padding_ms?: number;
+  vad_silence_duration_ms?: number;
+
   created_at: string;
   updated_at: string;
 }
@@ -338,6 +344,8 @@ export default function AIAgentPage() {
   const [previewingDocument, setPreviewingDocument] = useState<KnowledgeBaseFile | null>(null);
   const [documentContent, setDocumentContent] = useState<string>('');
   const [loadingDocumentContent, setLoadingDocumentContent] = useState(false);
+  const [translatedGreeting, setTranslatedGreeting] = useState<string>('');
+  const [isTranslatingGreeting, setIsTranslatingGreeting] = useState(false);
   const [apiKeys, setApiKeys] = useState<StoredApiKey[]>([]);
   const [isLoadingKeys, setIsLoadingKeys] = useState(false);
   const [keysError, setKeysError] = useState<string | null>(null);
@@ -364,10 +372,16 @@ export default function AIAgentPage() {
     asr_language: 'en',
     tts_voice: 'alloy',
     tts_model: 'tts-1',
+    tts_speed: 1.0,
+    audio_buffer_size: 200,
     llm_provider: 'openai',
     llm_model: 'gpt-4o-mini',
     llm_max_tokens: 150,
     bot_language: 'en',
+    noise_suppression_level: 'medium',
+    vad_threshold: 0.5,
+    vad_prefix_padding_ms: 300,
+    vad_silence_duration_ms: 500,
   });
   const [providerMode, setProviderMode] = useState<'realtime' | 'custom'>('realtime');
   const [currency, setCurrency] = useState<'USD' | 'INR'>('USD');
@@ -777,9 +791,16 @@ export default function AIAgentPage() {
         asr_language: 'en',
         tts_voice: 'alloy',
         tts_model: 'tts-1',
+        tts_speed: 1.0,
+        audio_buffer_size: 200,
         llm_provider: 'openai',
         llm_model: 'gpt-4o-mini',
         llm_max_tokens: 150,
+        bot_language: 'en',
+        noise_suppression_level: 'medium',
+        vad_threshold: 0.5,
+        vad_prefix_padding_ms: 300,
+        vad_silence_duration_ms: 500,
       });
       setIsCreateModalOpen(false);
       setIsEditMode(false);
@@ -1103,6 +1124,88 @@ export default function AIAgentPage() {
     setDocumentContent('');
   };
 
+  // Translate greeting to the selected bot language (uses system API key)
+  const translateGreeting = useCallback(async (greeting: string, targetLanguage: string) => {
+    if (!greeting || !targetLanguage || targetLanguage === 'en') {
+      setTranslatedGreeting('');
+      return;
+    }
+
+    setIsTranslatingGreeting(true);
+    try {
+      // Use system OpenAI API key to translate the greeting
+      const token = localStorage.getItem('token');
+
+      // Get the language name for better translation
+      const languageNames: Record<string, string> = {
+        'hi': 'Hindi',
+        'es': 'Spanish',
+        'fr': 'French',
+        'de': 'German',
+        'pt': 'Portuguese',
+        'it': 'Italian',
+        'ja': 'Japanese',
+        'ko': 'Korean',
+        'ar': 'Arabic',
+        'ru': 'Russian',
+        'zh': 'Chinese',
+        'nl': 'Dutch',
+        'pl': 'Polish',
+        'tr': 'Turkish'
+      };
+
+      const languageName = languageNames[targetLanguage] || targetLanguage.toUpperCase();
+
+      const response = await fetch(`${API_URL}/api/ai-assistants/translate-text`, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          text: greeting,
+          target_language: targetLanguage,
+          language_name: languageName
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: 'Unknown error' }));
+        console.error('[TRANSLATION] Translation request failed:', response.status, errorData);
+        setTranslatedGreeting('');
+        return;
+      }
+
+      const data = await response.json();
+      setTranslatedGreeting(data.translated_text || '');
+      console.log(`[TRANSLATION] Greeting translated to ${languageName}: "${data.translated_text}"`);
+    } catch (error) {
+      console.error('[TRANSLATION] Error:', error);
+      setTranslatedGreeting('');
+    } finally {
+      setIsTranslatingGreeting(false);
+    }
+  }, []);
+
+  // Translate greeting whenever language or greeting changes
+  useEffect(() => {
+    const botLanguage = formData.bot_language || 'en';
+    const greeting = formData.call_greeting || '';
+
+    // Only translate if language is not English and greeting exists
+    if (botLanguage !== 'en' && greeting.trim()) {
+      // Debounce translation to avoid too many API calls while typing
+      const timeoutId = setTimeout(() => {
+        translateGreeting(greeting, botLanguage);
+      }, 500); // Wait 500ms after user stops typing
+
+      return () => clearTimeout(timeoutId);
+    } else {
+      // Clear translation if language is English or greeting is empty
+      setTranslatedGreeting('');
+    }
+  }, [formData.bot_language, formData.call_greeting, translateGreeting]);
+
   const openCreateModal = () => {
     setIsCreateModalOpen(true);
     setModalStep('template');
@@ -1132,15 +1235,24 @@ export default function AIAgentPage() {
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
       calendar_account_id: '',
+      calendar_account_ids: [] as string[],
+      calendar_enabled: false,
       asr_provider: 'openai',
       tts_provider: 'openai',
       asr_model: 'whisper-1',
       asr_language: 'en',
       tts_voice: 'alloy',
       tts_model: 'tts-1',
+      tts_speed: 1.0,
+      audio_buffer_size: 200,
       llm_provider: 'openai',
       llm_model: 'gpt-4o-mini',
       llm_max_tokens: 150,
+      bot_language: 'en',
+      noise_suppression_level: 'medium',
+      vad_threshold: 0.5,
+      vad_prefix_padding_ms: 300,
+      vad_silence_duration_ms: 500,
     });
   };
 
@@ -1203,6 +1315,10 @@ export default function AIAgentPage() {
       llm_model: llmModel,
       llm_max_tokens: llmMaxTokens,
       bot_language: assistant.bot_language || 'en',
+      noise_suppression_level: assistant.noise_suppression_level || 'medium',
+      vad_threshold: assistant.vad_threshold || 0.5,
+      vad_prefix_padding_ms: assistant.vad_prefix_padding_ms || 300,
+      vad_silence_duration_ms: assistant.vad_silence_duration_ms || 500,
     });
     setKnowledgeBaseFiles(dedupeKnowledgeBaseFiles(assistant.knowledge_base_files || []));
 
@@ -1248,15 +1364,24 @@ export default function AIAgentPage() {
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
       calendar_account_id: '',
+      calendar_account_ids: [] as string[],
+      calendar_enabled: false,
       asr_provider: 'openai',
       tts_provider: 'openai',
       asr_model: 'whisper-1',
       asr_language: 'en',
       tts_voice: 'alloy',
       tts_model: 'tts-1',
+      tts_speed: 1.0,
+      audio_buffer_size: 200,
       llm_provider: 'openai',
       llm_model: 'gpt-4o-mini',
       llm_max_tokens: 150,
+      bot_language: 'en',
+      noise_suppression_level: 'medium',
+      vad_threshold: 0.5,
+      vad_prefix_padding_ms: 300,
+      vad_silence_duration_ms: 500,
     });
     setModalStep('form');
   };
@@ -1271,15 +1396,24 @@ export default function AIAgentPage() {
       api_key_id: '',
       call_greeting: DEFAULT_CALL_GREETING,
       calendar_account_id: '',
+      calendar_account_ids: [] as string[],
+      calendar_enabled: false,
       asr_provider: 'openai',
       tts_provider: 'openai',
       asr_model: 'whisper-1',
       asr_language: 'en',
       tts_voice: 'alloy',
       tts_model: 'tts-1',
+      tts_speed: 1.0,
+      audio_buffer_size: 200,
       llm_provider: 'openai',
       llm_model: 'gpt-4o-mini',
       llm_max_tokens: 150,
+      bot_language: 'en',
+      noise_suppression_level: 'medium',
+      vad_threshold: 0.5,
+      vad_prefix_padding_ms: 300,
+      vad_silence_duration_ms: 500,
     });
     setModalStep('form');
   };
@@ -1858,6 +1992,57 @@ export default function AIAgentPage() {
                 <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-2`}>
                   The caller hears this before the conversation begins. Mention disclaimers or technology disclosures here.
                 </p>
+
+                {/* Translation Preview */}
+                {formData.bot_language && formData.bot_language !== 'en' && (
+                  <div className={`mt-3 p-3 rounded-lg border ${isDarkMode ? 'bg-blue-900/20 border-blue-700/50' : 'bg-blue-50 border-blue-200'}`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className={`text-xs font-medium ${isDarkMode ? 'text-blue-400' : 'text-blue-700'}`}>
+                        🌍 Translation Preview ({formData.bot_language === 'hi' ? 'Hindi' :
+                          formData.bot_language === 'es' ? 'Spanish' :
+                          formData.bot_language === 'fr' ? 'French' :
+                          formData.bot_language === 'de' ? 'German' :
+                          formData.bot_language === 'pt' ? 'Portuguese' :
+                          formData.bot_language === 'it' ? 'Italian' :
+                          formData.bot_language === 'ja' ? 'Japanese' :
+                          formData.bot_language === 'ko' ? 'Korean' :
+                          formData.bot_language === 'ar' ? 'Arabic' :
+                          formData.bot_language === 'ru' ? 'Russian' :
+                          formData.bot_language === 'zh' ? 'Chinese' :
+                          formData.bot_language === 'nl' ? 'Dutch' :
+                          formData.bot_language === 'pl' ? 'Polish' :
+                          formData.bot_language === 'tr' ? 'Turkish' :
+                          formData.bot_language.toUpperCase()})
+                      </span>
+                      {isTranslatingGreeting && (
+                        <span className={`text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+                          Translating...
+                        </span>
+                      )}
+                    </div>
+                    {translatedGreeting ? (
+                      <p className={`text-sm ${isDarkMode ? 'text-gray-300' : 'text-gray-700'} whitespace-pre-wrap`}>
+                        {translatedGreeting}
+                      </p>
+                    ) : isTranslatingGreeting ? (
+                      <div className="flex items-center space-x-2">
+                        <div className={`w-4 h-4 border-2 border-t-transparent rounded-full animate-spin ${isDarkMode ? 'border-blue-400' : 'border-blue-600'}`}></div>
+                        <span className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                          Translating greeting...
+                        </span>
+                      </div>
+                    ) : (
+                      <p className={`text-xs italic ${isDarkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                        {formData.call_greeting
+                          ? 'Translation will appear here...'
+                          : 'Enter a greeting to see translation'}
+                      </p>
+                    )}
+                    <p className={`text-xs ${isDarkMode ? 'text-blue-400' : 'text-blue-600'} mt-2`}>
+                      ✓ This greeting will be automatically translated during calls
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* System Message */}
@@ -1876,78 +2061,6 @@ export default function AIAgentPage() {
                 <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mt-2`}>
                   This message defines how the AI assistant will behave and respond to users.
                 </p>
-              </div>
-
-              {/* Stored API Keys */}
-              <div>
-                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-2`}>
-                  LLM provider <span className="text-red-500">*</span>
-                </label>
-                <div className={`rounded-xl border ${isDarkMode ? 'border-gray-600 bg-gray-800/60' : 'border-neutral-mid/20 bg-neutral-light/40'} p-4`}> 
-                  {isLoadingKeys ? (
-                    <div className="flex items-center justify-center py-4">
-                      <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-primary"></div>
-                    </div>
-                  ) : apiKeys.length > 0 ? (
-                    <div className="space-y-3">
-                      <select
-                        name="api_key_id"
-                        value={formData.api_key_id}
-                        onChange={handleFormChange}
-                        className={`w-full px-4 py-3 rounded-xl border ${isDarkMode ? 'bg-gray-900 border-gray-700 text-white' : 'bg-white border-neutral-mid/20 text-neutral-dark'} focus:outline-none focus:ring-2 focus:ring-primary/20 focus:border-primary transition-all cursor-pointer`}
-                      >
-                        <option value="" disabled={apiKeys.length > 0}>
-                          {apiKeys.length === 0 ? 'No API keys available' : 'Select an API key'}
-                        </option>
-                        {apiKeys.map((key) => (
-                          <option key={key.id} value={key.id}>
-                            {key.label} • {displayProviderLabel(key.provider)}
-                          </option>
-                        ))}
-                      </select>
-                      <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
-                        Keys are managed in your Settings. Assigning a key here links it permanently until you change it.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsCreateModalOpen(false);
-                          router.push('/settings');
-                        }}
-                        className={`text-xs font-medium mt-1 inline-flex items-center gap-1 ${isDarkMode ? 'text-primary hover:text-primary/80' : 'text-primary hover:text-primary/80'}`}
-                      >
-                        Manage keys in Settings
-                        <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    </div>
-                  ) : (
-                    <div className="space-y-3 text-sm">
-                      <p className={isDarkMode ? 'text-gray-300' : 'text-neutral-mid'}>
-                        No API keys saved yet. Add your provider credentials in the Settings → AI API Keys tab before creating assistants.
-                      </p>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setIsCreateModalOpen(false);
-                          router.push('/settings');
-                        }}
-                        className="inline-flex items-center gap-2 px-4 py-2 rounded-lg bg-gradient-to-r from-primary to-primary/80 text-white text-sm font-semibold shadow-sm hover:shadow-md transition-all"
-                      >
-                        Go to Settings
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      </button>
-                    </div>
-                  )}
-                </div>
-                {keysError && (
-                  <p className={`text-xs mt-2 ${isDarkMode ? 'text-red-300' : 'text-red-600'}`}>
-                    {keysError}
-                  </p>
-                )}
               </div>
 
               {/* Bot Language Selection */}
@@ -1997,6 +2110,51 @@ export default function AIAgentPage() {
                 </div>
               </div>
 
+              {/* Noise Suppression & Background Noise Control */}
+              <div>
+                <label className={`block text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'} mb-3`}>
+                  Background Noise Suppression
+                </label>
+                <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'} mb-4`}>
+                  Control how the AI handles background noise during calls. Higher levels filter more aggressively.
+                </p>
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3">
+                  {[
+                    { value: 'off', label: 'Off', desc: 'No filtering' },
+                    { value: 'low', label: 'Low', desc: 'Minimal' },
+                    { value: 'medium', label: 'Medium', desc: 'Balanced' },
+                    { value: 'high', label: 'High', desc: 'Strong' },
+                    { value: 'maximum', label: 'Maximum', desc: 'Aggressive' }
+                  ].map((level) => (
+                    <button
+                      key={level.value}
+                      type="button"
+                      onClick={() => setFormData({ ...formData, noise_suppression_level: level.value })}
+                      className={`relative p-3 rounded-xl border-2 transition-all text-center ${
+                        formData.noise_suppression_level === level.value
+                          ? 'border-primary bg-primary/10'
+                          : isDarkMode
+                            ? 'border-gray-700 bg-gray-800 hover:border-gray-600'
+                            : 'border-neutral-light bg-white hover:border-neutral-mid/30'
+                      }`}
+                    >
+                      <p className={`text-sm font-medium ${isDarkMode ? 'text-white' : 'text-neutral-dark'}`}>
+                        {level.label}
+                      </p>
+                      <p className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-neutral-mid'}`}>
+                        {level.desc}
+                      </p>
+                      {formData.noise_suppression_level === level.value && (
+                        <div className="absolute top-2 right-2">
+                          <svg className="w-5 h-5 text-primary" fill="currentColor" viewBox="0 0 20 20">
+                            <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zm3.707-9.293a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd" />
+                          </svg>
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
               {/* Temperature */}
               <div>
@@ -2675,6 +2833,59 @@ export default function AIAgentPage() {
                             <span className="flex items-center gap-1 text-green-600">
                               Latency: {TTS_MODELS[formData.tts_provider as keyof typeof TTS_MODELS]?.find(m => m.value === formData.tts_model)?.latency || '250'}ms
                             </span>
+                          </div>
+
+                          {/* Buffer Size & Speed Rate Controls */}
+                          <div className="grid grid-cols-2 gap-4 mt-4">
+                            {/* Buffer Size Slider */}
+                            <div>
+                              <div className="flex items-center justify-between mb-2">
+                                <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  Buffer Size
+                                </label>
+                                <span className={`text-xs font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                                  {formData.audio_buffer_size || 200}ms
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                name="audio_buffer_size"
+                                min="50"
+                                max="1000"
+                                step="50"
+                                value={formData.audio_buffer_size || 200}
+                                onChange={handleFormChange}
+                                className="w-full h-2 bg-purple-500/20 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                              />
+                              <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                Lower = faster response, higher = better accuracy
+                              </p>
+                            </div>
+
+                            {/* Speed Rate Slider */}
+                            <div>
+                              <div className="flex items-center justify-between mb-2">
+                                <label className={`text-xs ${isDarkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                                  Speed Rate
+                                </label>
+                                <span className={`text-xs font-medium ${isDarkMode ? 'text-white' : 'text-gray-900'}`}>
+                                  {formData.tts_speed || 1.0}x
+                                </span>
+                              </div>
+                              <input
+                                type="range"
+                                name="tts_speed"
+                                min="0.25"
+                                max="4.0"
+                                step="0.05"
+                                value={formData.tts_speed || 1.0}
+                                onChange={handleFormChange}
+                                className="w-full h-2 bg-purple-500/20 rounded-lg appearance-none cursor-pointer accent-purple-500"
+                              />
+                              <p className={`text-xs mt-1 ${isDarkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                                Adjust how fast or slow the agent speaks
+                              </p>
+                            </div>
                           </div>
                         </div>
 
